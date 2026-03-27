@@ -2195,7 +2195,8 @@ static void zram_reset_device(struct zram *zram)
 		up_write(&zram->init_lock);
 		return;
 	}
-
+	
+    u32 prio = 0;
 	comp = zram->comps[prio];
 	disksize = zram->disksize;
 	zram->disksize = 0;
