@@ -1,7 +1,30 @@
-name: Build clear kernel
+name: Build clean kernel
 
 on:
+  # Manual trigger with custom inputs
   workflow_dispatch:
+    inputs:
+      device_name:
+        description: 'Select the target device'
+        required: true
+        default: 'star'
+        type: choice
+        options:
+          - star
+          - mars
+          - venus
+      localversion:
+        description: 'Custom text to append to kernel version (uname)'
+        required: true
+        default: '-palaziks'
+        type: string
+      swap_size:
+        description: 'Swap file size in GB'
+        required: true
+        default: '16'
+        type: string
+
+  # Automatic trigger on push to master branch
   push:
     branches:
       - master
@@ -14,22 +37,35 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      - name: Dynamic Memory Allocation (Swap)
+        uses: pierotofy/set-swap-space@master
+        with:
+          # Uses the input value from GitHub UI, or falls back to '16'
+          swap-size-gb: ${{ inputs.swap_size || '16' }}
+
       - name: Install Dependencies
         run: |
           sudo apt update
           sudo apt install -y clang lld llvm git make gcc flex bison bc libssl-dev ccache libncurses5-dev libncursesw5-dev cmake python3 python-is-python3 cpio
+          
       - name: Build Project
         run: | 
           git config --global user.email "you@example.com"
           git config --global user.name "wannq-github"
           
+          # Set the kernel suffix (uname)
+          export LOCALVERSION="${{ inputs.localversion || '-palaziks' }}"
+          
           chmod +x ./build.sh
-          ./build.sh all venus
+          # Build for the selected device (falls back to 'star' if triggered automatically)
+          ./build.sh all ${{ inputs.device_name || 'star' }}
+
       - name: Compress
         run: tar -czvf build.tar.gz ../out/anykernel/*.zip
+
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: build
+          name: Kernel-${{ inputs.device_name || 'star' }}
           path: build.tar.gz
           
