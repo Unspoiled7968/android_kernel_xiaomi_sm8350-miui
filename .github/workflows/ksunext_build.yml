@@ -50,7 +50,6 @@ jobs:
       - name: Integrate KernelSU Next
         run: |
           set -e
-
           echo "=== Cloning KernelSU Next ==="
           git clone --depth=1 https://github.com/rifsxd/KernelSU-Next.git KernelSU
 
@@ -67,108 +66,74 @@ jobs:
 
       - name: Apply KSU Manual Hooks
         run: |
-          set -e
+          python3 << 'EOF'
+          import sys
 
-          # fs/exec.c — hook in __do_execve_file right after opening brace
-          if ! grep -q "ksu_handle_execveat" fs/exec.c; then
-            patch -p1 << 'PATCH'
---- a/fs/exec.c
-+++ b/fs/exec.c
-@@ -1751,6 +1751,11 @@ static int __do_execve_file(int fd, struct filename *filename,
- 			    int flags, struct file *file)
- {
- 	char *pathbuf = NULL;
-+#ifdef CONFIG_KSU
-+	extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
-+				       void *argv, void *envp, int *flags);
-+	ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
-+#endif
- 	struct linux_binprm *bprm;
- 	struct files_struct *displaced;
- 	int retval;
-PATCH
-            echo "exec.c hook applied"
-          else
-            echo "exec.c hook already present"
-          fi
+          def insert_after(filepath, search, insertion):
+              with open(filepath, 'r') as f:
+                  content = f.read()
+              if 'ksu_handle' in content:
+                  print(f'{filepath}: hook already present, skipping')
+                  return
+              if search not in content:
+                  print(f'ERROR: anchor not found in {filepath}:', repr(search))
+                  sys.exit(1)
+              content = content.replace(search, search + insertion, 1)
+              with open(filepath, 'w') as f:
+                  f.write(content)
+              print(f'{filepath}: hook applied')
 
-          # fs/open.c — hook in do_faccessat after opening brace
-          if ! grep -q "ksu_handle_faccessat" fs/open.c; then
-            patch -p1 << 'PATCH'
---- a/fs/open.c
-+++ b/fs/open.c
-@@ -349,6 +349,11 @@ long do_faccessat(int dfd, const char __user *filename, int mode)
- {
- 	const struct cred *old_cred;
- 	struct cred *override_cred;
-+#ifdef CONFIG_KSU
-+	extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,
-+					int *mode, int *flags);
-+	ksu_handle_faccessat(&dfd, &filename, &mode, NULL);
-+#endif
- 	struct path path;
- 	struct inode *inode;
- 	int res;
-PATCH
-            echo "open.c hook applied"
-          else
-            echo "open.c hook already present"
-          fi
+          # fs/exec.c — insert after "char *pathbuf = NULL;" in __do_execve_file
+          insert_after(
+              'fs/exec.c',
+              '\tchar *pathbuf = NULL;\n',
+              '#ifdef CONFIG_KSU\n'
+              '\textern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,\n'
+              '\t\t\t\t       void *argv, void *envp, int *flags);\n'
+              '\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n'
+              '#endif\n'
+          )
 
-          # fs/read_write.c — hook in vfs_read after opening brace
-          if ! grep -q "ksu_handle_vfs_read" fs/read_write.c; then
-            patch -p1 << 'PATCH'
---- a/fs/read_write.c
-+++ b/fs/read_write.c
-@@ -448,6 +448,11 @@ ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
- {
- 	ssize_t ret;
- 
-+#ifdef CONFIG_KSU
-+	extern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,
-+				       size_t *count_ptr, loff_t **pos);
-+	ksu_handle_vfs_read(&file, &buf, &count, &pos);
-+#endif
-+
- 	if (!(file->f_mode & FMODE_READ))
- 		return -EBADF;
- 	if (!(file->f_mode & FMODE_CAN_READ))
-PATCH
-            echo "read_write.c hook applied"
-          else
-            echo "read_write.c hook already present"
-          fi
+          # fs/open.c — insert after "struct cred *override_cred;" in do_faccessat
+          insert_after(
+              'fs/open.c',
+              '\tconst struct cred *old_cred;\n\tstruct cred *override_cred;\n',
+              '#ifdef CONFIG_KSU\n'
+              '\textern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,\n'
+              '\t\t\t\t\tint *mode, int *flags);\n'
+              '\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n'
+              '#endif\n'
+          )
 
-          # fs/stat.c — hook in vfs_statx after opening brace
-          if ! grep -q "ksu_handle_stat" fs/stat.c; then
-            patch -p1 << 'PATCH'
---- a/fs/stat.c
-+++ b/fs/stat.c
-@@ -171,6 +171,11 @@ int vfs_statx(int dfd, const char __user *filename, int flags,
- {
- 	struct path path;
- 	int error = -EINVAL;
-+#ifdef CONFIG_KSU
-+	extern int ksu_handle_stat(int *dfd, const char __user **filename_user,
-+				   int *flags);
-+	ksu_handle_stat(&dfd, &filename, &flags);
-+#endif
- 	unsigned int lookup_flags = LOOKUP_FOLLOW | LOOKUP_AUTOMOUNT;
- 
- 	if ((flags & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT |
-PATCH
-            echo "stat.c hook applied"
-          else
-            echo "stat.c hook already present"
-          fi
+          # fs/read_write.c — insert after "ssize_t ret;" in vfs_read
+          insert_after(
+              'fs/read_write.c',
+              'ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)\n{\n\tssize_t ret;\n',
+              '#ifdef CONFIG_KSU\n'
+              '\textern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,\n'
+              '\t\t\t\t       size_t *count_ptr, loff_t **pos);\n'
+              '\tksu_handle_vfs_read(&file, &buf, &count, &pos);\n'
+              '#endif\n'
+          )
 
-          echo "=== Verify all hooks ==="
+          # fs/stat.c — insert after "int error = -EINVAL;" in vfs_statx
+          insert_after(
+              'fs/stat.c',
+              '\tint error = -EINVAL;\n',
+              '#ifdef CONFIG_KSU\n'
+              '\textern int ksu_handle_stat(int *dfd, const char __user **filename_user,\n'
+              '\t\t\t\t   int *flags);\n'
+              '\tksu_handle_stat(&dfd, &filename, &flags);\n'
+              '#endif\n'
+          )
+          EOF
+
+          echo "=== Verify hooks ==="
           grep -n "ksu_handle" fs/exec.c fs/open.c fs/read_write.c fs/stat.c
 
       - name: Integrate SuSFS
         run: |
           set -e
-
           echo "=== Cloning SuSFS kernel-5.4 ==="
           git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 ../susfs4ksu
           SUSFS_DIR="$(pwd)/../susfs4ksu"
@@ -177,7 +142,7 @@ PATCH
           cd KernelSU/kernel/
           patch -p1 < "$SUSFS_DIR/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" \
             && echo "KSU susfs patch applied" \
-            || echo "KSU susfs patch skipped (already applied or failed)"
+            || echo "KSU susfs patch skipped"
           cd ../../
 
           echo "=== Apply SuSFS patch to kernel tree ==="
