@@ -19,7 +19,7 @@ TARGET_CC=clang;
 TRAGET_CLANG_TRIPLE=aarch64-linux-gnu-;
 
 source /etc/os-release
-if [ $ID == "opensuse-tumbleweed" ]; then
+if [ "$ID" == "opensuse-tumbleweed" ]; then
 TARGET_CROSS_COMPILE=aarch64-suse-linux-;
 TARGET_CROSS_COMPILE_COMPAT=arm-suse-linux-gnueabi-;
 else
@@ -36,7 +36,7 @@ CC_GCC_ADDITIONAL_FLAGS="";
 TARGET_KERNEL_FILE=arch/arm64/boot/Image;
 TARGET_KERNEL_DTB=arch/arm64/boot/dtb;
 TARGET_KERNEL_DTBO=arch/arm64/boot/dtbo.img
-TARGET_KERNEL_NAME=Hana-kernel;
+TARGET_KERNEL_NAME=universe-kernel;
 TARGET_KERNEL_MOD_VERSION=$(make kernelversion)
 
 ANYKERNEL_PATH=anykernel
@@ -85,7 +85,7 @@ generate_flashable(){
 
     FLASHABLE_KERNEL_NAME="${TARGET_KERNEL_NAME}-${TARGET_DEVICE}-${CURRENT_TIME}-${TARGET_KERNEL_MOD_VERSION}"
 
-    if [ $WITH_GCC == "1" ]; then
+    if [ "$WITH_GCC" == "1" ]; then
         FLASHABLE_KERNEL_NAME+="-gcc"
     fi
 
@@ -93,6 +93,7 @@ generate_flashable(){
     rm -rf $TARGET_OUT/$ANYKERNEL_PATH;
 
     echo ' Getting AnyKernel ';
+    # Убедись, что в твоем репозитории есть папка scripts/ak3 с файлами AnyKernel3!
     cp -r ./scripts/ak3 $TARGET_OUT/$ANYKERNEL_PATH
 
     cd $TARGET_OUT;
@@ -152,6 +153,7 @@ display_help() {
         echo
         echo "Devices:"
         echo "    star            Xiaomi Mi 11 Ultra"
+        echo "    venus           Xiaomi Mi 11"
         echo "    renoir          Xiaomi Mi 11 Lite 5G"
         echo
         echo "With GCC:"
@@ -161,7 +163,7 @@ display_help() {
 }
 
 main(){
-    if [ $2 ]; then
+    if [ "$2" ]; then
         echo "Building for ${2}"
     else
         echo "Missing device. Please check usage"
@@ -179,58 +181,56 @@ main(){
                              -j$THREAD \
                              O=$TARGET_OUT";
     else
-        echo $3
         echo "Building with clang"
         FINAL_KERNEL_BUILD_PARA="ARCH=$TARGET_ARCH \
                          CC=$TARGET_CC \
                          CROSS_COMPILE=$TARGET_CROSS_COMPILE \
                          CROSS_COMPILE_COMPAT=$TARGET_CROSS_COMPILE_COMPAT \
-                         CLANG_TRIPLE=$TARGET_CLANG_TRIPLE \
+                         CLANG_TRIPLE=$TRAGET_CLANG_TRIPLE \
                          $CC_ADDITIONAL_FLAGS \
                          -j$THREAD \
                          O=$TARGET_OUT";
     fi
     TARGET_DEVICE=$2
-    if [ $WITH_GCC == "1" ]; then
-        DEFCONFIG_NAME="vendor/${TARGET_DEVICE}_gcc_defconfig";
-    else
-        DEFCONFIG_NAME="vendor/${TARGET_DEVICE}_defconfig";
+    
+    # ИСПРАВЛЕНИЕ: Глобально задаем QGKI фрагменты вместо одного файла
+    DEFCONFIG_NAME="vendor/lahaina-qgki_defconfig vendor/lahaina_QGKI.config vendor/xiaomi_QGKI.config vendor/${TARGET_DEVICE}_QGKI.config"
+    
+    if [ "$WITH_GCC" == "1" ]; then
+        DEFCONFIG_NAME+=" vendor/with_gcc.config"
     fi
-    if [ $1 == "help" -o $1 == "-h" ]
+
+    if [ "$1" == "help" ] || [ "$1" == "-h" ]
     then
         display_help
-    elif [ $1 == "savedefconfig" ]
+    elif [ "$1" == "savedefconfig" ]
     then
        save_defconfig;
-    elif [ $1 == "cleanbuild" ]
+    elif [ "$1" == "cleanbuild" ]
     then
         clean;
         make_defconfig;
         build_kernel;
         link_all_dtb_files;
         generate_flashable;
-    elif [ $1 == "flashable" ]
+    elif [ "$1" == "flashable" ]
     then
         link_all_dtb_files
         generate_flashable;
-    elif [ $1 == "kernelonly" ]
+    elif [ "$1" == "kernelonly" ]
     then
         make_defconfig
         build_kernel
-    elif [ $1 == "all" ]
+    elif [ "$1" == "all" ]
     then
         make_defconfig
         build_kernel
         link_all_dtb_files
         generate_flashable
-    elif [ $1 == "defconfig" ]
+    elif [ "$1" == "defconfig" ]
     then
-        DEFCONFIG_NAME="vendor/lahaina-qgki_defconfig vendor/xiaomi_QGKI.config vendor/${TARGET_DEVICE}_QGKI.config vendor/debugfs.config"
-        if [ $WITH_GCC == "1" ]; then
-            DEFCONFIG_NAME+=" vendor/with_gcc.config"
-        fi
         make_defconfig;
-    elif [ $1 == "menuconfig" ]
+    elif [ "$1" == "menuconfig" ]
     then
         menu_config;
     else
