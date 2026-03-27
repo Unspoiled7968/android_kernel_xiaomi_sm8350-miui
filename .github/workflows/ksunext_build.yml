@@ -65,6 +65,106 @@ jobs:
           grep -q "kernelsu" drivers/Kconfig || \
             sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
 
+      - name: Apply KSU Manual Hooks
+        run: |
+          set -e
+
+          # fs/exec.c — hook in __do_execve_file right after opening brace
+          if ! grep -q "ksu_handle_execveat" fs/exec.c; then
+            patch -p1 << 'PATCH'
+--- a/fs/exec.c
++++ b/fs/exec.c
+@@ -1751,6 +1751,11 @@ static int __do_execve_file(int fd, struct filename *filename,
+ 			    int flags, struct file *file)
+ {
+ 	char *pathbuf = NULL;
++#ifdef CONFIG_KSU
++	extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
++				       void *argv, void *envp, int *flags);
++	ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
++#endif
+ 	struct linux_binprm *bprm;
+ 	struct files_struct *displaced;
+ 	int retval;
+PATCH
+            echo "exec.c hook applied"
+          else
+            echo "exec.c hook already present"
+          fi
+
+          # fs/open.c — hook in do_faccessat after opening brace
+          if ! grep -q "ksu_handle_faccessat" fs/open.c; then
+            patch -p1 << 'PATCH'
+--- a/fs/open.c
++++ b/fs/open.c
+@@ -349,6 +349,11 @@ long do_faccessat(int dfd, const char __user *filename, int mode)
+ {
+ 	const struct cred *old_cred;
+ 	struct cred *override_cred;
++#ifdef CONFIG_KSU
++	extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,
++					int *mode, int *flags);
++	ksu_handle_faccessat(&dfd, &filename, &mode, NULL);
++#endif
+ 	struct path path;
+ 	struct inode *inode;
+ 	int res;
+PATCH
+            echo "open.c hook applied"
+          else
+            echo "open.c hook already present"
+          fi
+
+          # fs/read_write.c — hook in vfs_read after opening brace
+          if ! grep -q "ksu_handle_vfs_read" fs/read_write.c; then
+            patch -p1 << 'PATCH'
+--- a/fs/read_write.c
++++ b/fs/read_write.c
+@@ -448,6 +448,11 @@ ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
+ {
+ 	ssize_t ret;
+ 
++#ifdef CONFIG_KSU
++	extern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,
++				       size_t *count_ptr, loff_t **pos);
++	ksu_handle_vfs_read(&file, &buf, &count, &pos);
++#endif
++
+ 	if (!(file->f_mode & FMODE_READ))
+ 		return -EBADF;
+ 	if (!(file->f_mode & FMODE_CAN_READ))
+PATCH
+            echo "read_write.c hook applied"
+          else
+            echo "read_write.c hook already present"
+          fi
+
+          # fs/stat.c — hook in vfs_statx after opening brace
+          if ! grep -q "ksu_handle_stat" fs/stat.c; then
+            patch -p1 << 'PATCH'
+--- a/fs/stat.c
++++ b/fs/stat.c
+@@ -171,6 +171,11 @@ int vfs_statx(int dfd, const char __user *filename, int flags,
+ {
+ 	struct path path;
+ 	int error = -EINVAL;
++#ifdef CONFIG_KSU
++	extern int ksu_handle_stat(int *dfd, const char __user **filename_user,
++				   int *flags);
++	ksu_handle_stat(&dfd, &filename, &flags);
++#endif
+ 	unsigned int lookup_flags = LOOKUP_FOLLOW | LOOKUP_AUTOMOUNT;
+ 
+ 	if ((flags & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT |
+PATCH
+            echo "stat.c hook applied"
+          else
+            echo "stat.c hook already present"
+          fi
+
+          echo "=== Verify all hooks ==="
+          grep -n "ksu_handle" fs/exec.c fs/open.c fs/read_write.c fs/stat.c
+
       - name: Integrate SuSFS
         run: |
           set -e
@@ -76,12 +176,14 @@ jobs:
           echo "=== Apply SuSFS patch to KernelSU Next ==="
           cd KernelSU/kernel/
           patch -p1 < "$SUSFS_DIR/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" \
-            && echo "KSU susfs patch applied" || echo "KSU susfs patch skipped (already applied or failed)"
+            && echo "KSU susfs patch applied" \
+            || echo "KSU susfs patch skipped (already applied or failed)"
           cd ../../
 
           echo "=== Apply SuSFS patch to kernel tree ==="
           patch -p1 < "$SUSFS_DIR/kernel_patches/50_add_susfs_in_kernel-5.4.patch" \
-            && echo "Kernel susfs patch applied" || echo "Kernel susfs patch had errors (continuing)"
+            && echo "Kernel susfs patch applied" \
+            || echo "Kernel susfs patch had errors (continuing)"
 
           echo "=== Copy SuSFS source files ==="
           cp -v "$SUSFS_DIR/kernel_patches/fs/susfs.c"               fs/
@@ -109,112 +211,10 @@ jobs:
           grep -q "linux/susfs.h" fs/proc/fd.c || \
             sed -i '1s/^/#include <linux\/susfs.h>\n/' fs/proc/fd.c
 
-          echo "=== Fix 4: TWA_RESUME compat in allowlist.c ==="
+          echo "=== Fix 4: TWA_RESUME compat + put_task_struct header ==="
           sed -i 's/TWA_RESUME/true/g' KernelSU/kernel/allowlist.c 2>/dev/null || true
           grep -q "linux/sched/task.h" KernelSU/kernel/allowlist.c || \
             sed -i '1s/^/#include <linux\/sched\/task.h>\n/' KernelSU/kernel/allowlist.c
-
-      - name: Apply KSU Manual Hooks
-        run: |
-          set -e
-
-          # -------------------------------------------------------
-          # fs/exec.c
-          # Hook goes into __do_execve_file, right after the opening
-          # brace (line ~1747). The real exec path lives here, not in
-          # do_execveat_common which is just a one-line wrapper.
-          # -------------------------------------------------------
-          if ! grep -q "ksu_handle_execveat" fs/exec.c; then
-            sed -i 's/static int __do_execve_file(int fd, struct filename \*filename,/\
-#ifdef CONFIG_KSU\
-extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\
-#endif\
-static int __do_execve_file(int fd, struct filename *filename,/' fs/exec.c
-
-            # Insert the call right after the opening brace of __do_execve_file
-            sed -i '/^static int __do_execve_file(int fd, struct filename \*filename,/{
-              :loop
-              n
-              /^{/{
-                a \\
-#ifdef CONFIG_KSU\
-\tksu_handle_execveat(\&fd, \&filename, argv, envp, \&flags);\
-#endif
-                b
-              }
-              b loop
-            }' fs/exec.c
-            echo "exec.c hook applied"
-          else
-            echo "exec.c hook already present"
-          fi
-
-          # -------------------------------------------------------
-          # fs/open.c
-          # long do_faccessat(int dfd, const char __user *filename, int mode)
-          # Insert call after opening brace
-          # -------------------------------------------------------
-          if ! grep -q "ksu_handle_faccessat" fs/open.c; then
-            sed -i '/^long do_faccessat(int dfd, const char __user \*filename, int mode)/{
-              n
-              /^{/a \\
-#ifdef CONFIG_KSU\
-\textern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\
-\tksu_handle_faccessat(\&dfd, \&filename, \&mode, NULL);\
-#endif
-            }' fs/open.c
-            echo "open.c hook applied"
-          else
-            echo "open.c hook already present"
-          fi
-
-          # -------------------------------------------------------
-          # fs/read_write.c
-          # ssize_t vfs_read(struct file *file, char __user *buf,
-          #                  size_t count, loff_t *pos)
-          # Insert call after opening brace, before first ret check
-          # -------------------------------------------------------
-          if ! grep -q "ksu_handle_vfs_read" fs/read_write.c; then
-            sed -i '/^ssize_t vfs_read(struct file \*file, char __user \*buf, size_t count, loff_t \*pos)/{
-              n
-              /^{/a \\
-#ifdef CONFIG_KSU\
-\textern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr, size_t *count_ptr, loff_t **pos);\
-\tksu_handle_vfs_read(\&file, \&buf, \&count, \&pos);\
-#endif
-            }' fs/read_write.c
-            echo "read_write.c hook applied"
-          else
-            echo "read_write.c hook already present"
-          fi
-
-          # -------------------------------------------------------
-          # fs/stat.c
-          # int vfs_statx(int dfd, const char __user *filename, int flags,
-          #               struct kstat *stat, u32 request_mask)
-          # Note: param is 'flags' not 'flag'
-          # -------------------------------------------------------
-          if ! grep -q "ksu_handle_stat" fs/stat.c; then
-            sed -i '/^int vfs_statx(int dfd, const char __user \*filename, int flags,/{
-              :loop
-              n
-              /^{/{
-                a \\
-#ifdef CONFIG_KSU\
-\textern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\
-\tksu_handle_stat(\&dfd, \&filename, \&flags);\
-#endif
-                b
-              }
-              b loop
-            }' fs/stat.c
-            echo "stat.c hook applied"
-          else
-            echo "stat.c hook already present"
-          fi
-
-          echo "=== Verify hooks ==="
-          grep -n "ksu_handle" fs/exec.c fs/open.c fs/read_write.c fs/stat.c
 
       - name: Append KSU + SuSFS flags to defconfig
         run: |
@@ -227,21 +227,20 @@ static int __do_execve_file(int fd, struct filename *filename,/' fs/exec.c
           fi
           echo "Using defconfig: $DEFCONFIG"
 
-          # Append only flags that aren't already set
           for FLAG in \
-            CONFIG_KSU=y \
-            CONFIG_KSU_DEBUG=n \
-            CONFIG_KSU_SUSFS=y \
-            CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y \
-            CONFIG_KSU_SUSFS_SUS_MOUNT=y \
-            CONFIG_KSU_SUSFS_SPOOF_UNAME=y \
-            CONFIG_KSU_SUSFS_ENABLE_LOG=y \
-            CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y; do
+            "CONFIG_KSU=y" \
+            "CONFIG_KSU_DEBUG=n" \
+            "CONFIG_KSU_SUSFS=y" \
+            "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" \
+            "CONFIG_KSU_SUSFS_SUS_MOUNT=y" \
+            "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" \
+            "CONFIG_KSU_SUSFS_ENABLE_LOG=y" \
+            "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y"; do
             KEY=$(echo "$FLAG" | cut -d= -f1)
-            grep -q "^${KEY}=" "$DEFCONFIG" || echo "$FLAG" >> "$DEFCONFIG"
+            grep -q "^${KEY}[=\ ]" "$DEFCONFIG" || echo "$FLAG" >> "$DEFCONFIG"
           done
 
-          echo "=== Final KSU flags in defconfig ==="
+          echo "=== KSU flags in defconfig ==="
           grep "KSU" "$DEFCONFIG"
 
       - name: Build Project
@@ -256,7 +255,7 @@ static int __do_execve_file(int fd, struct filename *filename,/' fs/exec.c
 
           if [ ! -f arch/arm64/boot/Image ]; then
             echo ""
-            echo "=== BUILD FAILED — relevant errors ==="
+            echo "=== BUILD FAILED — last errors ==="
             grep -E "error:|undefined reference|FAILED|hunk FAILED" /tmp/kbuild.log | tail -50
             exit 1
           fi
