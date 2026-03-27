@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - master
+      - ASB-2024-10-05
 
 jobs:
   build:
@@ -13,12 +13,15 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v3
+        with:
+          ref: ASB-2024-10-05
+          fetch-depth: 0
 
       - name: Remove old KSU
-        run: | 
+        run: |
           git config --global user.email "you@example.com"
-          git config --global user.name "wannq-github"
-          rm -rf KernelSU
-          git add .
+          git config --global user.name "you-github"
+          git rm -r KernelSU || rm -rf KernelSU
           git commit -m "Remove old KSU"
-          git push origin
+          git pull --rebase origin ASB-2024-10-05
+          git push origin ASB-2024-10-05
