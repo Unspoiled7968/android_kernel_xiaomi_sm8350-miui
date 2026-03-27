@@ -50,11 +50,12 @@ jobs:
       - name: Integrate KernelSU Next
         run: |
           set -e
+
           echo "=== Cloning KernelSU Next ==="
           git clone --depth=1 https://github.com/rifsxd/KernelSU-Next.git KernelSU
 
-          echo "=== Symlink KernelSU into drivers ==="
-          ln -sf ../../KernelSU/kernel drivers/kernelsu
+          echo "=== Symlink KernelSU into drivers (absolute path) ==="
+          ln -sf "$(pwd)/KernelSU/kernel" drivers/kernelsu
 
           echo "=== Wire into drivers/Makefile ==="
           grep -q "kernelsu" drivers/Makefile || \
@@ -63,6 +64,9 @@ jobs:
           echo "=== Wire into drivers/Kconfig ==="
           grep -q "kernelsu" drivers/Kconfig || \
             sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+
+          echo "=== Verify symlink ==="
+          ls -la drivers/kernelsu/Kconfig
 
       - name: Apply KSU Manual Hooks
         run: |
@@ -134,16 +138,12 @@ jobs:
       - name: Integrate SuSFS
         run: |
           set -e
+
           echo "=== Cloning SuSFS kernel-5.4 ==="
           git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 ../susfs4ksu
           SUSFS_DIR="$(pwd)/../susfs4ksu"
 
-          echo "=== Apply SuSFS patch to KernelSU Next ==="
-          cd KernelSU/kernel/
-          patch -p1 < "$SUSFS_DIR/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" \
-            && echo "KSU susfs patch applied" \
-            || echo "KSU susfs patch skipped"
-          cd ../../
+          # KernelSU Next уже включает SUSFS нативно — патч на KSU не применяем
 
           echo "=== Apply SuSFS patch to kernel tree ==="
           patch -p1 < "$SUSFS_DIR/kernel_patches/50_add_susfs_in_kernel-5.4.patch" \
