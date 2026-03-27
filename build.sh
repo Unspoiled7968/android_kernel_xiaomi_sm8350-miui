@@ -72,10 +72,24 @@ build_kernel(){
     echo "------------------------------";
 
     make $FINAL_KERNEL_BUILD_PARA;
+    
+    echo "------------------------------";
+    echo " Building Modules ..........";
+    echo "------------------------------";
+    
+    make $FINAL_KERNEL_BUILD_PARA modules;
+
+    echo "------------------------------";
+    echo " Installing Modules ........";
+    echo "------------------------------";
+    
+    rm -rf $TARGET_OUT/module_out
+    mkdir -p $TARGET_OUT/module_out
+    make $FINAL_KERNEL_BUILD_PARA INSTALL_MOD_PATH=$TARGET_OUT/module_out INSTALL_MOD_STRIP=1 modules_install;
+
     END_SEC=$(date +%s);
     COST_SEC=$[ $END_SEC-$START_SEC ];
     echo "Kernel Build Costed $(($COST_SEC/60))min $(($COST_SEC%60))s"
-
 }
 
 generate_flashable(){
@@ -104,6 +118,14 @@ generate_flashable(){
     cp -r $TARGET_KERNEL_FILE $ANYKERNEL_PATH/;
     # cp -r $TARGET_KERNEL_DTB $ANYKERNEL_PATH/;
     # cp -r $TARGET_KERNEL_DTBO $ANYKERNEL_PATH/;
+
+    echo ' Copying Modules to AnyKernel3 ';
+    if [ -d "$TARGET_OUT/module_out/lib/modules" ]; then
+        mkdir -p $ANYKERNEL_PATH/modules/vendor/lib
+        cp -r $TARGET_OUT/module_out/lib/modules $ANYKERNEL_PATH/modules/vendor/lib/
+    else
+        echo " WARNING: No modules found to copy!"
+    fi
 
     echo ' Packaging flashable Kernel ';
     cd $ANYKERNEL_PATH;
