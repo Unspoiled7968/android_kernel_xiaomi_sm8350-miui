@@ -83,7 +83,8 @@ static int get_powerup_reason(char *buf)
 		return -EINVAL;
 	}
 	if (kstrtou32(buf, 16, &pu_reason)) {
-    pr_err("bootinfo: failed to parse pu_reason\n");
+		pr_err("bootinfo: failed to parse pu_reason\n");
+	}
 	return 0;
 }
 
@@ -94,7 +95,8 @@ static int get_powerdown_reason(char *buf)
 		return -EINVAL;
 	}
 	if (kstrtou32(buf, 16, &pd_reason)) {
-    pr_err("bootinfo: failed to parse pd_reason\n");
+		pr_err("bootinfo: failed to parse pd_reason\n");
+	}
 	return 0;
 }
 
