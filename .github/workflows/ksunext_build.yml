@@ -1,0 +1,272 @@
+name: Build KernelSU Next + SuSFS Kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      device_name:
+        description: 'Select the target device'
+        required: true
+        default: 'star'
+        type: choice
+        options:
+          - star
+          - mars
+          - venus
+      localversion:
+        description: 'Custom text to append to kernel version (uname)'
+        required: true
+        default: '-palaziks'
+        type: string
+      swap_size:
+        description: 'Swap file size in GB'
+        required: true
+        default: '16'
+        type: string
+
+  push:
+    branches:
+      - master
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Dynamic Memory Allocation (Swap)
+        uses: pierotofy/set-swap-space@master
+        with:
+          swap-size-gb: ${{ inputs.swap_size || '16' }}
+
+      - name: Install Dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y clang lld llvm git make gcc flex bison bc \
+            libssl-dev ccache libncurses5-dev libncursesw5-dev cmake \
+            python3 python-is-python3 cpio curl patch
+
+      - name: Integrate KernelSU Next
+        run: |
+          set -e
+
+          echo "=== Cloning KernelSU Next ==="
+          git clone --depth=1 https://github.com/rifsxd/KernelSU-Next.git KernelSU
+
+          echo "=== Symlink KernelSU into drivers ==="
+          ln -sf ../../KernelSU/kernel drivers/kernelsu
+
+          echo "=== Wire into drivers/Makefile ==="
+          grep -q "kernelsu" drivers/Makefile || \
+            echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
+
+          echo "=== Wire into drivers/Kconfig ==="
+          grep -q "kernelsu" drivers/Kconfig || \
+            sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+
+      - name: Integrate SuSFS
+        run: |
+          set -e
+
+          echo "=== Cloning SuSFS kernel-5.4 ==="
+          git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 ../susfs4ksu
+          SUSFS_DIR="$(pwd)/../susfs4ksu"
+
+          echo "=== Apply SuSFS patch to KernelSU Next ==="
+          cd KernelSU/kernel/
+          patch -p1 < "$SUSFS_DIR/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" \
+            && echo "KSU susfs patch applied" || echo "KSU susfs patch skipped (already applied or failed)"
+          cd ../../
+
+          echo "=== Apply SuSFS patch to kernel tree ==="
+          patch -p1 < "$SUSFS_DIR/kernel_patches/50_add_susfs_in_kernel-5.4.patch" \
+            && echo "Kernel susfs patch applied" || echo "Kernel susfs patch had errors (continuing)"
+
+          echo "=== Copy SuSFS source files ==="
+          cp -v "$SUSFS_DIR/kernel_patches/fs/susfs.c"               fs/
+          cp -v "$SUSFS_DIR/kernel_patches/include/linux/susfs.h"     include/linux/
+          cp -v "$SUSFS_DIR/kernel_patches/include/linux/susfs_def.h" include/linux/
+
+          echo "=== Register susfs.o in fs/Makefile ==="
+          grep -q "susfs.o" fs/Makefile || echo "obj-y += susfs.o" >> fs/Makefile
+
+      - name: Apply Manual Fixes for MIUI 5.4 QGKI
+        run: |
+          set -e
+
+          echo "=== Fix 1: susfs_mnt_id_backup in mount.h ==="
+          grep -q "susfs_mnt_id_backup" include/linux/mount.h || \
+            sed -i '/struct vfsmount {/a \\tu64 susfs_mnt_id_backup;' include/linux/mount.h
+
+          echo "=== Fix 2: forward-declare struct kstat in susfs.h ==="
+          grep -q "^struct kstat;" include/linux/susfs.h || \
+            sed -i '1s/^/struct kstat;\n/' include/linux/susfs.h
+
+          echo "=== Fix 3: add missing susfs.h includes ==="
+          grep -q "linux/susfs.h" fs/proc/task_mmu.c || \
+            sed -i '1s/^/#include <linux\/susfs.h>\n/' fs/proc/task_mmu.c
+          grep -q "linux/susfs.h" fs/proc/fd.c || \
+            sed -i '1s/^/#include <linux\/susfs.h>\n/' fs/proc/fd.c
+
+          echo "=== Fix 4: TWA_RESUME compat in allowlist.c ==="
+          sed -i 's/TWA_RESUME/true/g' KernelSU/kernel/allowlist.c 2>/dev/null || true
+          grep -q "linux/sched/task.h" KernelSU/kernel/allowlist.c || \
+            sed -i '1s/^/#include <linux\/sched\/task.h>\n/' KernelSU/kernel/allowlist.c
+
+      - name: Apply KSU Manual Hooks
+        run: |
+          set -e
+
+          # -------------------------------------------------------
+          # fs/exec.c
+          # Hook goes into __do_execve_file, right after the opening
+          # brace (line ~1747). The real exec path lives here, not in
+          # do_execveat_common which is just a one-line wrapper.
+          # -------------------------------------------------------
+          if ! grep -q "ksu_handle_execveat" fs/exec.c; then
+            sed -i 's/static int __do_execve_file(int fd, struct filename \*filename,/\
+#ifdef CONFIG_KSU\
+extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\
+#endif\
+static int __do_execve_file(int fd, struct filename *filename,/' fs/exec.c
+
+            # Insert the call right after the opening brace of __do_execve_file
+            sed -i '/^static int __do_execve_file(int fd, struct filename \*filename,/{
+              :loop
+              n
+              /^{/{
+                a \\
+#ifdef CONFIG_KSU\
+\tksu_handle_execveat(\&fd, \&filename, argv, envp, \&flags);\
+#endif
+                b
+              }
+              b loop
+            }' fs/exec.c
+            echo "exec.c hook applied"
+          else
+            echo "exec.c hook already present"
+          fi
+
+          # -------------------------------------------------------
+          # fs/open.c
+          # long do_faccessat(int dfd, const char __user *filename, int mode)
+          # Insert call after opening brace
+          # -------------------------------------------------------
+          if ! grep -q "ksu_handle_faccessat" fs/open.c; then
+            sed -i '/^long do_faccessat(int dfd, const char __user \*filename, int mode)/{
+              n
+              /^{/a \\
+#ifdef CONFIG_KSU\
+\textern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\
+\tksu_handle_faccessat(\&dfd, \&filename, \&mode, NULL);\
+#endif
+            }' fs/open.c
+            echo "open.c hook applied"
+          else
+            echo "open.c hook already present"
+          fi
+
+          # -------------------------------------------------------
+          # fs/read_write.c
+          # ssize_t vfs_read(struct file *file, char __user *buf,
+          #                  size_t count, loff_t *pos)
+          # Insert call after opening brace, before first ret check
+          # -------------------------------------------------------
+          if ! grep -q "ksu_handle_vfs_read" fs/read_write.c; then
+            sed -i '/^ssize_t vfs_read(struct file \*file, char __user \*buf, size_t count, loff_t \*pos)/{
+              n
+              /^{/a \\
+#ifdef CONFIG_KSU\
+\textern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr, size_t *count_ptr, loff_t **pos);\
+\tksu_handle_vfs_read(\&file, \&buf, \&count, \&pos);\
+#endif
+            }' fs/read_write.c
+            echo "read_write.c hook applied"
+          else
+            echo "read_write.c hook already present"
+          fi
+
+          # -------------------------------------------------------
+          # fs/stat.c
+          # int vfs_statx(int dfd, const char __user *filename, int flags,
+          #               struct kstat *stat, u32 request_mask)
+          # Note: param is 'flags' not 'flag'
+          # -------------------------------------------------------
+          if ! grep -q "ksu_handle_stat" fs/stat.c; then
+            sed -i '/^int vfs_statx(int dfd, const char __user \*filename, int flags,/{
+              :loop
+              n
+              /^{/{
+                a \\
+#ifdef CONFIG_KSU\
+\textern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\
+\tksu_handle_stat(\&dfd, \&filename, \&flags);\
+#endif
+                b
+              }
+              b loop
+            }' fs/stat.c
+            echo "stat.c hook applied"
+          else
+            echo "stat.c hook already present"
+          fi
+
+          echo "=== Verify hooks ==="
+          grep -n "ksu_handle" fs/exec.c fs/open.c fs/read_write.c fs/stat.c
+
+      - name: Append KSU + SuSFS flags to defconfig
+        run: |
+          set -e
+          DEVICE="${{ inputs.device_name || 'star' }}"
+          DEFCONFIG=$(find arch/arm64/configs -name "*${DEVICE}*defconfig" | head -n 1)
+          if [ -z "$DEFCONFIG" ]; then
+            echo "CRITICAL: defconfig not found for ${DEVICE}"
+            exit 1
+          fi
+          echo "Using defconfig: $DEFCONFIG"
+
+          # Append only flags that aren't already set
+          for FLAG in \
+            CONFIG_KSU=y \
+            CONFIG_KSU_DEBUG=n \
+            CONFIG_KSU_SUSFS=y \
+            CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y \
+            CONFIG_KSU_SUSFS_SUS_MOUNT=y \
+            CONFIG_KSU_SUSFS_SPOOF_UNAME=y \
+            CONFIG_KSU_SUSFS_ENABLE_LOG=y \
+            CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y; do
+            KEY=$(echo "$FLAG" | cut -d= -f1)
+            grep -q "^${KEY}=" "$DEFCONFIG" || echo "$FLAG" >> "$DEFCONFIG"
+          done
+
+          echo "=== Final KSU flags in defconfig ==="
+          grep "KSU" "$DEFCONFIG"
+
+      - name: Build Project
+        run: |
+          git config --global user.email "you@example.com"
+          git config --global user.name "wannq-github"
+
+          export LOCALVERSION="${{ inputs.localversion || '-palaziks' }}"
+
+          chmod +x ./build.sh
+          ./build.sh all ${{ inputs.device_name || 'star' }} 2>&1 | tee /tmp/kbuild.log
+
+          if [ ! -f arch/arm64/boot/Image ]; then
+            echo ""
+            echo "=== BUILD FAILED — relevant errors ==="
+            grep -E "error:|undefined reference|FAILED|hunk FAILED" /tmp/kbuild.log | tail -50
+            exit 1
+          fi
+          echo "=== Image built successfully ==="
+
+      - name: Compress
+        run: tar -czvf build.tar.gz ../out/anykernel/*.zip
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kernel-${{ inputs.device_name || 'star' }}-KSUN-SuSFS
+          path: build.tar.gz
