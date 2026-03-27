@@ -93,7 +93,6 @@ generate_flashable(){
     rm -rf $TARGET_OUT/$ANYKERNEL_PATH;
 
     echo ' Getting AnyKernel ';
-    # Убедись, что в твоем репозитории есть папка scripts/ak3 с файлами AnyKernel3!
     cp -r ./scripts/ak3 $TARGET_OUT/$ANYKERNEL_PATH
 
     cd $TARGET_OUT;
@@ -193,7 +192,6 @@ main(){
     fi
     TARGET_DEVICE=$2
     
-    # ИСПРАВЛЕНИЕ: Глобально задаем QGKI фрагменты вместо одного файла
     DEFCONFIG_NAME="vendor/lahaina-qgki_defconfig vendor/lahaina_QGKI.config vendor/xiaomi_QGKI.config vendor/${TARGET_DEVICE}_QGKI.config"
     
     if [ "$WITH_GCC" == "1" ]; then
