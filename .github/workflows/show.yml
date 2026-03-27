@@ -1,0 +1,82 @@
+name: Show Hook Locations
+
+on:
+  workflow_dispatch:
+
+jobs:
+  show:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Show fs/exec.c — do_execveat_common
+        run: |
+          echo "=== grep ==="
+          grep -n "do_execveat_common\|bprm_execve\|__do_execve_file" fs/exec.c | head -20
+          echo ""
+          echo "=== context around do_execveat_common ==="
+          grep -n "do_execveat_common" fs/exec.c | head -3 | while read line; do
+            lineno=$(echo "$line" | cut -d: -f1)
+            start=$((lineno - 2))
+            end=$((lineno + 20))
+            sed -n "${start},${end}p" fs/exec.c
+            echo "---"
+          done
+
+      - name: Show fs/open.c — do_faccessat
+        run: |
+          echo "=== grep ==="
+          grep -n "do_faccessat\|SYSCALL_DEFINE.*faccessat\|sys_access" fs/open.c | head -20
+          echo ""
+          echo "=== context around do_faccessat ==="
+          grep -n "do_faccessat" fs/open.c | head -3 | while read line; do
+            lineno=$(echo "$line" | cut -d: -f1)
+            start=$((lineno - 2))
+            end=$((lineno + 20))
+            sed -n "${start},${end}p" fs/open.c
+            echo "---"
+          done
+
+      - name: Show fs/read_write.c — vfs_read
+        run: |
+          echo "=== grep ==="
+          grep -n "^ssize_t vfs_read\|^ssize_t vfs_write\|^EXPORT_SYMBOL(vfs_read)" fs/read_write.c | head -20
+          echo ""
+          echo "=== context around vfs_read ==="
+          grep -n "^ssize_t vfs_read" fs/read_write.c | head -3 | while read line; do
+            lineno=$(echo "$line" | cut -d: -f1)
+            start=$((lineno - 2))
+            end=$((lineno + 20))
+            sed -n "${start},${end}p" fs/read_write.c
+            echo "---"
+          done
+
+      - name: Show fs/stat.c — vfs_statx / vfs_fstatat
+        run: |
+          echo "=== grep ==="
+          grep -n "^int vfs_statx\|^static int vfs_statx\|^int vfs_fstatat\|^int vfs_stat\b" fs/stat.c | head -20
+          echo ""
+          echo "=== context around vfs_statx ==="
+          grep -n "vfs_statx\|vfs_fstatat" fs/stat.c | head -3 | while read line; do
+            lineno=$(echo "$line" | cut -d: -f1)
+            start=$((lineno - 2))
+            end=$((lineno + 20))
+            sed -n "${start},${end}p" fs/stat.c
+            echo "---"
+          done
+
+      - name: Show drivers/Makefile and drivers/Kconfig tails
+        run: |
+          echo "=== drivers/Makefile (last 10 lines) ==="
+          tail -10 drivers/Makefile
+          echo ""
+          echo "=== drivers/Kconfig (last 10 lines) ==="
+          tail -10 drivers/Kconfig
+
+      - name: Show defconfig flags area
+        run: |
+          DEFCONFIG=$(find arch/arm64/configs -name "*star*defconfig" | head -n 1)
+          echo "Found: $DEFCONFIG"
+          tail -20 "$DEFCONFIG"
