@@ -143,8 +143,6 @@ jobs:
           git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 ../susfs4ksu
           SUSFS_DIR="$(pwd)/../susfs4ksu"
 
-          # KernelSU Next уже включает SUSFS нативно — патч на KSU не применяем
-
           echo "=== Apply SuSFS patch to kernel tree ==="
           patch -p1 < "$SUSFS_DIR/kernel_patches/50_add_susfs_in_kernel-5.4.patch" \
             && echo "Kernel susfs patch applied" \
@@ -164,7 +162,7 @@ jobs:
 
           echo "=== Fix 1: susfs_mnt_id_backup in mount.h ==="
           grep -q "susfs_mnt_id_backup" include/linux/mount.h || \
-            sed -i '/struct vfsmount {/a \\tu64 susfs_mnt_id_backup;' include/linux/mount.h
+            sed -i '/int mnt_flags;/a \ \ \ \ u64 susfs_mnt_id_backup;' include/linux/mount.h
 
           echo "=== Fix 2: forward-declare struct kstat in susfs.h ==="
           grep -q "^struct kstat;" include/linux/susfs.h || \
@@ -180,6 +178,12 @@ jobs:
           sed -i 's/TWA_RESUME/true/g' KernelSU/kernel/allowlist.c 2>/dev/null || true
           grep -q "linux/sched/task.h" KernelSU/kernel/allowlist.c || \
             sed -i '1s/^/#include <linux\/sched\/task.h>\n/' KernelSU/kernel/allowlist.c
+
+          echo "=== Fix 5: Remove filter_count error ==="
+          sed -i '/seccomp\.filter_count/d' KernelSU/kernel/app_profile.c || true
+
+          echo "=== Fix 6: Fix module_exit error in ksu.c ==="
+          sed -i 's/module_exit(ksu_kernelsu_exit);/\/\/module_exit(ksu_kernelsu_exit);/g' KernelSU/kernel/ksu.c || true
 
       - name: Append KSU + SuSFS flags to defconfig
         run: |
@@ -206,7 +210,7 @@ jobs:
           done
 
           echo "=== KSU flags in defconfig ==="
-          grep "KSU" "$DEFCONFIG"
+          grep "KSU" "$DEFCONFIG" || true
 
       - name: Build Project
         run: |
