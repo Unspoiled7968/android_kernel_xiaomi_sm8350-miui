@@ -26,7 +26,7 @@ jobs:
           chmod +x ./build.sh
           ./build.sh all venus
       - name: Compress
-        run: tar -czvf build.tar.gz ../out/anykernel/Mint*.zip
+        run: tar -czvf build.tar.gz ../out/anykernel/*.zip
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
