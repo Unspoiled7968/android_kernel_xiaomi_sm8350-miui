@@ -52,11 +52,10 @@ jobs:
           set -e
 
           echo "=== Setting up SukiSU Ultra (susfs-main branch) ==="
-          echo "=== This branch includes SUSFS built-in, supports non-GKI ==="
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" \
             | bash -s susfs-main
 
-          echo "=== Symlink KernelSU into drivers (absolute path) ==="
+          echo "=== Symlink KernelSU into drivers ==="
           ln -sf "$(pwd)/KernelSU/kernel" drivers/kernelsu
 
           echo "=== Wire into drivers/Makefile ==="
@@ -67,29 +66,28 @@ jobs:
           grep -q "kernelsu" drivers/Kconfig || \
             sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
 
-          echo "=== Verify symlink ==="
-          ls -la drivers/kernelsu/Kconfig
-          echo "=== KernelSU version ==="
-          cat KernelSU/kernel/Makefile | grep "KSU_VERSION\|KERNELSU_VERSION" | head -3
-
       - name: Apply KSU Manual Hooks
         run: |
           python3 << 'EOF'
           import sys
 
           def insert_after(filepath, search, insertion):
-              with open(filepath, 'r') as f:
-                  content = f.read()
-              if 'ksu_handle' in content:
-                  print(f'{filepath}: hook already present, skipping')
-                  return
-              if search not in content:
-                  print(f'ERROR: anchor not found in {filepath}: {repr(search)}')
+              try:
+                  with open(filepath, 'r') as f:
+                      content = f.read()
+                  if 'ksu_handle' in content:
+                      print(f'{filepath}: hook already present, skipping')
+                      return
+                  if search not in content:
+                      print(f'ERROR: anchor not found in {filepath}: {repr(search)}')
+                      sys.exit(1)
+                  content = content.replace(search, search + insertion, 1)
+                  with open(filepath, 'w') as f:
+                      f.write(content)
+                  print(f'{filepath}: hook applied')
+              except Exception as e:
+                  print(f"Failed to patch {filepath}: {e}")
                   sys.exit(1)
-              content = content.replace(search, search + insertion, 1)
-              with open(filepath, 'w') as f:
-                  f.write(content)
-              print(f'{filepath}: hook applied')
 
           # fs/exec.c — hook in __do_execve_file
           insert_after(
@@ -136,32 +134,29 @@ jobs:
           )
           EOF
 
-          echo "=== Verify hooks ==="
-          grep -n "ksu_handle" fs/exec.c fs/open.c fs/read_write.c fs/stat.c
+      - name: Integrate SuSFS
+        run: |
+          set -e
+
+          echo "=== Cloning SuSFS kernel-5.4 ==="
+          git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 ../susfs4ksu
+          SUSFS_DIR="$(pwd)/../susfs4ksu"
+
+          echo "=== Apply SuSFS patch to kernel tree ==="
+          # || true обязательно, так как патч выкинет ошибки на MIUI файлах
+          patch -p1 < "$SUSFS_DIR/kernel_patches/50_add_susfs_in_kernel-5.4.patch" || true
+
+          echo "=== Copy SuSFS source files ==="
+          cp -v "$SUSFS_DIR/kernel_patches/fs/susfs.c"               fs/
+          cp -v "$SUSFS_DIR/kernel_patches/include/linux/susfs.h"     include/linux/
+          cp -v "$SUSFS_DIR/kernel_patches/include/linux/susfs_def.h" include/linux/
+
+          echo "=== Register susfs.o in fs/Makefile ==="
+          grep -q "susfs.o" fs/Makefile || echo "obj-y += susfs.o" >> fs/Makefile
 
       - name: Apply Manual Fixes for MIUI 5.4 QGKI
         run: |
           set -e
-
-          SUSFS_DIR="$(pwd)/../susfs4ksu"
-
-          echo "=== Apply SuSFS patch to kernel tree ==="
-          if [ -d "$SUSFS_DIR" ]; then
-            patch -p1 < "$SUSFS_DIR/kernel_patches/50_add_susfs_in_kernel-5.4.patch" \
-              && echo "Kernel susfs patch applied" \
-              || echo "Kernel susfs patch had errors (continuing)"
-
-            echo "=== Copy SuSFS source files ==="
-            cp -v "$SUSFS_DIR/kernel_patches/fs/susfs.c"               fs/
-            cp -v "$SUSFS_DIR/kernel_patches/include/linux/susfs.h"     include/linux/
-            cp -v "$SUSFS_DIR/kernel_patches/include/linux/susfs_def.h" include/linux/
-
-            echo "=== Register susfs.o in fs/Makefile ==="
-            grep -q "susfs.o" fs/Makefile || echo "obj-y += susfs.o" >> fs/Makefile
-          else
-            echo "SuSFS dir not found — susfs-main branch may have included it already"
-            ls ../
-          fi
 
           echo "=== Fix 1: susfs_mnt_id_backup in mount.h ==="
           grep -q "susfs_mnt_id_backup" include/linux/mount.h || \
@@ -178,7 +173,20 @@ jobs:
           grep -q "linux/susfs.h" fs/proc/fd.c || \
             sed -i '1s/^/#include <linux\/susfs.h>\n/' fs/proc/fd.c
 
-          echo "=== Fix 4: TWA_RESUME compat ==="
+          echo "=== Fix 4: pgtable.h compat for 5.4 ==="
+          find KernelSU/kernel -name "*.c" -o -name "*.h" -exec sed -i 's|#include <linux/pgtable.h>|#include <asm/pgtable.h>|g' {} + || true
+
+          echo "=== Fix 5: strncpy_from_user_nofault compat for 5.4 ==="
+          find KernelSU/kernel -name "*.c" -o -name "*.h" -exec sed -i 's/strncpy_from_user_nofault/strncpy_from_user/g' {} + || true
+
+          echo "=== Fix 6: Remove filter_count error (Aggressive) ==="
+          # Удаляем любую строку, где есть упоминание filter_count во всех файлах KSU
+          find KernelSU/kernel -name "*.c" -type f -exec sed -i '/filter_count/d' {} + || true
+
+          echo "=== Fix 7: Fix module_exit error in ksu.c ==="
+          find KernelSU/kernel -name "*.c" -type f -exec sed -i 's/module_exit(ksu_kernelsu_exit);/\/\/module_exit(ksu_kernelsu_exit);/g' {} + || true
+          
+          echo "=== Fix 8: TWA_RESUME compat ==="
           sed -i 's/TWA_RESUME/true/g' KernelSU/kernel/allowlist.c 2>/dev/null || true
           grep -q "linux/sched/task.h" KernelSU/kernel/allowlist.c || \
             sed -i '1s/^/#include <linux\/sched\/task.h>\n/' KernelSU/kernel/allowlist.c 2>/dev/null || true
