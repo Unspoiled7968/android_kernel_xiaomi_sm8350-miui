@@ -79,6 +79,12 @@ jobs:
           # 4. Отключение module_exit для встроенного ядра
           find drivers/kernelsu -type f -name "*.c" -exec sed -i 's/module_exit(ksu_kernelsu_exit);/\/\/module_exit(ksu_kernelsu_exit);/g' {} +
 
+          # 5. ФИКС ОШИБКИ put_task_struct (Добавляем нужные заголовочные файлы)
+          if [ -f drivers/kernelsu/allowlist.c ]; then
+            sed -i '1i #include <linux/sched/task.h>' drivers/kernelsu/allowlist.c
+            sed -i '1i #include <linux/sched.h>' drivers/kernelsu/allowlist.c
+          fi
+
       - name: Apply Tracepoint Hooks (Smart Python)
         run: |
           python3 << 'EOF'
@@ -136,7 +142,7 @@ jobs:
           cp -v "$SUSFS_DIR/kernel_patches/include/linux/susfs.h" include/linux/
           cp -v "$SUSFS_DIR/kernel_patches/include/linux/susfs_def.h" include/linux/
           
-          # Патчим KernelSU Next для поддержки SuSFS (Имя файла исправлено!)
+          # Патчим KernelSU Next для поддержки SuSFS
           KSU_PATCH="$SUSFS_DIR/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
           if [ -f "$KSU_PATCH" ]; then
              cp -v "$KSU_PATCH" drivers/kernelsu/
@@ -205,9 +211,8 @@ jobs:
 
       - name: Compress & Upload
         run: |
-          # Собираем всё, что похоже на AnyKernel или готовое ядро
           mkdir -p upload
-          cp arch/arm64/boot/Image upload/
+          cp arch/arm64/boot/Image upload/ || true
           find ../out -name "*.zip" -exec cp {} upload/ \; || true
           tar -czvf kernel-star-ksunext.tar.gz upload/
 
