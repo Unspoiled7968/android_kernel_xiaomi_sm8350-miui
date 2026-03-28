@@ -12,7 +12,7 @@ on:
       ksu_variant:
         description: 'Select KernelSU variant'
         required: true
-        default: 'ReSukiSU'
+        default: 'SukiSU'
         type: choice
         options: [SukiSU, ReSukiSU, KernelSU, KernelSU-Next, WildKSU]
       localversion:
@@ -77,12 +77,10 @@ jobs:
           fi
 
           echo "=== Locating KSU kernel directory ==="
-          # Search broadly — different variants clone to different paths
           KSU_KERNEL_DIR=$(find . -maxdepth 4 -type d \( \
             -name "KernelSU" -o -name "KernelSU-Next" -o -name "Wild_KSU" \
           \) | head -n 1)
 
-          # If the variant puts sources directly in a subdir named "kernel", go one level deeper
           if [ -d "$KSU_KERNEL_DIR/kernel" ]; then
             KSU_KERNEL_DIR="$KSU_KERNEL_DIR/kernel"
           fi
@@ -98,38 +96,25 @@ jobs:
           KSU_ABS=$(realpath "$KSU_KERNEL_DIR")
 
           # ── FIX 1: ksu_is_ksu_domain → is_ksu_domain (KernelSU-Next bug) ──────
-          # Apply on ALL .c/.h under the entire KSU clone root (not just kernel/)
-          # so nothing is missed regardless of directory structure.
           echo "=== Fix: ksu_is_ksu_domain -> is_ksu_domain ==="
           find "$KSU_ABS" -type f \( -name "*.c" -o -name "*.h" \) \
-            -exec grep -l "ksu_is_ksu_domain" {} + 2>/dev/null | while read -r f; do
-            echo "  patching: $f"
-            sed -i 's/ksu_is_ksu_domain/is_ksu_domain/g' "$f"
-          done
+            -exec sed -i 's/ksu_is_ksu_domain/is_ksu_domain/g' {} + || true
 
           cd "$KSU_ABS"
 
           # ── FIX 2: uapi/app_profile.h not found (tiann KernelSU) ──────────────
-          # The policy/ subdir's allowlist.h does: #include "uapi/app_profile.h"
-          # which works only if the compiler sees drivers/kernelsu as an include root.
-          # Add explicit -I flags to every Makefile/Kbuild so ALL subdirs can resolve it.
           echo "=== Fix: uapi include path for all subdirs ==="
           find . -name "Makefile" -o -name "Kbuild" | while read -r mkfile; do
-            # Avoid duplicate entries
-            grep -q 'ccflags-y.*srctree.*drivers/kernelsu' "$mkfile" 2>/dev/null && continue
-            {
-              echo 'ccflags-y += -I$(srctree)/drivers/kernelsu'
-              echo 'ccflags-y += -I$(srctree)/drivers/kernelsu/uapi'
-            } >> "$mkfile"
+            # Bruteforce append. Duplicate flags are harmless to GCC/Clang.
+            echo 'ccflags-y += -I$(srctree)/drivers/kernelsu' >> "$mkfile"
+            echo 'ccflags-y += -I$(srctree)/drivers/kernelsu/uapi' >> "$mkfile"
           done
 
-          # Physical fallback: copy root-level headers AND uapi into every subdir
-          echo "=== Fix: Propagate headers to subdirs ==="
-          find . -mindepth 1 -maxdepth 1 -type d | grep -v "^./uapi$" | while read -r d; do
-            cp -n *.h "$d/" 2>/dev/null || true
-            if [ -d uapi ]; then
-              cp -rn uapi "$d/" 2>/dev/null || true
-            fi
+          echo "=== Fix: Propagate headers to subdirs (Fallback) ==="
+          # Flatten all headers to KSU root just in case, then copy to subdirs
+          find . -type f -name "*.h" -exec cp {} . \; 2>/dev/null || true
+          find . -mindepth 1 -type d | while read -r d; do
+            cp *.h "$d/" 2>/dev/null || true
           done
 
           echo "=== Fix: pgtable.h (linux -> asm) ==="
