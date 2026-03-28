@@ -12,7 +12,7 @@ on:
       ksu_variant:
         description: 'Select KernelSU variant'
         required: true
-        default: 'ReSukiSU'
+        default: 'SukiSU'
         type: choice
         options: [SukiSU, ReSukiSU, KernelSU, KernelSU-Next, WildKSU]
       localversion:
@@ -83,30 +83,32 @@ jobs:
         run: |
           set -e
           echo "=== Bypassing TP hooks lock for GKI 1.0 ==="
-          if [ -f KernelSU/kernel/Kbuild ]; then
-            sed -i '/TP hooks are incompatible/d' KernelSU/kernel/Kbuild
-            sed -i 's/$(error.*TP hooks are incompatible.*)//g' KernelSU/kernel/Kbuild
+          if [ -f drivers/kernelsu/Kbuild ]; then
+            sed -i '/TP hooks are incompatible/d' drivers/kernelsu/Kbuild
+            sed -i 's/$(error.*TP hooks are incompatible.*)//g' drivers/kernelsu/Kbuild
           fi
-          if [ -f KernelSU/kernel/Makefile ]; then
-            sed -i '/TP hooks are incompatible/d' KernelSU/kernel/Makefile
-            sed -i 's/$(error.*TP hooks are incompatible.*)//g' KernelSU/kernel/Makefile
+          if [ -f drivers/kernelsu/Makefile ]; then
+            sed -i '/TP hooks are incompatible/d' drivers/kernelsu/Makefile
+            sed -i 's/$(error.*TP hooks are incompatible.*)//g' drivers/kernelsu/Makefile
           fi
 
-          echo "=== IRON-CLAD FIXES FOR 5.4 KERNEL ==="
+          echo "=== Fix allowlist.c & setuid_hook.c ==="
+          if [ -f drivers/kernelsu/allowlist.c ]; then
+            grep -q "linux/sched/task.h" drivers/kernelsu/allowlist.c || sed -i '1i #include <linux/sched/task.h>' drivers/kernelsu/allowlist.c
+            grep -q "linux/sched.h" drivers/kernelsu/allowlist.c || sed -i '1i #include <linux/sched.h>' drivers/kernelsu/allowlist.c
+          fi
+          if [ -f drivers/kernelsu/setuid_hook.c ]; then
+            sed -i '1i struct seccomp_filter; extern void ksu_seccomp_allow_cache(struct seccomp_filter *filter, int syscall);' drivers/kernelsu/setuid_hook.c
+          fi
+
+          echo "=== Aggressive Cleanup for 5.4 Compatibility (Your Patches) ==="
           echo '#define filter_count _not_used_in_5_4' >> include/linux/seccomp.h
-          [ -f KernelSU/kernel/app_profile.c ] && sed -i '/filter_count/d' KernelSU/kernel/app_profile.c || true
-          
-          [ -f KernelSU/kernel/allowlist.c ] && sed -i '1i #include <linux/sched/task.h>\n#include <linux/sched.h>' KernelSU/kernel/allowlist.c
-          
-          [ -f KernelSU/kernel/setuid_hook.c ] && sed -i '1i struct seccomp_filter; extern void ksu_seccomp_allow_cache(struct seccomp_filter *filter, int syscall);' KernelSU/kernel/setuid_hook.c
-
-          cat << 'EOF' > KernelSU/kernel/pkg_observer.c
-          #include <linux/types.h>
-          int ksu_pkg_observer_init(void) { return 0; }
-          void ksu_pkg_observer_exit(void) { return; }
-          EOF
-
-          [ -f KernelSU/kernel/ksu.c ] && sed -i 's/module_exit(ksu_kernelsu_exit);/\/\/module_exit(ksu_kernelsu_exit);/g' KernelSU/kernel/ksu.c || true
+          find drivers/kernelsu -type f -name "*.c" -exec sed -i '/filter_count/d' {} + || true
+          sed -i '/pkg_observer.o/d' drivers/kernelsu/Makefile || true
+          find drivers/kernelsu -type f -name "*.c" -exec sed -i 's/ksu_pkg_observer_init()/0/g' {} + || true
+          find drivers/kernelsu -type f -name "*.c" -exec sed -i 's/ksu_pkg_observer_exit()//g' {} + || true
+          find drivers/kernelsu -type f -name "*.c" -exec sed -i 's/module_exit(ksu_kernelsu_exit);/\/\/module_exit(ksu_kernelsu_exit);/g' {} + || true
+          find drivers/kernelsu -type f -name "*.c" -exec sed -i 's/TWA_RESUME/true/g' {} + || true
 
       - name: Apply KSU Tracepoint Hooks (Python)
         run: |
@@ -174,16 +176,16 @@ jobs:
           #define strncpy_from_user_nofault strncpy_from_user
           #define copy_from_user_nofault copy_from_user
           #define copy_to_user_nofault copy_to_user
+          #define copy_from_kernel_nofault probe_kernel_read
+          #define copy_to_kernel_nofault probe_kernel_write
           EOF
           fi
           
           echo "=== Fixing security_inode_init_security_anon in file_wrapper.c ==="
-          [ -f KernelSU/kernel/file_wrapper.c ] && sed -i '1i #define security_inode_init_security_anon(inode, name, context_inode) (0)' KernelSU/kernel/file_wrapper.c || true
+          [ -f drivers/kernelsu/file_wrapper.c ] && sed -i '1i #define security_inode_init_security_anon(inode, name, context_inode) (0)' drivers/kernelsu/file_wrapper.c || true
           
           echo "=== Standardizing legacy paths ==="
-          find KernelSU/kernel -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's|#include <linux/pgtable.h>|#include <asm/pgtable.h>|g' {} + || true
-          
-          find KernelSU/kernel -type f -name "*.c" -exec sed -i 's/TWA_RESUME/true/g' {} + || true
+          find drivers/kernelsu -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's|#include <linux/pgtable.h>|#include <asm/pgtable.h>|g' {} + || true
 
       - name: Append Flags to Defconfig
         run: |
