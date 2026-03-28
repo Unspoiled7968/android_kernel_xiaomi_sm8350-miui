@@ -12,7 +12,7 @@ on:
       ksu_variant:
         description: 'Select KernelSU variant'
         required: true
-        default: 'ReSukiSU'
+        default: 'SukiSU'
         type: choice
         options: [SukiSU, ReSukiSU, KernelSU, KernelSU-Next, WildKSU]
       localversion:
@@ -79,11 +79,10 @@ jobs:
           grep -q "kernelsu" drivers/Makefile || echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
           grep -q "kernelsu" drivers/Kconfig || sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
 
-      - name: Core Compatibility & Tracepoint Bypass
+      - name: Core Compatibility & Tracepoint Bypass (from ReSukiSU script)
         run: |
           set -e
           echo "=== Bypassing TP hooks lock for GKI 1.0 ==="
-          # Ищем в реальной папке KernelSU, так как symlink может сбоить
           if [ -f KernelSU/kernel/Kbuild ]; then
             sed -i '/TP hooks are incompatible/d' KernelSU/kernel/Kbuild
             sed -i 's/$(error.*TP hooks are incompatible.*)//g' KernelSU/kernel/Kbuild
@@ -97,11 +96,11 @@ jobs:
           # Заглушка для filter_count (фикс seccomp)
           echo '#define filter_count _not_used_in_5_4' >> include/linux/seccomp.h
           [ -f KernelSU/kernel/app_profile.c ] && sed -i '/filter_count/d' KernelSU/kernel/app_profile.c || true
-
-          # Фикс allowlist.c (put_task_struct)
+          
+          # Твой фикс put_task_struct
           [ -f KernelSU/kernel/allowlist.c ] && sed -i '1i #include <linux/sched/task.h>\n#include <linux/sched.h>' KernelSU/kernel/allowlist.c
           
-          # Фикс setuid_hook.c (extern для ksu_seccomp_allow_cache - нужно для SukiSU)
+          # Заглушка ksu_seccomp_allow_cache (для SukiSU)
           [ -f KernelSU/kernel/setuid_hook.c ] && sed -i '1i struct seccomp_filter; extern void ksu_seccomp_allow_cache(struct seccomp_filter *filter, int syscall);' KernelSU/kernel/setuid_hook.c
 
           # Пустышка pkg_observer
@@ -118,7 +117,6 @@ jobs:
         run: |
           python3 << 'EOF'
           import sys, re, os
-
           def robust_patch(filepath, pattern, replacement):
               if not os.path.exists(filepath): return
               with open(filepath, 'r') as f: content = f.read()
@@ -139,19 +137,15 @@ jobs:
           add_include('fs/exec.c', '<../drivers/kernelsu/ksu_trace.h>')
           robust_patch('fs/exec.c', r'(return do_execveat_common\(AT_FDCWD, filename, argv, envp, 0\);)', 
                        r'#if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n\ttrace_ksu_trace_execveat_hook((int *)AT_FDCWD, &filename, &argv, &envp, 0);\n#endif\n\t\1')
-
           add_include('fs/open.c', '<../drivers/kernelsu/ksu_trace.h>')
           robust_patch('fs/open.c', r'(SYSCALL_DEFINE3\(faccessat, int, dfd, const char __user \*, filename, int, mode\)\n{)',
                        r'\1\n#if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n\ttrace_ksu_trace_faccessat_hook(&dfd, &filename, &mode, NULL);\n#endif\n')
-
           add_include('fs/read_write.c', '<../drivers/kernelsu/ksu_trace.h>')
           robust_patch('fs/read_write.c', r'(SYSCALL_DEFINE3\(read, unsigned int, fd, char __user \*, buf, size_t, count\)\n{)',
                        r'\1\n#if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n\ttrace_ksu_trace_sys_read_hook(fd, &buf, &count);\n#endif\n')
-
           add_include('fs/stat.c', '<../drivers/kernelsu/ksu_trace.h>')
           robust_patch('fs/stat.c', r'(error = vfs_fstatat\(dfd, filename, &stat, flag\);)',
                        r'#if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n\ttrace_ksu_trace_stat_hook(&dfd, &filename, &flag);\n#endif\n\t\1')
-
           add_include('drivers/input/input.c', '<../../drivers/kernelsu/ksu_trace.h>')
           robust_patch('drivers/input/input.c', r'(void input_event\(struct input_dev \*dev,\n\t\t unsigned int type, unsigned int code, int value\)\n{\n\tunsigned long flags;\n)',
                        r'\1\n#if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n\ttrace_ksu_trace_input_hook(&type, &code, &value);\n#endif\n')
@@ -178,6 +172,7 @@ jobs:
           done
           
           echo "=== ABSOLUTE BULLETPROOF DOWNGRADE: Kernel Header Injection ==="
+          # Твоя инъекция в uaccess.h для старых ядер
           if ! grep -q "strncpy_from_user_nofault" include/linux/uaccess.h; then
             cat << 'EOF' >> include/linux/uaccess.h
           
@@ -188,10 +183,13 @@ jobs:
           EOF
           fi
           
-          echo "=== Standardizing legacy paths and TWA_RESUME ==="
+          echo "=== Fixing security_inode_init_security_anon in file_wrapper.c (SukiSU fix) ==="
+          [ -f KernelSU/kernel/file_wrapper.c ] && sed -i '1i #define security_inode_init_security_anon(inode, name, context_inode) (0)' KernelSU/kernel/file_wrapper.c || true
+          
+          echo "=== Standardizing legacy paths ==="
           find KernelSU/kernel -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's|#include <linux/pgtable.h>|#include <asm/pgtable.h>|g' {} + || true
           
-          # Агрессивный фикс TWA_RESUME для всех файлов (лечит allowlist.c и supercalls.c)
+          # Твой агрессивный фикс TWA_RESUME для ВСЕХ форков
           find KernelSU/kernel -type f -name "*.c" -exec sed -i 's/TWA_RESUME/true/g' {} + || true
 
       - name: Append Flags to Defconfig
