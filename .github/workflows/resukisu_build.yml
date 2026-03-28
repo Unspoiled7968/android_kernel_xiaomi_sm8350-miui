@@ -151,21 +151,34 @@ jobs:
           cp -v "$SUSFS_DIR/kernel_patches/include/linux/susfs_def.h" include/linux/
           grep -q "susfs.o" fs/Makefile || echo "obj-y += susfs.o" >> fs/Makefile
 
-      - name: Final MIUI Compatibility Fixes
+      - name: Final MIUI & Legacy API Fixes
         run: |
           set -e
+          echo "=== Fixing SuSFS Mount Structures ==="
           grep -q "susfs_mnt_id_backup" include/linux/mount.h || sed -i '/int mnt_flags;/a \ \ \ \ u64 susfs_mnt_id_backup;' include/linux/mount.h
           [ -f include/linux/susfs.h ] && grep -q "^struct kstat;" include/linux/susfs.h || sed -i '1s/^/struct kstat;\n/' include/linux/susfs.h || true
           for f in fs/proc/task_mmu.c fs/proc/fd.c; do
             [ -f $f ] && (grep -q "linux/susfs.h" $f || sed -i '1i #include <linux/susfs.h>' $f)
           done
           
-          echo "=== Downgrading modern memory APIs to 5.4 equivalents ==="
-          find drivers/kernelsu -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's|#include <linux/pgtable.h>|#include <asm/pgtable.h>|g' {} + || true
-          find drivers/kernelsu -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's/strncpy_from_user_nofault/strncpy_from_user/g' {} + || true
-          find drivers/kernelsu -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's/copy_from_user_nofault/copy_from_user/g' {} + || true
-          find drivers/kernelsu -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's/copy_to_user_nofault/copy_to_user/g' {} + || true
+          echo "=== BULLETPROOF DOWNGRADE: Memory APIs to 5.4 equivalents ==="
+          if [ -f drivers/kernelsu/ksu.h ]; then
+            echo "" >> drivers/kernelsu/ksu.h
+            echo "/* Force downgrade modern memory APIs to 5.4 equivalents */" >> drivers/kernelsu/ksu.h
+            echo "#define strncpy_from_user_nofault strncpy_from_user" >> drivers/kernelsu/ksu.h
+            echo "#define copy_from_user_nofault copy_from_user" >> drivers/kernelsu/ksu.h
+            echo "#define copy_to_user_nofault copy_to_user" >> drivers/kernelsu/ksu.h
+          fi
           
+          for f in drivers/kernelsu/sucompat.c drivers/kernelsu/ksud.c; do
+            if [ -f "$f" ]; then
+              sed -i '1i #define strncpy_from_user_nofault strncpy_from_user' "$f"
+              sed -i '1i #define copy_from_user_nofault copy_from_user' "$f"
+              sed -i '1i #define copy_to_user_nofault copy_to_user' "$f"
+            fi
+          done
+          
+          find drivers/kernelsu -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's|#include <linux/pgtable.h>|#include <asm/pgtable.h>|g' {} + || true
           [ -f drivers/kernelsu/allowlist.c ] && sed -i 's/TWA_RESUME/true/g' drivers/kernelsu/allowlist.c || true
 
       - name: Append Flags to Defconfig
@@ -192,7 +205,7 @@ jobs:
 
           if [ ! -f arch/arm64/boot/Image ]; then
             echo "BUILD FAILED"
-            grep -E "error:|FAILED" /tmp/kbuild.log | tail -50
+            grep -E "error:|FAILED|undefined reference" /tmp/kbuild.log | tail -50
             exit 1
           fi
 
