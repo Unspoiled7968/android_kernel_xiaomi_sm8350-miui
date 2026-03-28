@@ -209,13 +209,14 @@ jobs:
               done
             done
 
-          echo "=== Fix: klog.h and other local headers not found in subdirs ==="
+          echo "=== Bruteforce Fix: Missing Subfolder Headers (klog.h) ==="
           find -L drivers/kernelsu -name "Makefile" -o -name "Kbuild" | while read mkfile; do
             grep -q -- "-Idrivers/kernelsu" "$mkfile" || echo 'ccflags-y += -Idrivers/kernelsu' >> "$mkfile"
             grep -q -- "-I\$(srctree)/drivers/kernelsu" "$mkfile" || echo 'ccflags-y += -I$(srctree)/drivers/kernelsu' >> "$mkfile"
           done
-          find -L drivers/kernelsu -mindepth 1 -maxdepth 1 -type d | while read -r d; do
-            cp drivers/kernelsu/*.h "$d/" 2>/dev/null || true
+          # Ensure every subfolder has a copy of all headers to stop blind compiler panics
+          find -L drivers/kernelsu -mindepth 1 -type d | while read -r d; do
+            find drivers/kernelsu -maxdepth 2 -type f -name "*.h" -exec cp {} "$d/" 2>/dev/null \; || true
           done
 
           echo "=== Bypass Kbuild TP Locks ==="
@@ -237,7 +238,7 @@ jobs:
               sed -i '1s/^/#include <linux\/sched\/task.h>\n/' "$f"
           done
 
-          echo "=== Fix: ksu_is_ksu_domain -> is_ksu_domain (KernelSU Next rename) ==="
+          echo "=== Fix: ksu_is_ksu_domain -> is_ksu_domain (KernelSU Next BUG) ==="
           find -L drivers/kernelsu -type f -name "*.c" | \
             xargs grep -l "ksu_is_ksu_domain" 2>/dev/null | while read f; do
               sed -i 's/ksu_is_ksu_domain()/is_ksu_domain()/g' "$f"
@@ -374,7 +375,7 @@ jobs:
           chmod +x ./build.sh
           ./build.sh all ${{ inputs.device_name || 'star' }} 2>&1 | tee /tmp/kbuild.log
 
-          if [ ! -f arch/arm64/boot/Image ]; then
+          if [ ! -f arch/arm64/boot/Image ] && [ ! -f out/arch/arm64/boot/Image ] && [ ! -f ../out/arch/arm64/boot/Image ]; then
             echo ""
             echo "=== BUILD FAILED — last errors ==="
             grep -E "error:|undefined reference|FAILED" /tmp/kbuild.log | tail -50
