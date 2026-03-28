@@ -1,4 +1,4 @@
-name: Build ReSukiSU + SuSFS (star Tracepoint Ultimate)
+name: Build ReSukiSU + SuSFS (Tracepoint)
 
 on:
   workflow_dispatch:
