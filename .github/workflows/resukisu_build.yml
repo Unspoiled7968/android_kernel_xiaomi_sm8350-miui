@@ -1,5 +1,5 @@
 # credits to palazik @ GitHub for build yml
-name: Build ReSukiSU + SuSFS (Tracepoint)
+name: Build ReSukiSU (Tracepoint Hook)
 
 on:
   workflow_dispatch:
@@ -38,19 +38,6 @@ jobs:
           sudo apt install -y clang lld llvm git make gcc flex bison bc \
             libssl-dev ccache libncurses5-dev libncursesw5-dev cmake \
             python3 python-is-python3 cpio curl patch rsync
-
-      - name: Apply Specialized MIUI Patches (JackA1ltman)
-        run: |
-          set -e
-          echo "=== Cloning Specialized Patches for star ==="
-          git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Patches.git -b mi_kernel ../altman_patches
-          ALTMAN_DIR="$(pwd)/../altman_patches/mi11u_hyperos"
-
-          # Apply HyperOS system patches BEFORE everything else
-          echo "Applying HyperOS specialized patches..."
-          patch -p1 --forward --batch < "$ALTMAN_DIR/hyperos_a14_fixed.patch" || true
-          patch -p1 --forward --batch < "$ALTMAN_DIR/hyper_susfs_157_fixed.patch" || true
-          patch -p1 --forward --batch < "$ALTMAN_DIR/hyper_susfs_remove_all_sus_su.patch" || true
 
       - name: Integrate ReSukiSU
         run: |
@@ -142,25 +129,8 @@ jobs:
                        r'\1\n#if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n\ttrace_ksu_trace_input_hook(&type, &code, &value);\n#endif\n')
           EOF
 
-      - name: Setup SuSFS Source Files
-        run: |
-          set -e
-          git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 ../susfs4ksu
-          SUSFS_DIR="$(pwd)/../susfs4ksu"
-          cp -v "$SUSFS_DIR/kernel_patches/fs/susfs.c"               fs/
-          cp -v "$SUSFS_DIR/kernel_patches/include/linux/susfs.h"     include/linux/
-          cp -v "$SUSFS_DIR/kernel_patches/include/linux/susfs_def.h" include/linux/
-          grep -q "susfs.o" fs/Makefile || echo "obj-y += susfs.o" >> fs/Makefile
-
       - name: Final MIUI & Legacy API Fixes
         run: |
-          set -e
-          echo "=== Fixing SuSFS Mount Structures ==="
-          grep -q "susfs_mnt_id_backup" include/linux/mount.h || sed -i '/int mnt_flags;/a \ \ \ \ u64 susfs_mnt_id_backup;' include/linux/mount.h
-          [ -f include/linux/susfs.h ] && grep -q "^struct kstat;" include/linux/susfs.h || sed -i '1s/^/struct kstat;\n/' include/linux/susfs.h || true
-          for f in fs/proc/task_mmu.c fs/proc/fd.c; do
-            [ -f $f ] && (grep -q "linux/susfs.h" $f || sed -i '1i #include <linux/susfs.h>' $f)
-          done
           
           echo "=== ABSOLUTE BULLETPROOF DOWNGRADE: Kernel Header Injection ==="
           if ! grep -q "strncpy_from_user_nofault" include/linux/uaccess.h; then
@@ -184,8 +154,6 @@ jobs:
           DEFCONFIG="arch/arm64/configs/vendor/${DEVICE}_QGKI.config"
           for FLAG in \
             "CONFIG_KSU=y" "CONFIG_KSU_TRACEPOINT_HOOK=y" "CONFIG_KSU_DEBUG=n" \
-            "CONFIG_KSU_SUSFS=y" "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" "CONFIG_KSU_SUSFS_SUS_MOUNT=y" \
-            "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" "CONFIG_KSU_SUSFS_ENABLE_LOG=y" "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" \
             "CONFIG_KPM=y" "CONFIG_KALLSYMS=y" "CONFIG_KALLSYMS_ALL=y"; do
             KEY=$(echo "$FLAG" | cut -d= -f1)
             grep -q "^${KEY}[=\ ]" "$DEFCONFIG" || echo "$FLAG" >> "$DEFCONFIG"
@@ -197,7 +165,7 @@ jobs:
           git config --global user.name "wannq"
           export LOCALVERSION="${{ inputs.localversion || '-gyabii' }}"
           chmod +x ./build.sh
-          ./build.sh all ${{ inputs.device_name || 'star' }} 
+          ./build.sh all ${{ inputs.device_name || 'venus' }} 
 
       - name: Compress
         run: tar -czvf build.tar.gz ../out/anykernel/*.zip
