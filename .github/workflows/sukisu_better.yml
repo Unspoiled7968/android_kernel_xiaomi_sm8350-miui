@@ -1,4 +1,4 @@
-name: Build SukiSU Ultra + SuSFS (Tracepoint)
+name: Build SukiSU Ultra + SuSFS (star Tracepoint Final Fixed)
 
 on:
   workflow_dispatch:
@@ -38,17 +38,6 @@ jobs:
             libssl-dev ccache libncurses5-dev libncursesw5-dev cmake \
             python3 python-is-python3 cpio curl patch rsync
 
-      - name: Integrate SukiSU Ultra
-        run: |
-          set -e
-          echo "=== Setting up SukiSU Ultra ==="
-          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
-          ln -sf "$(pwd)/KernelSU/kernel" drivers/kernelsu
-          
-          # Базовая прописка в драйверы
-          grep -q "kernelsu" drivers/Makefile || echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
-          grep -q "kernelsu" drivers/Kconfig || sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
-
       - name: Apply Specialized MIUI Patches (JackA1ltman)
         run: |
           set -e
@@ -56,48 +45,56 @@ jobs:
           git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Patches.git -b mi_kernel ../altman_patches
           ALTMAN_DIR="$(pwd)/../altman_patches/mi11u_hyperos"
 
-          # Сначала накладываем системные патчи MIUI
-          echo "Applying HyperOS patches..."
-          patch -p1 < "$ALTMAN_DIR/hyperos_a14_fixed.patch" || true
-          patch -p1 < "$ALTMAN_DIR/hyper_susfs_157_fixed.patch" || true
-          patch -p1 < "$ALTMAN_DIR/hyper_susfs_remove_all_sus_su.patch" || true
+          # Накладываем патчи ПЕРЕД установкой SukiSU
+          # Используем --forward --batch чтобы не было интерактивных вопросов
+          echo "Applying HyperOS specialized patches..."
+          patch -p1 --forward --batch < "$ALTMAN_DIR/hyperos_a14_fixed.patch" || true
+          patch -p1 --forward --batch < "$ALTMAN_DIR/hyper_susfs_157_fixed.patch" || true
+          patch -p1 --forward --batch < "$ALTMAN_DIR/hyper_susfs_remove_all_sus_su.patch" || true
 
-      - name: Run SukiSU Kernel Patcher
+      - name: Integrate SukiSU Ultra
         run: |
           set -e
-          echo "=== Running patch_linux (Fixed URL) ==="
-          # Ссылка из найденного тобой репозитория
-          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU_patch/refs/heads/main/kpm/patch_linux" -o patch_linux
+          echo "=== Setting up SukiSU Ultra ==="
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
+          ln -sf "$(pwd)/KernelSU/kernel" drivers/kernelsu
           
-          if [ -s patch_linux ] && ! grep -q "404" patch_linux; then
-            chmod +x patch_linux
-            ./patch_linux drivers/kernelsu || echo "Patcher warning, continuing..."
-          else
-            echo "URL failed again, using manual cleanup logic."
-          fi
+          # Прописка в драйверы
+          grep -q "kernelsu" drivers/Makefile || echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
+          grep -q "kernelsu" drivers/Kconfig || sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
 
-          echo "=== Aggressive Cleanup for 5.4 Compatibility ==="
+      - name: Kernel 5.4 Compatibility Sanitizer
+        run: |
+          set -e
+          echo "=== Cleaning up SukiSU for Kernel 5.4 ==="
+          # Удаляем filter_count (причина падения)
           find drivers/kernelsu -type f -name "*.c" -exec sed -i '/filter_count/d' {} +
+          
+          # Отключаем pkg_observer
           sed -i '/pkg_observer.o/d' drivers/kernelsu/Makefile
           find drivers/kernelsu -type f -name "*.c" -exec sed -i 's/ksu_pkg_observer_init()/0/g' {} +
           find drivers/kernelsu -type f -name "*.c" -exec sed -i 's/ksu_pkg_observer_exit()//g' {} +
+          
+          # Фикс module_exit
           find drivers/kernelsu -type f -name "*.c" -exec sed -i 's/module_exit(ksu_kernelsu_exit);/\/\/module_exit(ksu_kernelsu_exit);/g' {} +
 
-      - name: Apply KSU Tracepoint Hooks (Python)
+      - name: Apply Tracepoint Hooks (Smart Python)
         run: |
           python3 << 'EOF'
           import sys, re, os
 
-          def robust_patch(filepath, pattern, replacement):
+          def smart_patch(filepath, pattern, replacement):
               if not os.path.exists(filepath): return
               with open(filepath, 'r') as f: content = f.read()
-              if 'ksu_trace' in content: 
-                  print(f'{filepath}: hook already present, skipping')
+              if 'ksu_trace' in content:
+                  print(f'{filepath}: hook already applied by JackA1ltman patches, skipping')
                   return
               new_content, n = re.subn(pattern, replacement, content, count=0)
               if n > 0:
                   with open(filepath, 'w') as f: f.write(new_content)
                   print(f'{filepath}: successfully patched ({n} hunks)')
+              else:
+                  print(f'WARNING: Could not find anchor in {filepath}')
 
           def add_include(filepath, include_path):
               if not os.path.exists(filepath): return
@@ -108,25 +105,25 @@ jobs:
                                    content, count=1)
               with open(filepath, 'w') as f: f.write(new_content)
 
-          # Применяем хуки поверх патчей Джека
+          # Применяем хуки там, где их еще нет после патчей Джека
           add_include('fs/exec.c', '<../drivers/kernelsu/ksu_trace.h>')
-          robust_patch('fs/exec.c', r'(return do_execveat_common\(AT_FDCWD, filename, argv, envp, 0\);)', 
+          smart_patch('fs/exec.c', r'(return do_execveat_common\(AT_FDCWD, filename, argv, envp, 0\);)', 
                        r'#if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n\ttrace_ksu_trace_execveat_hook((int *)AT_FDCWD, &filename, &argv, &envp, 0);\n#endif\n\t\1')
 
           add_include('fs/open.c', '<../drivers/kernelsu/ksu_trace.h>')
-          robust_patch('fs/open.c', r'(SYSCALL_DEFINE3\(faccessat, int, dfd, const char __user \*, filename, int, mode\)\n{)',
+          smart_patch('fs/open.c', r'(SYSCALL_DEFINE3\(faccessat, int, dfd, const char __user \*, filename, int, mode\)\n{)',
                        r'\1\n#if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n\ttrace_ksu_trace_faccessat_hook(&dfd, &filename, &mode, NULL);\n#endif\n')
 
           add_include('fs/read_write.c', '<../drivers/kernelsu/ksu_trace.h>')
-          robust_patch('fs/read_write.c', r'(SYSCALL_DEFINE3\(read, unsigned int, fd, char __user \*, buf, size_t, count\)\n{)',
+          smart_patch('fs/read_write.c', r'(SYSCALL_DEFINE3\(read, unsigned int, fd, char __user \*, buf, size_t, count\)\n{)',
                        r'\1\n#if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n\ttrace_ksu_trace_sys_read_hook(fd, &buf, &count);\n#endif\n')
 
           add_include('fs/stat.c', '<../drivers/kernelsu/ksu_trace.h>')
-          robust_patch('fs/stat.c', r'(error = vfs_fstatat\(dfd, filename, &stat, flag\);)',
+          smart_patch('fs/stat.c', r'(error = vfs_fstatat\(dfd, filename, &stat, flag\);)',
                        r'#if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n\ttrace_ksu_trace_stat_hook(&dfd, &filename, &flag);\n#endif\n\t\1')
 
           add_include('drivers/input/input.c', '<../../drivers/kernelsu/ksu_trace.h>')
-          robust_patch('drivers/input/input.c', r'(void input_event\(struct input_dev \*dev,\n\t\t unsigned int type, unsigned int code, int value\)\n{\n\tunsigned long flags;\n)',
+          smart_patch('drivers/input/input.c', r'(void input_event\(struct input_dev \*dev,\n\t\t unsigned int type, unsigned int code, int value\)\n{\n\tunsigned long flags;\n)',
                        r'\1\n#if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n\ttrace_ksu_trace_input_hook(&type, &code, &value);\n#endif\n')
           EOF
 
@@ -145,10 +142,12 @@ jobs:
           set -e
           grep -q "susfs_mnt_id_backup" include/linux/mount.h || sed -i '/int mnt_flags;/a \ \ \ \ u64 susfs_mnt_id_backup;' include/linux/mount.h
           [ -f include/linux/susfs.h ] && grep -q "^struct kstat;" include/linux/susfs.h || sed -i '1s/^/struct kstat;\n/' include/linux/susfs.h || true
-          # Прописываем инклуды в proc файлы (если Джек их пропустил)
+          
+          # Прописываем инклуды в proc файлы
           for f in fs/proc/task_mmu.c fs/proc/fd.c; do
             [ -f $f ] && (grep -q "linux/susfs.h" $f || sed -i '1i #include <linux/susfs.h>' $f)
           done
+
           # Бэкпорты для KernelSU 5.4
           find drivers/kernelsu -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's|#include <linux/pgtable.h>|#include <asm/pgtable.h>|g' {} + || true
           find drivers/kernelsu -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's/strncpy_from_user_nofault/strncpy_from_user/g' {} + || true
@@ -186,5 +185,5 @@ jobs:
         run: tar -czvf build.tar.gz ../out/anykernel/*.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: Kernel-${{ inputs.device_name }}-Tracepoint-Ultimate
+          name: Kernel-${{ inputs.device_name }}-Tracepoint-Star-Special
           path: build.tar.gz
