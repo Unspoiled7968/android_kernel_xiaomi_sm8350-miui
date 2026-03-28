@@ -84,6 +84,9 @@ jobs:
             sed -i '1i #include <linux/sched/task.h>' drivers/kernelsu/allowlist.c
             sed -i '1i #include <linux/sched.h>' drivers/kernelsu/allowlist.c
           fi
+          
+          # 6. ФИКС ОШИБКИ seccomp (удаляем filter_count, как было в SukiSU)
+          find drivers/kernelsu -type f -name "*.c" -exec sed -i '/filter_count/d' {} +
 
       - name: Apply Tracepoint Hooks (Smart Python)
         run: |
