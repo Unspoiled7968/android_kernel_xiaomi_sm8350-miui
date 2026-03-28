@@ -49,13 +49,17 @@ jobs:
           grep -q "kernelsu" drivers/Makefile || echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
           grep -q "kernelsu" drivers/Kconfig || sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
 
-          # Исправляем базовые ошибки SukiSU для старых ядер
-          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU_KernelPatch_patch/main/kpm/patch_linux" -o patch_linux
-          chmod +x patch_linux
-          ./patch_linux drivers/kernelsu
+          echo "=== Applying Patch Linux (Correct URL) ==="
+          # Используем правильный репозиторий SukiSU_patch
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU_patch/main/kpm/patch_linux" -o patch_linux
+          if grep -q "404" patch_linux; then
+            echo "ERROR: patch_linux URL is still 404! Falling back to manual cleanup."
+          else
+            chmod +x patch_linux
+            ./patch_linux drivers/kernelsu || echo "Patcher failed, continuing manually"
+          fi
 
           echo "=== Aggressive Cleanup for 5.4 Compatibility ==="
-          # Удаляем filter_count и pkg_observer, которые гарантированно вешают билд 5.4
           find drivers/kernelsu -type f -name "*.c" -exec sed -i '/filter_count/d' {} +
           sed -i '/pkg_observer.o/d' drivers/kernelsu/Makefile
           find drivers/kernelsu -type f -name "*.c" -exec sed -i 's/ksu_pkg_observer_init()/0/g' {} +
@@ -84,22 +88,18 @@ jobs:
                   print(f"Error patching {filepath}: {e}")
                   sys.exit(1)
 
-          # fs/exec.c — hook in __do_execve_file
           patch_file('fs/exec.c', 
                      r'(char \*pathbuf = NULL;)', 
                      r'\1\n#ifdef CONFIG_KSU\n\textern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\n\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n#endif\n')
 
-          # fs/open.c — hook in do_faccessat
           patch_file('fs/open.c', 
                      r'(struct cred \*override_cred;)', 
                      r'\1\n#ifdef CONFIG_KSU\n\textern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\n\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n#endif\n')
 
-          # fs/read_write.c — hook in vfs_read
           patch_file('fs/read_write.c', 
                      r'(ssize_t ret;\n\n\tret = rw_verify_area\(READ, file, pos, count\);)', 
                      r'#ifdef CONFIG_KSU\n\textern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr, size_t *count_ptr, loff_t **pos);\n\tksu_handle_vfs_read(&file, &buf, &count, &pos);\n#endif\n\t\1')
 
-          # fs/stat.c — hook in vfs_statx
           patch_file('fs/stat.c', 
                      r'(int error = -EINVAL;)', 
                      r'\1\n#ifdef CONFIG_KSU\n\textern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\n\tksu_handle_stat(&dfd, &filename, &flags);\n#endif\n')
@@ -124,11 +124,8 @@ jobs:
       - name: Setup SuSFS Source Files
         run: |
           set -e
-          echo "=== Cloning SuSFS Source Files (kernel-5.4) ==="
           git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 ../susfs4ksu
           SUSFS_DIR="$(pwd)/../susfs4ksu"
-
-          # Копируем исходники SuSFS (логику патча мы уже наложили выше)
           cp -v "$SUSFS_DIR/kernel_patches/fs/susfs.c"               fs/
           cp -v "$SUSFS_DIR/kernel_patches/include/linux/susfs.h"     include/linux/
           cp -v "$SUSFS_DIR/kernel_patches/include/linux/susfs_def.h" include/linux/
@@ -137,16 +134,11 @@ jobs:
       - name: Final MIUI Compatibility Fixes
         run: |
           set -e
-          # Фикс заголовков в mount.h и susfs.h
           grep -q "susfs_mnt_id_backup" include/linux/mount.h || sed -i '/int mnt_flags;/a \ \ \ \ u64 susfs_mnt_id_backup;' include/linux/mount.h
           [ -f include/linux/susfs.h ] && grep -q "^struct kstat;" include/linux/susfs.h || sed -i '1s/^/struct kstat;\n/' include/linux/susfs.h || true
-          
-          # Прописываем инклуды SuSFS в proc файлы
           for f in fs/proc/task_mmu.c fs/proc/fd.c; do
             [ -f $f ] && (grep -q "linux/susfs.h" $f || sed -i '1i #include <linux/susfs.h>' $f)
           done
-
-          # Бэкпорты для KernelSU на ядре 5.4
           find drivers/kernelsu -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's|#include <linux/pgtable.h>|#include <asm/pgtable.h>|g' {} + || true
           find drivers/kernelsu -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's/strncpy_from_user_nofault/strncpy_from_user/g' {} + || true
           [ -f drivers/kernelsu/allowlist.c ] && sed -i 's/TWA_RESUME/true/g' drivers/kernelsu/allowlist.c || true
@@ -156,8 +148,6 @@ jobs:
           set -e
           DEVICE="${{ inputs.device_name || 'star' }}"
           DEFCONFIG=$(find arch/arm64/configs -name "*${DEVICE}*defconfig" | head -n 1)
-          echo "Using defconfig: $DEFCONFIG"
-
           for FLAG in \
             "CONFIG_KSU=y" "CONFIG_KSU_MANUAL_HOOK=y" "CONFIG_KSU_DEBUG=n" \
             "CONFIG_KSU_SUSFS=y" "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" "CONFIG_KSU_SUSFS_SUS_MOUNT=y" \
