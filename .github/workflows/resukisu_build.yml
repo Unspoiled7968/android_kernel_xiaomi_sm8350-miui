@@ -1,4 +1,4 @@
-name: Build ReSukiSU + SuSFS (Tracepoint)
+name: Build ReSukiSU + SuSFS (star Tracepoint Ultimate)
 
 on:
   workflow_dispatch:
@@ -161,10 +161,16 @@ jobs:
             [ -f $f ] && (grep -q "linux/susfs.h" $f || sed -i '1i #include <linux/susfs.h>' $f)
           done
           
-          echo "=== ABSOLUTE BULLETPROOF DOWNGRADE: Memory APIs to 5.4 equivalents ==="
-          find drivers/kernelsu -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i '1i #define strncpy_from_user_nofault strncpy_from_user' {} +
-          find drivers/kernelsu -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i '1i #define copy_from_user_nofault copy_from_user' {} +
-          find drivers/kernelsu -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i '1i #define copy_to_user_nofault copy_to_user' {} +
+          echo "=== ABSOLUTE BULLETPROOF DOWNGRADE: Kernel Header Injection ==="
+          if ! grep -q "strncpy_from_user_nofault" include/linux/uaccess.h; then
+            cat << 'EOF' >> include/linux/uaccess.h
+          
+          /* ReSukiSU / KernelSU Legacy 5.4 Backports */
+          #define strncpy_from_user_nofault strncpy_from_user
+          #define copy_from_user_nofault copy_from_user
+          #define copy_to_user_nofault copy_to_user
+          EOF
+          fi
           
           echo "=== Standardizing legacy paths ==="
           find drivers/kernelsu -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's|#include <linux/pgtable.h>|#include <asm/pgtable.h>|g' {} + || true
