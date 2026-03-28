@@ -72,7 +72,7 @@ jobs:
           elif [ "$VARIANT" = "KernelSU" ]; then
             curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s main
           elif [ "$VARIANT" = "KernelSU-Next" ]; then
-            curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s next
+            curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/main/kernel/setup.sh" | bash -s main
           elif [ "$VARIANT" = "WildKSU" ]; then
             curl -LSs "https://raw.githubusercontent.com/WildKernels/Wild_KSU/wild/kernel/setup.sh" | bash -s wild
           fi
@@ -90,6 +90,8 @@ jobs:
           echo "Found KSU kernel dir: $KSU_KERNEL_DIR"
           
           # We apply fixes inside the actual directory FIRST to avoid symlink destruction
+          # KSU_KERNEL_DIR is usually something like ./KernelSU/kernel (2 levels deep)
+          ROOT_DIR=$(pwd)
           cd "$KSU_KERNEL_DIR"
 
           echo "=== Bruteforce Fix: Missing Subfolder Headers (klog.h) ==="
@@ -151,7 +153,7 @@ jobs:
             sed -i '1s/^/bool susfs_is_current_proc_umounted(void) { return false; }\nvoid susfs_set_current_proc_umounted(void) { }\n/' "$f" || true
           done
 
-          cd ../../.. # Return to root repo directory
+          cd "$ROOT_DIR" # Safely return to root repo directory using the absolute path
 
           # NOW we create the symlink after the files are fully patched!
           ln -sf "$(pwd)/$KSU_KERNEL_DIR" drivers/kernelsu
@@ -321,9 +323,6 @@ jobs:
             KEY=$(echo "$FLAG" | cut -d= -f1)
             grep -q "^${KEY}[=\ ]" "$DEFCONFIG" || echo "$FLAG" >> "$DEFCONFIG"
           done
-
-          echo "=== KSU flags ==="
-          grep "KSU\|KPM\|KALLSYMS" "$DEFCONFIG" || true
 
       - name: Build Project
         run: |
