@@ -12,7 +12,7 @@ on:
       ksu_variant:
         description: 'Select KernelSU variant'
         required: true
-        default: 'WildKSU'
+        default: 'ReSukiSU'
         type: choice
         options: [SukiSU, ReSukiSU, KernelSU, KernelSU-Next, WildKSU]
       localversion:
