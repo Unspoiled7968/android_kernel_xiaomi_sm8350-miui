@@ -1,0 +1,139 @@
+## Build ReSukiSU + SuSFS 2.0 (Xiaomi 5.4 HyperOS Optimized)
+name: Build ReSukiSU Ultra + SuSFS (Manual Hook)
+
+on:
+  workflow_dispatch:
+    inputs:
+      device_name:
+        description: 'Target Device (star/mars/venus)'
+        required: true
+        default: 'star'
+        type: choice
+        options: [star, mars, venus]
+      localversion:
+        description: 'Kernel Local Version (e.g., -palaziks)'
+        required: true
+        default: '-palaziks'
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Swap & Dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y clang lld llvm git make gcc flex bison bc \
+            libssl-dev ccache libncurses5-dev libncursesw5-dev cmake \
+            python3 python-is-python3 cpio curl patch
+          # 16GB Swap for safe compilation
+          sudo fallocate -l 16G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+
+      - name: Setup ReSukiSU
+        run: |
+          set -e
+          echo "=== Integrating ReSukiSU ==="
+          # Pull the ReSukiSU setup script
+          curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s main
+          
+          # Symlink for standard KSU directory naming
+          ln -sf "$(pwd)/KernelSU/kernel" drivers/kernelsu
+          
+          # Wire into build system
+          grep -q "kernelsu" drivers/Makefile || echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
+          grep -q "kernelsu" drivers/Kconfig || sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+
+      - name: Fetch and Apply JackA1ltman Patches
+        run: |
+          set -e
+          echo "=== Downloading Mi11 Ultra HyperOS Patches ==="
+          BASE_URL="https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Patches/mi_kernel/mi11u_hyperos"
+          
+          curl -LSs "$BASE_URL/hyper_susfs_157_fixed.patch" -o susfs.patch
+          curl -LSs "$BASE_URL/hyperos_a14_fixed.patch" -o hyperos_fix.patch
+          
+          echo "=== Applying Patches to Tree ==="
+          # Apply SuSFS 2.0 (v1.5.7) logic
+          patch -p1 < susfs.patch || echo "Warning: Some SuSFS hunks failed, likely already patched or minor offset"
+          
+          # Apply HyperOS Android 14 Specific fixes
+          patch -p1 < hyperos_fix.patch || echo "Warning: HyperOS patch encountered issues"
+
+      - name: Sync SuSFS Source Files
+        run: |
+          set -e
+          # We still need the actual C/H files that the patches reference
+          git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 ../susfs4ksu
+          cp -v ../susfs4ksu/kernel_patches/fs/susfs.c fs/
+          cp -v ../susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/
+          cp -v ../susfs4ksu/kernel_patches/include/linux/susfs_def.h include/linux/
+          
+          # Ensure SuSFS is in the main FS Makefile
+          grep -q "susfs.o" fs/Makefile || echo "obj-y += susfs.o" >> fs/Makefile
+
+      - name: Kernel 5.4 Compatibility & Tracepoint Hooks
+        run: |
+          # 1. Cleanup for Kernel 5.4 Compatibility
+          find drivers/kernelsu -type f -name "*.c" -exec sed -i '/filter_count/d' {} +
+          sed -i '/pkg_observer.o/d' drivers/kernelsu/Makefile
+          find drivers/kernelsu -type f -name "*.c" -exec sed -i 's/ksu_pkg_observer_init()/0/g' {} +
+          find drivers/kernelsu -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's|#include <linux/pgtable.h>|#include <asm/pgtable.h>|g' {} +
+          find drivers/kernelsu -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's/strncpy_from_user_nofault/strncpy_from_user/g' {} +
+
+          # 2. Inject Tracepoint Hooks via Python
+          python3 << 'EOF'
+          import os, re
+          def inject(file, pattern, subst):
+              if not os.path.exists(file): return
+              with open(file, 'r') as f: content = f.read()
+              if 'trace_ksu_trace' in content: return
+              new = re.sub(pattern, subst, content)
+              with open(file, 'w') as f: f.write(new)
+
+          inc = '#if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n#include <../drivers/kernelsu/ksu_trace.h>\n#endif\n'
+          inject('fs/exec.c', r'(#include <.*?>\n)', inc + r'\1')
+          inject('fs/exec.c', r'(return do_execveat_common\(AT_FDCWD, filename, argv, envp, 0\);)', 
+                 '#if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n\ttrace_ksu_trace_execveat_hook((int *)AT_FDCWD, &filename, &argv, &envp, 0);\n#endif\n\t\\1')
+          EOF
+
+      - name: Configure Defconfig
+        run: |
+          DEVICE="${{ inputs.device_name }}"
+          DEFCONFIG=$(find arch/arm64/configs -name "*${DEVICE}*defconfig" | head -n 1)
+          echo "Targeting: $DEFCONFIG"
+          
+          # Append ReSukiSU and SuSFS Flags
+          cat >> "$DEFCONFIG" <<EOF
+          CONFIG_KSU=y
+          CONFIG_KSU_TRACEPOINT_HOOK=y
+          CONFIG_KSU_SUSFS=y
+          CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_MOUNT=y
+          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+          CONFIG_KSU_SUSFS_ENABLE_LOG=y
+          CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+          CONFIG_KPM=y
+          CONFIG_KALLSYMS=y
+          CONFIG_KALLSYMS_ALL=y
+          EOF
+
+      - name: Build Kernel
+        run: |
+          export LOCALVERSION="${{ inputs.localversion }}"
+          chmod +x ./build.sh
+          ./build.sh all ${{ inputs.device_name }}
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReSukiSU-5.4-JackA1ltman-${{ inputs.device_name }}
+          path: |
+            arch/arm64/boot/Image
+            ../out/anykernel/*.zip
