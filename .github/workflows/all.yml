@@ -12,7 +12,7 @@ on:
       ksu_variant:
         description: 'Select KernelSU variant'
         required: true
-        default: 'ReSukiSU'
+        default: 'SukiSU'
         type: choice
         options: [SukiSU, ReSukiSU, KernelSU, KernelSU-Next, WildKSU]
       localversion:
@@ -45,6 +45,19 @@ jobs:
           sudo apt install -y clang lld llvm git make gcc flex bison bc \
             libssl-dev ccache libncurses5-dev libncursesw5-dev cmake \
             python3 python-is-python3 cpio curl patch rsync zip
+
+      - name: Apply Specialized MIUI Patches (JackA1ltman)
+        run: |
+          set -e
+          echo "=== Cloning Specialized Patches for star ==="
+          git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Patches.git -b mi_kernel ../altman_patches
+          ALTMAN_DIR="$(pwd)/../altman_patches/mi11u_hyperos"
+
+          # Apply HyperOS system patches BEFORE everything else
+          echo "Applying HyperOS specialized patches..."
+          patch -p1 --forward --batch < "$ALTMAN_DIR/hyperos_a14_fixed.patch" || true
+          patch -p1 --forward --batch < "$ALTMAN_DIR/hyper_susfs_157_fixed.patch" || true
+          patch -p1 --forward --batch < "$ALTMAN_DIR/hyper_susfs_remove_all_sus_su.patch" || true
 
       - name: Integrate Selected KernelSU Variant
         run: |
@@ -110,7 +123,7 @@ jobs:
               '\tchar *pathbuf = NULL;\n',
               '#ifdef CONFIG_KSU\n'
               '\textern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,\n'
-              '\t\t\t\t       void *argv, void *envp, int *flags);\n'
+              '\t\t\t\t        void *argv, void *envp, int *flags);\n'
               '\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n'
               '#endif\n'
           )
@@ -130,7 +143,7 @@ jobs:
               'ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)\n{\n\tssize_t ret;\n',
               '#ifdef CONFIG_KSU\n'
               '\textern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,\n'
-              '\t\t\t\t       size_t *count_ptr, loff_t **pos);\n'
+              '\t\t\t\t        size_t *count_ptr, loff_t **pos);\n'
               '\tksu_handle_vfs_read(&file, &buf, &count, &pos);\n'
               '#endif\n'
           )
@@ -197,28 +210,19 @@ jobs:
             done
 
           echo "=== Fix: klog.h and other local headers not found in subdirs ==="
-          # KernelSU tiann новая структура: core/, policy/ ищут хедеры из корня kernel/
-          # Копируем все .h из корня KSU в подпапки которые их не видят
-          KSU_ROOT=$(find -L drivers/kernelsu -maxdepth 0 -type l -exec readlink -f {} \; 2>/dev/null || \
-                     find . -maxdepth 3 -type d -name "kernel" | grep -E "KernelSU" | head -n 1)
-          if [ -n "$KSU_ROOT" ]; then
-            # Для каждой подпапки у которой есть .c файлы с "#include "xxx.h"" без пути —
-            # проверяем есть ли этот хедер в корне KSU и если нет — создаём симлинк
-            find -L drivers/kernelsu -mindepth 2 -name "*.c" | while read srcfile; do
-              subdir=$(dirname "$srcfile")
-              grep -o '"[a-zA-Z_][a-zA-Z0-9_/]*\.h"' "$srcfile" 2>/dev/null | \
-                grep -v "/" | sed 's/"//g' | while read hdr; do
-                  # хедер без пути — ищем его в корне KSU
-                  if [ ! -f "$subdir/$hdr" ]; then
-                    actual=$(find -L "$KSU_ROOT" -maxdepth 1 -name "$hdr" 2>/dev/null | head -n 1)
-                    if [ -n "$actual" ]; then
-                      ln -sf "$actual" "$subdir/$hdr" 2>/dev/null || true
-                      echo "Symlinked $hdr into $subdir"
-                    fi
-                  fi
-                done
-            done
-          fi
+          find -L drivers/kernelsu -name "Makefile" -o -name "Kbuild" | while read mkfile; do
+            grep -q -- "-Idrivers/kernelsu" "$mkfile" || echo 'ccflags-y += -Idrivers/kernelsu' >> "$mkfile"
+            grep -q -- "-I\$(srctree)/drivers/kernelsu" "$mkfile" || echo 'ccflags-y += -I$(srctree)/drivers/kernelsu' >> "$mkfile"
+          done
+          find -L drivers/kernelsu -mindepth 1 -maxdepth 1 -type d | while read -r d; do
+            cp drivers/kernelsu/*.h "$d/" 2>/dev/null || true
+          done
+
+          echo "=== Bypass Kbuild TP Locks ==="
+          find drivers/kernelsu -name "Kbuild" -o -name "Makefile" | while read f; do
+            sed -i '/TP hooks are incompatible/d' "$f"
+            sed -i 's/$(error.*TP hooks are incompatible.*)//g' "$f"
+          done
 
           echo "=== Fix: TWA_RESUME compat ==="
           find -L drivers/kernelsu -type f -name "*.c" | \
