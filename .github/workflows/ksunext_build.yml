@@ -1,4 +1,4 @@
-name: Build KernelSU Next + SuSFS Kernel
+name: Build KernelSU + SuSFS Kernel
 
 on:
   workflow_dispatch:
@@ -47,12 +47,12 @@ jobs:
             libssl-dev ccache libncurses5-dev libncursesw5-dev cmake \
             python3 python-is-python3 cpio curl patch
 
-      - name: Integrate KernelSU Next
+      - name: Integrate KernelSU v0.9.5
         run: |
           set -e
 
-          echo "=== Cloning KernelSU Next ==="
-          git clone --depth=1 https://github.com/rifsxd/KernelSU-Next.git KernelSU
+          echo "=== Cloning KernelSU v0.9.5 (last non-GKI version) ==="
+          git clone --depth=1 --branch v0.9.5 https://github.com/tiann/KernelSU.git KernelSU
 
           echo "=== Symlink KernelSU into drivers (absolute path) ==="
           ln -sf "$(pwd)/KernelSU/kernel" drivers/kernelsu
@@ -64,6 +64,13 @@ jobs:
           echo "=== Wire into drivers/Kconfig ==="
           grep -q "kernelsu" drivers/Kconfig || \
             sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+
+          echo "=== Disable kprobes in KernelSU (non-GKI 5.4 has unreliable kprobes) ==="
+          find KernelSU/kernel -name "*.c" -o -name "*.h" | xargs grep -l "#ifdef CONFIG_KPROBES" | \
+            while read f; do
+              sed -i 's/#ifdef CONFIG_KPROBES/#if defined(CONFIG_KPROBES) \&\& 0/g' "$f"
+              echo "Disabled kprobes in $f"
+            done
 
           echo "=== Verify symlink ==="
           ls -la drivers/kernelsu/Kconfig
@@ -80,25 +87,35 @@ jobs:
                   print(f'{filepath}: hook already present, skipping')
                   return
               if search not in content:
-                  print(f'ERROR: anchor not found in {filepath}:', repr(search))
+                  print(f'ERROR: anchor not found in {filepath}: {repr(search)}')
                   sys.exit(1)
               content = content.replace(search, search + insertion, 1)
               with open(filepath, 'w') as f:
                   f.write(content)
               print(f'{filepath}: hook applied')
 
-          # fs/exec.c — insert after "char *pathbuf = NULL;" in __do_execve_file
+          # fs/exec.c — official tiann v0.9.5 non-GKI hook pattern
+          # Declares before do_execveat_common, calls inside it
           insert_after(
               'fs/exec.c',
-              '\tchar *pathbuf = NULL;\n',
+              'static int do_execveat_common(int fd, struct filename *filename,\n'
+              '\t\t\t      struct user_arg_ptr argv,\n'
+              '\t\t\t      struct user_arg_ptr envp,\n'
+              '\t\t\t      int flags)\n{\n',
               '#ifdef CONFIG_KSU\n'
+              '\textern bool ksu_execveat_hook __read_mostly;\n'
               '\textern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,\n'
               '\t\t\t\t       void *argv, void *envp, int *flags);\n'
-              '\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n'
+              '\textern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,\n'
+              '\t\t\t\t\t\tvoid *argv, void *envp, int *flags);\n'
+              '\tif (unlikely(ksu_execveat_hook))\n'
+              '\t\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n'
+              '\telse\n'
+              '\t\tksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);\n'
               '#endif\n'
           )
 
-          # fs/open.c — insert after "struct cred *override_cred;" in do_faccessat
+          # fs/open.c — hook in do_faccessat
           insert_after(
               'fs/open.c',
               '\tconst struct cred *old_cred;\n\tstruct cred *override_cred;\n',
@@ -109,7 +126,7 @@ jobs:
               '#endif\n'
           )
 
-          # fs/read_write.c — insert after "ssize_t ret;" in vfs_read
+          # fs/read_write.c — hook in vfs_read
           insert_after(
               'fs/read_write.c',
               'ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)\n{\n\tssize_t ret;\n',
@@ -120,7 +137,7 @@ jobs:
               '#endif\n'
           )
 
-          # fs/stat.c — insert after "int error = -EINVAL;" in vfs_statx
+          # fs/stat.c — hook in vfs_statx
           insert_after(
               'fs/stat.c',
               '\tint error = -EINVAL;\n',
@@ -142,6 +159,13 @@ jobs:
           echo "=== Cloning SuSFS kernel-5.4 ==="
           git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 ../susfs4ksu
           SUSFS_DIR="$(pwd)/../susfs4ksu"
+
+          echo "=== Apply SuSFS patch to KernelSU ==="
+          cd KernelSU/kernel/
+          patch -p1 < "$SUSFS_DIR/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" \
+            && echo "KSU susfs patch applied" \
+            || echo "KSU susfs patch skipped"
+          cd ../../
 
           echo "=== Apply SuSFS patch to kernel tree ==="
           patch -p1 < "$SUSFS_DIR/kernel_patches/50_add_susfs_in_kernel-5.4.patch" \
@@ -178,29 +202,6 @@ jobs:
           sed -i 's/TWA_RESUME/true/g' KernelSU/kernel/allowlist.c 2>/dev/null || true
           grep -q "linux/sched/task.h" KernelSU/kernel/allowlist.c || \
             sed -i '1s/^/#include <linux\/sched\/task.h>\n/' KernelSU/kernel/allowlist.c
-
-          echo "=== Fix 5: pgtable.h compat for 5.4 (linux/pgtable.h -> asm/pgtable.h) ==="
-          find KernelSU/kernel -name "*.c" -o -name "*.h" | while read f; do
-            if grep -q "linux/pgtable.h" "$f"; then
-              sed -i 's|#include <linux/pgtable.h>|#include <asm/pgtable.h>|g' "$f"
-              echo "Fixed pgtable.h in $f"
-            fi
-          done
-
-          echo "=== Fix 6: strncpy_from_user_nofault compat for 5.4 ==="
-          find KernelSU/kernel -name "*.c" -o -name "*.h" | while read f; do
-            if grep -q "strncpy_from_user_nofault" "$f"; then
-              sed -i 's/strncpy_from_user_nofault/strncpy_from_user/g' "$f"
-              echo "Fixed strncpy_from_user_nofault in $f"
-            fi
-          done
-
-          echo "=== Fix 7: Remove filter_count error ==="
-          sed -i '/seccomp\.filter_count/d' KernelSU/kernel/app_profile.c 2>/dev/null || true
-
-          echo "=== Fix 8: Fix module_exit error in ksu.c ==="
-          sed -i 's/module_exit(ksu_kernelsu_exit);/\/\/module_exit(ksu_kernelsu_exit);/g' \
-            KernelSU/kernel/ksu.c 2>/dev/null || true
 
       - name: Append KSU + SuSFS flags to defconfig
         run: |
@@ -253,5 +254,5 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-${{ inputs.device_name || 'star' }}-KSUN-SuSFS
+          name: Kernel-${{ inputs.device_name || 'star' }}-KSU-SuSFS
           path: build.tar.gz
