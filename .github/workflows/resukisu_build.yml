@@ -211,12 +211,12 @@ jobs:
           ZIP_PATH=$(find .. -name "universe-kernel*.zip" | head -n 1)
           if [ -n "$ZIP_PATH" ]; then
             echo "Found flashable zip at: $ZIP_PATH"
-            cp "$ZIP_PATH" ./ReSukiSU-Star-Final.zip
+            cp "$ZIP_PATH" ./star-ReSukiSU-palaziks.zip
           else
             echo "Zip not found! Archiving the raw Image directly."
             IMAGE_PATH=$(find .. -name "Image" | grep "arch/arm64/boot" | head -n 1)
             if [ -n "$IMAGE_PATH" ]; then
-              tar -czvf ReSukiSU-Star-Final.tar.gz "$IMAGE_PATH"
+              tar -czvf star-ReSukiSU-palaziks.tar.gz "$IMAGE_PATH"
             fi
           fi
 
