@@ -1,4 +1,4 @@
-name: Build KernelSU Variants + SuSFS (Tracepoint)
+name: Build KernelSU Variants + SuSFS
 
 on:
   workflow_dispatch:
@@ -74,10 +74,11 @@ jobs:
             curl -LSs "https://raw.githubusercontent.com/WildKernels/Wild_KSU/wild/kernel/setup.sh" | bash -s wild
           fi
           
-          # Защита на случай, если setup.sh не создал симлинк сам
-          if [ ! -d "drivers/kernelsu" ] && [ ! -L "drivers/kernelsu" ]; then
-            KSU_DIR=$(find . -maxdepth 2 -type d -name "kernel" | grep -i "ksu" | head -n 1)
-            ln -sf "$(pwd)/$KSU_DIR" drivers/kernelsu
+          # Авто-поиск папки KSU и создание правильного симлинка
+          KSU_REAL_DIR=$(find . -maxdepth 2 -type d -name "kernel" | grep -i "ksu" | head -n 1)
+          if [ -n "$KSU_REAL_DIR" ]; then
+             echo "Found KSU source at: $KSU_REAL_DIR"
+             ln -sf "$(pwd)/$KSU_REAL_DIR" drivers/kernelsu
           fi
           
           grep -q "kernelsu" drivers/Makefile || echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
@@ -86,31 +87,41 @@ jobs:
       - name: Core Compatibility & Tracepoint Bypass
         run: |
           set -e
-          echo "=== Bypassing TP hooks lock for GKI 1.0 ==="
-          if [ -f drivers/kernelsu/Kbuild ]; then
-            sed -i '/TP hooks are incompatible/d' drivers/kernelsu/Kbuild
-            sed -i 's/$(error.*TP hooks are incompatible.*)//g' drivers/kernelsu/Kbuild
-          fi
-          if [ -f drivers/kernelsu/Makefile ]; then
-            sed -i '/TP hooks are incompatible/d' drivers/kernelsu/Makefile
-            sed -i 's/$(error.*TP hooks are incompatible.*)//g' drivers/kernelsu/Makefile
+          echo "=== Bypassing TP hooks locks and applying heavy fixes ==="
+          # Снимаем блокировки TP hooks (твои патчи)
+          find -L drivers/kernelsu -name "Kbuild" -o -name "Makefile" | xargs sed -i 's/$(error.*TP hooks are incompatible.*)//g' || true
+          
+          # Фикс для KernelSU-Next (SECCOMP_ARCH_NATIVE_NR)
+          if [ -f include/uapi/linux/seccomp.h ]; then
+            grep -q "SECCOMP_ARCH_NATIVE" include/uapi/linux/seccomp.h || cat << 'EOF' >> include/uapi/linux/seccomp.h
+          #ifndef SECCOMP_ARCH_NATIVE
+          #define SECCOMP_ARCH_NATIVE		AUDIT_ARCH_AARCH64
+          #define SECCOMP_ARCH_NATIVE_NR	NR_syscalls
+          #define SECCOMP_ARCH_NATIVE_NAME	"aarch64"
+          #endif
+          EOF
           fi
 
-          echo "=== IRON-CLAD FIXES FOR 5.4 KERNEL ==="
+          # Глобальные чистки и фиксы (наше общее)
           echo '#define filter_count _not_used_in_5_4' >> include/linux/seccomp.h
           find -L drivers/kernelsu -type f -name "*.c" -exec sed -i '/filter_count/d' {} + || true
+          find -L drivers/kernelsu -type f -name "*.c" -exec sed -i 's/TWA_RESUME/true/g' {} + || true
           
-          [ -f drivers/kernelsu/allowlist.c ] && sed -i '1i #include <linux/sched/task.h>\n#include <linux/sched.h>' drivers/kernelsu/allowlist.c
+          # Фиксы структуры sched
+          find -L drivers/kernelsu -name "allowlist.c" -exec sed -i '1i #include <linux/sched/task.h>\n#include <linux/sched.h>' {} + || true
           
-          [ -f drivers/kernelsu/setuid_hook.c ] && sed -i '1i struct seccomp_filter; extern void ksu_seccomp_allow_cache(struct seccomp_filter *filter, int syscall);' drivers/kernelsu/setuid_hook.c
+          # Фикс SukiSU (ksu_seccomp_allow_cache)
+          find -L drivers/kernelsu -name "setuid_hook.c" -exec sed -i '1i struct seccomp_filter; extern void ksu_seccomp_allow_cache(struct seccomp_filter *filter, int syscall);' {} + || true
 
+          # Пустышка pkg_observer (чтобы не падал билд)
           cat << 'EOF' > drivers/kernelsu/pkg_observer.c
           #include <linux/types.h>
           int ksu_pkg_observer_init(void) { return 0; }
           void ksu_pkg_observer_exit(void) { return; }
           EOF
 
-          [ -f drivers/kernelsu/ksu.c ] && sed -i 's/module_exit(ksu_kernelsu_exit);/\/\/module_exit(ksu_kernelsu_exit);/g' drivers/kernelsu/ksu.c || true
+          # Отключаем module_exit
+          find -L drivers/kernelsu -name "ksu.c" -exec sed -i 's/module_exit(ksu_kernelsu_exit);/\/\/module_exit(ksu_kernelsu_exit);/g' {} + || true
 
       - name: Apply KSU Tracepoint Hooks (Python)
         run: |
@@ -170,11 +181,9 @@ jobs:
             [ -f $f ] && (grep -q "linux/susfs.h" $f || sed -i '1i #include <linux/susfs.h>' $f)
           done
           
-          echo "=== ABSOLUTE BULLETPROOF DOWNGRADE: Kernel Header Injection ==="
+          echo "=== ABSOLUTE BULLETPROOF DOWNGRADE (ReSukiSU logic) ==="
           if ! grep -q "strncpy_from_user_nofault" include/linux/uaccess.h; then
             cat << 'EOF' >> include/linux/uaccess.h
-          
-          /* KSU Variants / Legacy 5.4 Backports */
           #define strncpy_from_user_nofault strncpy_from_user
           #define copy_from_user_nofault copy_from_user
           #define copy_to_user_nofault copy_to_user
@@ -183,14 +192,14 @@ jobs:
           EOF
           fi
           
-          echo "=== Fixing security_inode_init_security_anon in file_wrapper.c ==="
-          [ -f drivers/kernelsu/file_wrapper.c ] && sed -i '1i #define security_inode_init_security_anon(inode, name, context_inode) (0)' drivers/kernelsu/file_wrapper.c || true
+          # Фикс SukiSU (security_inode)
+          find -L drivers/kernelsu -name "file_wrapper.c" -exec sed -i '1i #define security_inode_init_security_anon(inode, name, context_inode) (0)' {} + || true
           
-          echo "=== Standardizing legacy paths and TWA_RESUME ==="
-          # Используем find -L чтобы проходить сквозь симлинки (решает проблему WildKSU)
+          # Фикс WildKSU (susfs_is_current)
+          find -L drivers/kernelsu -name "sucompat.c" -exec sed -i '1i #include <linux/types.h>\nbool susfs_is_current_proc_umounted(void) { return false; }\nvoid susfs_set_current_proc_umounted(void) { }' {} + || true
+          
+          # Пути pgtable
           find -L drivers/kernelsu -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's|#include <linux/pgtable.h>|#include <asm/pgtable.h>|g' {} + || true
-          
-          find -L drivers/kernelsu -type f -name "*.c" -exec sed -i 's/TWA_RESUME/true/g' {} + || true
 
       - name: Append Flags to Defconfig
         run: |
@@ -211,6 +220,7 @@ jobs:
           git config --global user.email "bot@example.com"
           git config --global user.name "wannq"
           export LOCALVERSION="${{ inputs.localversion || '-palaziks' }}"
+          sed -i 's/-j$THREAD/-j3/g' build.sh || true
           chmod +x ./build.sh
           ./build.sh all ${{ inputs.device_name || 'star' }} 
 
