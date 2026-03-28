@@ -461,7 +461,7 @@ static ssize_t pcie_path_store(struct device *dev,
 
 	if (strlen(buf) >= 10)
 		return -EINVAL;
-	if (sscanf(buf, "%10s", str) != 1)
+	if (sscanf(buf, "%9s", str) != 1)
 		return -EINVAL;
 
 	mutex_lock(&drvdata->mem_lock);
