@@ -1,4 +1,4 @@
-name: Build SukiSU Ultra + SuSFS (star Manual Hook Special)
+name: Build SukiSU Ultra + SuSFS (Manual Hook)
 
 on:
   workflow_dispatch:
