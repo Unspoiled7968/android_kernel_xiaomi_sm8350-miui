@@ -102,7 +102,7 @@ jobs:
           patch_file('fs/exec.c', 
                      r'(return do_execveat_common\(AT_FDCWD, filename, argv, envp, 0\);)', 
                      r'#if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n\ttrace_ksu_trace_execveat_hook((int *)AT_FDCWD, &filename, &argv, &envp, 0);\n#endif\n\t\1', 
-                     count=0) # count=0 заменяет все вхождения (do_execve и compat_do_execve)
+                     count=0)
 
           # --- fs/open.c ---
           add_include('fs/open.c', '<../drivers/kernelsu/ksu_trace.h>')
@@ -184,6 +184,11 @@ jobs:
           sed -i 's/TWA_RESUME/true/g' KernelSU/kernel/allowlist.c 2>/dev/null || true
           grep -q "linux/sched/task.h" KernelSU/kernel/allowlist.c || \
             sed -i '1s/^/#include <linux\/sched\/task.h>\n/' KernelSU/kernel/allowlist.c 2>/dev/null || true
+
+          echo "=== Fix 9: Disable pkg_observer (Incompatible with 5.4 fsnotify API) ==="
+          sed -i '/pkg_observer.o/d' KernelSU/kernel/Makefile
+          find KernelSU/kernel -type f -name "*.c" -exec sed -i 's/ksu_pkg_observer_init()/0/g' {} +
+          find KernelSU/kernel -type f -name "*.c" -exec sed -i 's/ksu_pkg_observer_exit()//g' {} +
 
       - name: Append KSU + SuSFS flags to defconfig
         run: |
