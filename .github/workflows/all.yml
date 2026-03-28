@@ -72,7 +72,7 @@ jobs:
           elif [ "$VARIANT" = "KernelSU" ]; then
             curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s main
           elif [ "$VARIANT" = "KernelSU-Next" ]; then
-            curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/main/kernel/setup.sh" | bash -s main
+            curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s next
           elif [ "$VARIANT" = "WildKSU" ]; then
             curl -LSs "https://raw.githubusercontent.com/WildKernels/Wild_KSU/wild/kernel/setup.sh" | bash -s wild
           fi
@@ -90,13 +90,19 @@ jobs:
           echo "Found KSU kernel dir: $KSU_KERNEL_DIR"
           
           # We apply fixes inside the actual directory FIRST to avoid symlink destruction
-          # KSU_KERNEL_DIR is usually something like ./KernelSU/kernel (2 levels deep)
           ROOT_DIR=$(pwd)
           cd "$KSU_KERNEL_DIR"
 
-          echo "=== Bruteforce Fix: Missing Subfolder Headers (klog.h) ==="
-          find . -mindepth 1 -type d | while read -r d; do
+          echo "=== Bruteforce Fix: Missing Subfolder Headers (klog.h & uapi) ==="
+          # Tell compiler to look in root drivers/kernelsu for all subfolders
+          find . -name "Makefile" -o -name "Kbuild" | while read mkfile; do
+            echo 'ccflags-y += -I$(srctree)/drivers/kernelsu' >> "$mkfile"
+          done
+          
+          # Physical fallback: copy headers AND the uapi folder to every subfolder
+          find . -mindepth 1 -maxdepth 1 -type d | grep -v "uapi" | while read -r d; do
             cp *.h "$d/" 2>/dev/null || true
+            cp -r uapi "$d/" 2>/dev/null || true
           done
 
           echo "=== Fix: ksu_is_ksu_domain -> is_ksu_domain (KernelSU Next BUG) ==="
