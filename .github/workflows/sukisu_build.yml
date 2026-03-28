@@ -1,4 +1,4 @@
-name: Build SukiSU Ultra + SuSFS (star Manual Hook Ultimate)
+name: Build SukiSU Ultra + SuSFS (Manual Hook)
 
 on:
   workflow_dispatch:
@@ -62,22 +62,34 @@ jobs:
           grep -q "kernelsu" drivers/Makefile || echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
           grep -q "kernelsu" drivers/Kconfig || sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
 
-      - name: Kernel 5.4 Compatibility Sanitizer
+      - name: Run SukiSU Kernel Patcher & Fix Task Struct
         run: |
           set -e
-          echo "=== Cleaning up SukiSU for Kernel 5.4 ==="
-          # Удаляем filter_count (причина падения seccomp на 5.4)
-          find drivers/kernelsu -type f -name "*.c" -exec sed -i '/filter_count/d' {} +
+          echo "=== Running patch_linux (Correct Raw URL) ==="
+          # Используем правильную RAW ссылку
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU_patch/main/kpm/patch_linux" -o patch_linux
           
-          # Отключаем pkg_observer (несовместим с API fsnotify в 5.4)
+          if [ -s patch_linux ] && ! grep -q "404" patch_linux; then
+            chmod +x patch_linux
+            ./patch_linux drivers/kernelsu || echo "Patcher warning, continuing..."
+          else
+            echo "URL failed, using manual cleanup logic."
+          fi
+
+          echo "=== Fix allowlist.c for Kernel 5.4 (put_task_struct) ==="
+          if [ -f drivers/kernelsu/allowlist.c ]; then
+            grep -q "linux/sched/task.h" drivers/kernelsu/allowlist.c || sed -i '1i #include <linux/sched/task.h>' drivers/kernelsu/allowlist.c
+            grep -q "linux/sched.h" drivers/kernelsu/allowlist.c || sed -i '1i #include <linux/sched.h>' drivers/kernelsu/allowlist.c
+          fi
+
+          echo "=== Aggressive Cleanup for 5.4 Compatibility ==="
+          find drivers/kernelsu -type f -name "*.c" -exec sed -i '/filter_count/d' {} +
           sed -i '/pkg_observer.o/d' drivers/kernelsu/Makefile
           find drivers/kernelsu -type f -name "*.c" -exec sed -i 's/ksu_pkg_observer_init()/0/g' {} +
           find drivers/kernelsu -type f -name "*.c" -exec sed -i 's/ksu_pkg_observer_exit()//g' {} +
-          
-          # Фикс выхода модуля
           find drivers/kernelsu -type f -name "*.c" -exec sed -i 's/module_exit(ksu_kernelsu_exit);/\/\/module_exit(ksu_kernelsu_exit);/g' {} +
 
-      - name: Apply KSU Manual Hooks (Smart Python)
+      - name: Apply KSU Manual Hooks (Python)
         run: |
           python3 << 'EOF'
           import sys, re, os
@@ -93,27 +105,20 @@ jobs:
                   with open(filepath, 'w') as f: f.write(new_content)
                   print(f'{filepath}: hook applied successfully')
               else:
-                  print(f'WARNING: Could not find anchor in {filepath}')
+                  print(f'ERROR: Anchor not found in {filepath}')
+                  sys.exit(1)
 
           # fs/exec.c — hook in __do_execve_file
-          robust_patch('fs/exec.c', 
-                       r'(char \*pathbuf = NULL;)', 
-                       r'\1\n#ifdef CONFIG_KSU\n\textern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\n\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n#endif\n')
+          robust_patch('fs/exec.c', r'(char \*pathbuf = NULL;)', r'\1\n#ifdef CONFIG_KSU\n\textern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\n\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n#endif\n')
 
           # fs/open.c — hook in do_faccessat
-          robust_patch('fs/open.c', 
-                       r'(struct cred \*override_cred;)', 
-                       r'\1\n#ifdef CONFIG_KSU\n\textern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\n\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n#endif\n')
+          robust_patch('fs/open.c', r'(struct cred \*override_cred;)', r'\1\n#ifdef CONFIG_KSU\n\textern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\n\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n#endif\n')
 
-          # fs/read_write.c — Цепляемся за начало функции vfs_read (самый надежный способ для MIUI)
-          robust_patch('fs/read_write.c', 
-                       r'(ssize_t vfs_read\(struct file \*file, char __user \*buf, size_t count, loff_t \*pos\)\n\{)', 
-                       r'\1\n#ifdef CONFIG_KSU\n\textern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr, size_t *count_ptr, loff_t **pos);\n\tksu_handle_vfs_read(&file, &buf, &count, &pos);\n#endif\n')
+          # fs/read_write.c — Цепляемся за объявление функции vfs_read
+          robust_patch('fs/read_write.c', r'(ssize_t vfs_read\(struct file \*file, char __user \*buf, size_t count, loff_t \*pos\)\n\{)', r'\1\n#ifdef CONFIG_KSU\n\textern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr, size_t *count_ptr, loff_t **pos);\n\tksu_handle_vfs_read(&file, &buf, &count, &pos);\n#endif\n')
 
           # fs/stat.c — hook in vfs_statx
-          robust_patch('fs/stat.c', 
-                       r'(int error = -EINVAL;)', 
-                       r'\1\n#ifdef CONFIG_KSU\n\textern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\n\tksu_handle_stat(&dfd, &filename, &flags);\n#endif\n')
+          robust_patch('fs/stat.c', r'(int error = -EINVAL;)', r'\1\n#ifdef CONFIG_KSU\n\textern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\n\tksu_handle_stat(&dfd, &filename, &flags);\n#endif\n')
           EOF
 
       - name: Setup SuSFS Source Files
@@ -126,7 +131,7 @@ jobs:
           cp -v "$SUSFS_DIR/kernel_patches/include/linux/susfs_def.h" include/linux/
           grep -q "susfs.o" fs/Makefile || echo "obj-y += susfs.o" >> fs/Makefile
 
-      - name: Final MIUI Fixes & Backports
+      - name: Final MIUI Compatibility Fixes
         run: |
           set -e
           grep -q "susfs_mnt_id_backup" include/linux/mount.h || sed -i '/int mnt_flags;/a \ \ \ \ u64 susfs_mnt_id_backup;' include/linux/mount.h
@@ -134,7 +139,7 @@ jobs:
           for f in fs/proc/task_mmu.c fs/proc/fd.c; do
             [ -f $f ] && (grep -q "linux/susfs.h" $f || sed -i '1i #include <linux/susfs.h>' $f)
           done
-          # Бэкпорты KernelSU
+          # Бэкпорты для KernelSU 5.4
           find drivers/kernelsu -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's|#include <linux/pgtable.h>|#include <asm/pgtable.h>|g' {} + || true
           find drivers/kernelsu -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's/strncpy_from_user_nofault/strncpy_from_user/g' {} + || true
           [ -f drivers/kernelsu/allowlist.c ] && sed -i 's/TWA_RESUME/true/g' drivers/kernelsu/allowlist.c || true
@@ -171,5 +176,5 @@ jobs:
         run: tar -czvf build.tar.gz ../out/anykernel/*.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: Kernel-${{ inputs.device_name }}-Manual-Ultimate-v2
+          name: Kernel-${{ inputs.device_name }}-Manual-Star-Fix-v3
           path: build.tar.gz
