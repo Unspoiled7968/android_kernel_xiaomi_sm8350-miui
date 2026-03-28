@@ -1,3 +1,4 @@
+# credits to palazik @ GitHub for build yml
 name: Build ReSukiSU + SuSFS (Tracepoint)
 
 on:
@@ -6,13 +7,13 @@ on:
       device_name:
         description: 'Select target device'
         required: true
-        default: 'star'
+        default: 'venus'
         type: choice
         options: [star, mars, venus]
       localversion:
-        description: 'Custom version suffix'
+        description: 'Custom LOCALVERSION'
         required: true
-        default: '-palaziks'
+        default: '-gyabii'
       swap_size:
         description: 'Swap size in GB'
         required: true
@@ -179,8 +180,8 @@ jobs:
       - name: Append Flags to Defconfig
         run: |
           set -e
-          DEVICE="${{ inputs.device_name || 'star' }}"
-          DEFCONFIG=$(find arch/arm64/configs -name "*${DEVICE}*defconfig" | head -n 1)
+          DEVICE="${{ inputs.device_name || 'venus' }}"
+          DEFCONFIG=arch/arm64/configs/vendor/${DEVICE}_QGKI.config" | head -n 1)
           for FLAG in \
             "CONFIG_KSU=y" "CONFIG_KSU_TRACEPOINT_HOOK=y" "CONFIG_KSU_DEBUG=n" \
             "CONFIG_KSU_SUSFS=y" "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" "CONFIG_KSU_SUSFS_SUS_MOUNT=y" \
@@ -194,7 +195,7 @@ jobs:
         run: |
           git config --global user.email "bot@example.com"
           git config --global user.name "wannq"
-          export LOCALVERSION="${{ inputs.localversion || '-palaziks' }}"
+          export LOCALVERSION="${{ inputs.localversion || '-gyabii' }}"
           chmod +x ./build.sh
           ./build.sh all ${{ inputs.device_name || 'star' }} 
 
@@ -204,5 +205,5 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.device_name || 'star' }}-ReSukiSU-palaziks
+          name: ${{ inputs.device_name || 'venus' }}-ReSukiSU-gyabii
           path: build.tar.gz
