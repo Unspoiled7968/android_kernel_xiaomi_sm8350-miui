@@ -1,4 +1,4 @@
-name: Build ReSukiSU + SuSFS (Tracepoint)
+name: Build ReSukiSU + SuSFS (star Tracepoint Ultimate)
 
 on:
   workflow_dispatch:
@@ -196,33 +196,13 @@ jobs:
           git config --global user.name "wannq"
           export LOCALVERSION="${{ inputs.localversion || '-palaziks' }}"
           chmod +x ./build.sh
-          ./build.sh all ${{ inputs.device_name || 'star' }} 2>&1 | tee /tmp/kbuild.log
+          ./build.sh all ${{ inputs.device_name || 'star' }} 
 
-          # The Image is usually placed in out/arch/arm64/boot/Image on Xiaomi 5.4 trees
-          if [ ! -f out/arch/arm64/boot/Image ] && [ ! -f arch/arm64/boot/Image ]; then
-            echo "BUILD FAILED"
-            grep -E "error:|FAILED|undefined reference" /tmp/kbuild.log | tail -50
-            exit 1
-          fi
+      - name: Compress
+        run: tar -czvf build.tar.gz ../out/anykernel/*.zip
 
-      - name: Find and Prepare Artifacts
-        run: |
-          # Searching parent directory because build.sh might output to ../out/anykernel
-          ZIP_PATH=$(find .. -name "universe-kernel*.zip" | head -n 1)
-          if [ -n "$ZIP_PATH" ]; then
-            echo "Found flashable zip at: $ZIP_PATH"
-            cp "$ZIP_PATH" ./star-ReSukiSU-palaziks.zip
-          else
-            echo "Zip not found! Archiving the raw Image directly."
-            IMAGE_PATH=$(find .. -name "Image" | grep "arch/arm64/boot" | head -n 1)
-            if [ -n "$IMAGE_PATH" ]; then
-              tar -czvf star-ReSukiSU-palaziks.tar.gz "$IMAGE_PATH"
-            fi
-          fi
-
-      - uses: actions/upload-artifact@v4
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: Kernel-${{ inputs.device_name }}-ReSukiSU-Tracepoint-Ultimate
-          path: |
-            star-ReSukiSU-palaziks.zip
-            star-ReSukiSU-palaziks.tar.gz
+          name: ${{ inputs.device_name || 'star' }}-ReSukiSU-palaziks
+          path: build.tar.gz
