@@ -1,4 +1,4 @@
-name: Build clear kernel
+name: Build KSU kernel
 
 on:
   workflow_dispatch:
