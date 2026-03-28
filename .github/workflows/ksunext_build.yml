@@ -179,7 +179,7 @@ jobs:
           grep -q "linux/sched/task.h" KernelSU/kernel/allowlist.c || \
             sed -i '1s/^/#include <linux\/sched\/task.h>\n/' KernelSU/kernel/allowlist.c
 
-          echo "=== Fix 5: pgtable.h compat for 5.4 (linux/pgtable.h → asm/pgtable.h) ==="
+          echo "=== Fix 5: pgtable.h compat for 5.4 (linux/pgtable.h -> asm/pgtable.h) ==="
           find KernelSU/kernel -name "*.c" -o -name "*.h" | while read f; do
             if grep -q "linux/pgtable.h" "$f"; then
               sed -i 's|#include <linux/pgtable.h>|#include <asm/pgtable.h>|g' "$f"
@@ -187,10 +187,18 @@ jobs:
             fi
           done
 
-          echo "=== Fix 6: Remove filter_count error ==="
+          echo "=== Fix 6: strncpy_from_user_nofault compat for 5.4 ==="
+          find KernelSU/kernel -name "*.c" -o -name "*.h" | while read f; do
+            if grep -q "strncpy_from_user_nofault" "$f"; then
+              sed -i 's/strncpy_from_user_nofault/strncpy_from_user/g' "$f"
+              echo "Fixed strncpy_from_user_nofault in $f"
+            fi
+          done
+
+          echo "=== Fix 7: Remove filter_count error ==="
           sed -i '/seccomp\.filter_count/d' KernelSU/kernel/app_profile.c 2>/dev/null || true
 
-          echo "=== Fix 7: Fix module_exit error in ksu.c ==="
+          echo "=== Fix 8: Fix module_exit error in ksu.c ==="
           sed -i 's/module_exit(ksu_kernelsu_exit);/\/\/module_exit(ksu_kernelsu_exit);/g' \
             KernelSU/kernel/ksu.c 2>/dev/null || true
 
