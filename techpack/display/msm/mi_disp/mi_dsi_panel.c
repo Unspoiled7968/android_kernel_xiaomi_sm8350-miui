@@ -2952,9 +2952,10 @@ int mi_dsi_panel_set_disp_param(struct dsi_panel *panel, struct disp_feature_ctl
 				mi_dsi_update_hbm_cmd_51reg(panel, DSI_CMD_SET_MI_LOCAL_HBM_OFF_TO_NORMAL, 0);
 			else
 				mi_dsi_update_backlight_in_aod(panel, true);
-				if (mi_cfg->panel_id == 0x4C3900360200)
-					mi_dsi_update_lhbm_dc_gain(panel,DSI_CMD_SET_MI_LOCAL_HBM_OFF_TO_NORMAL);
-				dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_MI_LOCAL_HBM_OFF_TO_NORMAL);
+
+			if (mi_cfg->panel_id == 0x4C3900360200)
+				mi_dsi_update_lhbm_dc_gain(panel,DSI_CMD_SET_MI_LOCAL_HBM_OFF_TO_NORMAL);
+			dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_MI_LOCAL_HBM_OFF_TO_NORMAL);
 			mi_dsi_update_micfg_flags(panel, PANEL_NOLP);
 			mi_cfg->doze_brightness_backup = DOZE_TO_NORMAL;
 			mi_cfg->local_hbm_to_normal = true;
