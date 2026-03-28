@@ -159,9 +159,13 @@ jobs:
           for f in fs/proc/task_mmu.c fs/proc/fd.c; do
             [ -f $f ] && (grep -q "linux/susfs.h" $f || sed -i '1i #include <linux/susfs.h>' $f)
           done
-          # Backports for KernelSU 5.4
+          
+          echo "=== Downgrading modern memory APIs to 5.4 equivalents ==="
           find drivers/kernelsu -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's|#include <linux/pgtable.h>|#include <asm/pgtable.h>|g' {} + || true
           find drivers/kernelsu -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's/strncpy_from_user_nofault/strncpy_from_user/g' {} + || true
+          find drivers/kernelsu -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's/copy_from_user_nofault/copy_from_user/g' {} + || true
+          find drivers/kernelsu -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's/copy_to_user_nofault/copy_to_user/g' {} + || true
+          
           [ -f drivers/kernelsu/allowlist.c ] && sed -i 's/TWA_RESUME/true/g' drivers/kernelsu/allowlist.c || true
 
       - name: Append Flags to Defconfig
