@@ -12,7 +12,7 @@ on:
       ksu_variant:
         description: 'Select KernelSU variant'
         required: true
-        default: 'SukiSU'
+        default: 'ReSukiSU'
         type: choice
         options: [SukiSU, ReSukiSU, KernelSU, KernelSU-Next, WildKSU]
       localversion:
@@ -88,6 +88,72 @@ jobs:
           fi
 
           echo "Found KSU kernel dir: $KSU_KERNEL_DIR"
+          
+          # We apply fixes inside the actual directory FIRST to avoid symlink destruction
+          cd "$KSU_KERNEL_DIR"
+
+          echo "=== Bruteforce Fix: Missing Subfolder Headers (klog.h) ==="
+          find . -mindepth 1 -type d | while read -r d; do
+            cp *.h "$d/" 2>/dev/null || true
+          done
+
+          echo "=== Fix: ksu_is_ksu_domain -> is_ksu_domain (KernelSU Next BUG) ==="
+          find . -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's/ksu_is_ksu_domain/is_ksu_domain/g' {} + || true
+
+          echo "=== Fix: pgtable.h (linux -> asm) ==="
+          find . -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's|#include <linux/pgtable.h>|#include <asm/pgtable.h>|g' {} + || true
+
+          echo "=== Bypass Kbuild TP Locks ==="
+          find . -name "Kbuild" -o -name "Makefile" | while read f; do
+            sed -i '/TP hooks are incompatible/d' "$f"
+            sed -i 's/$(error.*TP hooks are incompatible.*)//g' "$f"
+          done
+
+          echo "=== Fix: TWA_RESUME compat ==="
+          find . -type f -name "*.c" -exec sed -i 's/TWA_RESUME/true/g' {} + || true
+
+          echo "=== Fix: put_task_struct header ==="
+          find . -name "allowlist.c" | while read f; do
+            grep -q "linux/sched/task.h" "$f" || sed -i '1s/^/#include <linux\/sched\/task.h>\n/' "$f"
+          done
+
+          echo "=== Fix: Legacy Crashers (filter_count & pkg_observer) ==="
+          find . -type f -name "*.c" -exec sed -i '/filter_count/d' {} + || true
+          sed -i '/pkg_observer.o/d' Makefile || true
+          find . -type f -name "*.c" -exec sed -i 's/ksu_pkg_observer_init()/0/g' {} + || true
+          find . -type f -name "*.c" -exec sed -i 's/ksu_pkg_observer_exit()//g' {} + || true
+          
+          echo "=== Fix: module_init/module_exit in ksu.c ==="
+          find . -name "ksu.c" | while read f; do
+            sed -i 's/^module_init(kernelsu_init);/\/\/module_init(kernelsu_init);/' "$f"
+            sed -i 's/^module_exit(ksu_kernelsu_exit);/\/\/module_exit(ksu_kernelsu_exit);/' "$f"
+            sed -i 's/^module_exit(kernelsu_exit);/\/\/module_exit(kernelsu_exit);/' "$f"
+          done
+
+          echo "=== Fix: pkg_observer.c stub (fsnotify API incompatible with 5.4) ==="
+          find . -name "pkg_observer.c" | while read f; do
+            cat > "$f" << 'STUB'
+          #include <linux/types.h>
+          #include <linux/init.h>
+          int ksu_pkg_observer_init(void) { return 0; }
+          void ksu_pkg_observer_exit(void) { return; }
+          STUB
+          done
+
+          echo "=== Fix: sepolicy.c diagnostic suppress ==="
+          find . -name "sepolicy.c" | while read f; do
+            sed -i '1s/^/#pragma clang diagnostic push\n#pragma clang diagnostic ignored "-Wimplicit-function-declaration"\n#pragma clang diagnostic ignored "-Wincompatible-pointer-types"\n#pragma clang diagnostic ignored "-Wincompatible-function-pointer-types"\n/' "$f"
+            echo '#pragma clang diagnostic pop' >> "$f"
+          done
+
+          echo "=== Fix: susfs_is_current_proc stubs (WildKSU) ==="
+          find . -name "sucompat.c" | while read f; do
+            sed -i '1s/^/bool susfs_is_current_proc_umounted(void) { return false; }\nvoid susfs_set_current_proc_umounted(void) { }\n/' "$f" || true
+          done
+
+          cd ../../.. # Return to root repo directory
+
+          # NOW we create the symlink after the files are fully patched!
           ln -sf "$(pwd)/$KSU_KERNEL_DIR" drivers/kernelsu
 
           grep -q "kernelsu" drivers/Makefile || \
@@ -159,30 +225,12 @@ jobs:
           )
           EOF
 
-      - name: Apply Compatibility Fixes for MIUI 5.4 QGKI
+          echo "=== Verify hooks ==="
+          grep -n "ksu_handle" fs/exec.c fs/open.c fs/read_write.c fs/stat.c
+
+      - name: Apply Compatibility Fixes for MIUI 5.4 QGKI (Root Tree)
         run: |
           set -e
-
-          echo "=== Bruteforce Fix: Missing Subfolder Headers (klog.h) ==="
-          # Tell Kbuild to pass include paths recursively to subfolders
-          find -L drivers/kernelsu -name "Makefile" -o -name "Kbuild" | while read mkfile; do
-            echo 'ccflags-y += -I$(srctree)/drivers/kernelsu' >> "$mkfile"
-            echo 'subdir-ccflags-y += -I$(srctree)/drivers/kernelsu' >> "$mkfile"
-          done
-          
-          # Physical file copy fallback just in case
-          KLOG_PATH=$(find -L drivers/kernelsu -name "klog.h" | head -n 1)
-          if [ -n "$KLOG_PATH" ]; then
-            find -L drivers/kernelsu -mindepth 1 -type d | while read -r d; do
-              cp "$KLOG_PATH" "$d/" 2>/dev/null || true
-            done
-          fi
-
-          echo "=== Fix: ksu_is_ksu_domain -> is_ksu_domain (KernelSU Next BUG) ==="
-          find -L drivers/kernelsu -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's/ksu_is_ksu_domain/is_ksu_domain/g' {} + || true
-
-          echo "=== Fix: pgtable.h (linux -> asm) ==="
-          find -L drivers/kernelsu -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's|#include <linux/pgtable.h>|#include <asm/pgtable.h>|g' {} + || true
 
           echo "=== Fix: nofault API shims -> uaccess.h ==="
           if ! grep -q "strncpy_from_user_nofault" include/linux/uaccess.h; then
@@ -202,54 +250,6 @@ jobs:
           #endif
           UACCESS
           fi
-
-          echo "=== Bypass Kbuild TP Locks ==="
-          find drivers/kernelsu -name "Kbuild" -o -name "Makefile" | while read f; do
-            sed -i '/TP hooks are incompatible/d' "$f"
-            sed -i 's/$(error.*TP hooks are incompatible.*)//g' "$f"
-          done
-
-          echo "=== Fix: TWA_RESUME compat ==="
-          find -L drivers/kernelsu -type f -name "*.c" -exec sed -i 's/TWA_RESUME/true/g' {} + || true
-
-          echo "=== Fix: put_task_struct header ==="
-          find -L drivers/kernelsu -name "allowlist.c" | while read f; do
-            grep -q "linux/sched/task.h" "$f" || sed -i '1s/^/#include <linux\/sched\/task.h>\n/' "$f"
-          done
-
-          echo "=== Fix: Legacy Crashers (filter_count & pkg_observer) ==="
-          find -L drivers/kernelsu -type f -name "*.c" -exec sed -i '/filter_count/d' {} + || true
-          sed -i '/pkg_observer.o/d' drivers/kernelsu/Makefile || true
-          find -L drivers/kernelsu -type f -name "*.c" -exec sed -i 's/ksu_pkg_observer_init()/0/g' {} + || true
-          find -L drivers/kernelsu -type f -name "*.c" -exec sed -i 's/ksu_pkg_observer_exit()//g' {} + || true
-          
-          echo "=== Fix: module_init/module_exit in ksu.c ==="
-          find -L drivers/kernelsu -name "ksu.c" | while read f; do
-            sed -i 's/^module_init(kernelsu_init);/\/\/module_init(kernelsu_init);/' "$f"
-            sed -i 's/^module_exit(ksu_kernelsu_exit);/\/\/module_exit(ksu_kernelsu_exit);/' "$f"
-            sed -i 's/^module_exit(kernelsu_exit);/\/\/module_exit(kernelsu_exit);/' "$f"
-          done
-
-          echo "=== Fix: pkg_observer.c stub (fsnotify API incompatible with 5.4) ==="
-          find -L drivers/kernelsu -name "pkg_observer.c" | while read f; do
-            cat > "$f" << 'STUB'
-          #include <linux/types.h>
-          #include <linux/init.h>
-          int ksu_pkg_observer_init(void) { return 0; }
-          void ksu_pkg_observer_exit(void) { return; }
-          STUB
-          done
-
-          echo "=== Fix: sepolicy.c diagnostic suppress ==="
-          find -L drivers/kernelsu -name "sepolicy.c" | while read f; do
-            sed -i '1s/^/#pragma clang diagnostic push\n#pragma clang diagnostic ignored "-Wimplicit-function-declaration"\n#pragma clang diagnostic ignored "-Wincompatible-pointer-types"\n#pragma clang diagnostic ignored "-Wincompatible-function-pointer-types"\n/' "$f"
-            echo '#pragma clang diagnostic pop' >> "$f"
-          done
-
-          echo "=== Fix: susfs_is_current_proc stubs (WildKSU) ==="
-          find -L drivers/kernelsu -name "sucompat.c" | while read f; do
-            sed -i '1s/^/bool susfs_is_current_proc_umounted(void) { return false; }\nvoid susfs_set_current_proc_umounted(void) { }\n/' "$f" || true
-          done
 
       - name: Setup SuSFS
         run: |
@@ -321,6 +321,9 @@ jobs:
             KEY=$(echo "$FLAG" | cut -d= -f1)
             grep -q "^${KEY}[=\ ]" "$DEFCONFIG" || echo "$FLAG" >> "$DEFCONFIG"
           done
+
+          echo "=== KSU flags ==="
+          grep "KSU\|KPM\|KALLSYMS" "$DEFCONFIG" || true
 
       - name: Build Project
         run: |
