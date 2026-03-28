@@ -12,7 +12,7 @@ on:
       ksu_variant:
         description: 'Select KernelSU variant'
         required: true
-        default: 'SukiSU'
+        default: 'ReSukiSU'
         type: choice
         options: [SukiSU, ReSukiSU, KernelSU, KernelSU-Next, WildKSU]
       localversion:
@@ -181,11 +181,10 @@ jobs:
             echo "Added nofault shims to uaccess.h"
           fi
 
-          echo "=== Fix: uapi/*.h path resolution ==="
+          echo "=== Fix: uapi/*.h and relative header path resolution ==="
           find -L drivers/kernelsu -type f \( -name "*.c" -o -name "*.h" \) | \
             xargs grep -l '"uapi/' 2>/dev/null | while read f; do
               fdir=$(dirname "$f")
-              # Находим все "uapi/xxx.h" инклюды в файле
               grep -o '"uapi/[^"]*"' "$f" 2>/dev/null | sort -u | while read inc; do
                 filename=$(echo "$inc" | sed 's|"uapi/||;s|"||')
                 actual=$(find -L drivers/kernelsu -name "$filename" 2>/dev/null | head -n 1)
@@ -193,11 +192,33 @@ jobs:
                   rel=$(python3 -c "import os; print(os.path.relpath('$actual', '$fdir'))")
                   sed -i "s|\"uapi/$filename\"|\"$rel\"|g" "$f"
                   echo "Fixed uapi/$filename -> $rel in $f"
-                else
-                  echo "WARNING: $filename not found in KSU tree"
                 fi
               done
             done
+
+          echo "=== Fix: klog.h and other local headers not found in subdirs ==="
+          # KernelSU tiann новая структура: core/, policy/ ищут хедеры из корня kernel/
+          # Копируем все .h из корня KSU в подпапки которые их не видят
+          KSU_ROOT=$(find -L drivers/kernelsu -maxdepth 0 -type l -exec readlink -f {} \; 2>/dev/null || \
+                     find . -maxdepth 3 -type d -name "kernel" | grep -E "KernelSU" | head -n 1)
+          if [ -n "$KSU_ROOT" ]; then
+            # Для каждой подпапки у которой есть .c файлы с "#include "xxx.h"" без пути —
+            # проверяем есть ли этот хедер в корне KSU и если нет — создаём симлинк
+            find -L drivers/kernelsu -mindepth 2 -name "*.c" | while read srcfile; do
+              subdir=$(dirname "$srcfile")
+              grep -o '"[a-zA-Z_][a-zA-Z0-9_/]*\.h"' "$srcfile" 2>/dev/null | \
+                grep -v "/" | sed 's/"//g' | while read hdr; do
+                  # хедер без пути — ищем его в корне KSU
+                  if [ ! -f "$subdir/$hdr" ]; then
+                    actual=$(find -L "$KSU_ROOT" -maxdepth 1 -name "$hdr" 2>/dev/null | head -n 1)
+                    if [ -n "$actual" ]; then
+                      ln -sf "$actual" "$subdir/$hdr" 2>/dev/null || true
+                      echo "Symlinked $hdr into $subdir"
+                    fi
+                  fi
+                done
+            done
+          fi
 
           echo "=== Fix: TWA_RESUME compat ==="
           find -L drivers/kernelsu -type f -name "*.c" | \
@@ -212,6 +233,13 @@ jobs:
               sed -i '1s/^/#include <linux\/sched\/task.h>\n/' "$f"
           done
 
+          echo "=== Fix: ksu_is_ksu_domain -> is_ksu_domain (KernelSU Next rename) ==="
+          find -L drivers/kernelsu -type f -name "*.c" | \
+            xargs grep -l "ksu_is_ksu_domain" 2>/dev/null | while read f; do
+              sed -i 's/ksu_is_ksu_domain()/is_ksu_domain()/g' "$f"
+              echo "Fixed ksu_is_ksu_domain in $f"
+            done
+
           echo "=== Fix: filter_count removal ==="
           find -L drivers/kernelsu -type f -name "*.c" | \
             xargs grep -l "filter_count" 2>/dev/null | while read f; do
@@ -220,17 +248,14 @@ jobs:
             done
 
           echo "=== Fix: module_init/module_exit in ksu.c ==="
-          # KernelSU Next: kernelsu_init не существует, module_init и module_exit оба надо убрать
-          # Остальные варианты: module_exit убираем, module_init оставляем
           find -L drivers/kernelsu -name "ksu.c" | while read f; do
-            if grep -q "module_init(kernelsu_init)" "$f" && ! grep -q "^int kernelsu_init\|^static int kernelsu_init" "$f"; then
-              # kernelsu_init объявлен но не определён — KernelSU Next
+            if grep -q "module_init(kernelsu_init)" "$f" && \
+               ! grep -qE "^int kernelsu_init|^static int kernelsu_init" "$f"; then
               sed -i 's/^module_init(kernelsu_init);/\/\/module_init(kernelsu_init);/' "$f"
-              echo "Commented module_init(kernelsu_init) in $f (function not defined)"
+              echo "Commented module_init(kernelsu_init) in $f"
             fi
             sed -i 's/^module_exit(ksu_kernelsu_exit);/\/\/module_exit(ksu_kernelsu_exit);/' "$f"
             sed -i 's/^module_exit(kernelsu_exit);/\/\/module_exit(kernelsu_exit);/' "$f"
-            echo "Processed module_init/exit in $f"
           done
 
           echo "=== Fix: pkg_observer.c stub (fsnotify API incompatible with 5.4) ==="
@@ -244,7 +269,7 @@ jobs:
             echo "Replaced pkg_observer.c with stub: $f"
           done
 
-          echo "=== Fix: sepolicy.c diagnostic suppress (selinux API incompatible with 5.4) ==="
+          echo "=== Fix: sepolicy.c diagnostic suppress ==="
           find -L drivers/kernelsu -name "sepolicy.c" | while read f; do
             if grep -q "filename_trans_key\|policydb_filenametr_search\|hashtab_duplicate\|avtab_alloc_dup" "$f"; then
               sed -i '1s/^/#pragma clang diagnostic push\n#pragma clang diagnostic ignored "-Wimplicit-function-declaration"\n#pragma clang diagnostic ignored "-Wincompatible-pointer-types"\n#pragma clang diagnostic ignored "-Wincompatible-function-pointer-types"\n/' "$f"
