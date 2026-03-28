@@ -1,0 +1,42 @@
+name: Build clear kernel
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+
+      - name: Install Dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y clang lld llvm git make gcc flex bison bc libssl-dev ccache libncurses5-dev libncursesw5-dev cmake python3 python-is-python3 cpio
+      - name: Build Project
+        run: | 
+          git config --global user.email "you@example.com"
+          git config --global user.name "wannq-github"
+          
+          # Integrate KernelSU
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/refs/heads/main/kernel/setup.sh" | bash -s main
+          
+          cat >> "arch/arm64/configs/gki_defconfig" << EOF
+          CONFIG_KSU=y
+          EOF
+          
+          chmod +x ./build.sh
+          ./build.sh all venus
+      - name: Compress
+        run: tar -czvf build.tar.gz ../out/anykernel/*.zip
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: build
+          path: build.tar.gz
+          
