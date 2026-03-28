@@ -12,7 +12,7 @@ on:
       ksu_variant:
         description: 'Select KernelSU variant'
         required: true
-        default: 'SukiSU'
+        default: 'WildKSU'
         type: choice
         options: [SukiSU, ReSukiSU, KernelSU, KernelSU-Next, WildKSU]
       localversion:
@@ -74,7 +74,11 @@ jobs:
             curl -LSs "https://raw.githubusercontent.com/WildKernels/Wild_KSU/wild/kernel/setup.sh" | bash -s wild
           fi
           
-          ln -sf "$(pwd)/KernelSU/kernel" drivers/kernelsu
+          # Защита на случай, если setup.sh не создал симлинк сам
+          if [ ! -d "drivers/kernelsu" ] && [ ! -L "drivers/kernelsu" ]; then
+            KSU_DIR=$(find . -maxdepth 2 -type d -name "kernel" | grep -i "ksu" | head -n 1)
+            ln -sf "$(pwd)/$KSU_DIR" drivers/kernelsu
+          fi
           
           grep -q "kernelsu" drivers/Makefile || echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
           grep -q "kernelsu" drivers/Kconfig || sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
@@ -92,23 +96,21 @@ jobs:
             sed -i 's/$(error.*TP hooks are incompatible.*)//g' drivers/kernelsu/Makefile
           fi
 
-          echo "=== Fix allowlist.c & setuid_hook.c ==="
-          if [ -f drivers/kernelsu/allowlist.c ]; then
-            grep -q "linux/sched/task.h" drivers/kernelsu/allowlist.c || sed -i '1i #include <linux/sched/task.h>' drivers/kernelsu/allowlist.c
-            grep -q "linux/sched.h" drivers/kernelsu/allowlist.c || sed -i '1i #include <linux/sched.h>' drivers/kernelsu/allowlist.c
-          fi
-          if [ -f drivers/kernelsu/setuid_hook.c ]; then
-            sed -i '1i struct seccomp_filter; extern void ksu_seccomp_allow_cache(struct seccomp_filter *filter, int syscall);' drivers/kernelsu/setuid_hook.c
-          fi
-
-          echo "=== Aggressive Cleanup for 5.4 Compatibility (Your Patches) ==="
+          echo "=== IRON-CLAD FIXES FOR 5.4 KERNEL ==="
           echo '#define filter_count _not_used_in_5_4' >> include/linux/seccomp.h
-          find drivers/kernelsu -type f -name "*.c" -exec sed -i '/filter_count/d' {} + || true
-          sed -i '/pkg_observer.o/d' drivers/kernelsu/Makefile || true
-          find drivers/kernelsu -type f -name "*.c" -exec sed -i 's/ksu_pkg_observer_init()/0/g' {} + || true
-          find drivers/kernelsu -type f -name "*.c" -exec sed -i 's/ksu_pkg_observer_exit()//g' {} + || true
-          find drivers/kernelsu -type f -name "*.c" -exec sed -i 's/module_exit(ksu_kernelsu_exit);/\/\/module_exit(ksu_kernelsu_exit);/g' {} + || true
-          find drivers/kernelsu -type f -name "*.c" -exec sed -i 's/TWA_RESUME/true/g' {} + || true
+          find -L drivers/kernelsu -type f -name "*.c" -exec sed -i '/filter_count/d' {} + || true
+          
+          [ -f drivers/kernelsu/allowlist.c ] && sed -i '1i #include <linux/sched/task.h>\n#include <linux/sched.h>' drivers/kernelsu/allowlist.c
+          
+          [ -f drivers/kernelsu/setuid_hook.c ] && sed -i '1i struct seccomp_filter; extern void ksu_seccomp_allow_cache(struct seccomp_filter *filter, int syscall);' drivers/kernelsu/setuid_hook.c
+
+          cat << 'EOF' > drivers/kernelsu/pkg_observer.c
+          #include <linux/types.h>
+          int ksu_pkg_observer_init(void) { return 0; }
+          void ksu_pkg_observer_exit(void) { return; }
+          EOF
+
+          [ -f drivers/kernelsu/ksu.c ] && sed -i 's/module_exit(ksu_kernelsu_exit);/\/\/module_exit(ksu_kernelsu_exit);/g' drivers/kernelsu/ksu.c || true
 
       - name: Apply KSU Tracepoint Hooks (Python)
         run: |
@@ -184,8 +186,11 @@ jobs:
           echo "=== Fixing security_inode_init_security_anon in file_wrapper.c ==="
           [ -f drivers/kernelsu/file_wrapper.c ] && sed -i '1i #define security_inode_init_security_anon(inode, name, context_inode) (0)' drivers/kernelsu/file_wrapper.c || true
           
-          echo "=== Standardizing legacy paths ==="
-          find drivers/kernelsu -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's|#include <linux/pgtable.h>|#include <asm/pgtable.h>|g' {} + || true
+          echo "=== Standardizing legacy paths and TWA_RESUME ==="
+          # Используем find -L чтобы проходить сквозь симлинки (решает проблему WildKSU)
+          find -L drivers/kernelsu -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's|#include <linux/pgtable.h>|#include <asm/pgtable.h>|g' {} + || true
+          
+          find -L drivers/kernelsu -type f -name "*.c" -exec sed -i 's/TWA_RESUME/true/g' {} + || true
 
       - name: Append Flags to Defconfig
         run: |
