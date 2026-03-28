@@ -161,23 +161,12 @@ jobs:
             [ -f $f ] && (grep -q "linux/susfs.h" $f || sed -i '1i #include <linux/susfs.h>' $f)
           done
           
-          echo "=== BULLETPROOF DOWNGRADE: Memory APIs to 5.4 equivalents ==="
-          if [ -f drivers/kernelsu/ksu.h ]; then
-            echo "" >> drivers/kernelsu/ksu.h
-            echo "/* Force downgrade modern memory APIs to 5.4 equivalents */" >> drivers/kernelsu/ksu.h
-            echo "#define strncpy_from_user_nofault strncpy_from_user" >> drivers/kernelsu/ksu.h
-            echo "#define copy_from_user_nofault copy_from_user" >> drivers/kernelsu/ksu.h
-            echo "#define copy_to_user_nofault copy_to_user" >> drivers/kernelsu/ksu.h
-          fi
+          echo "=== ABSOLUTE BULLETPROOF DOWNGRADE: Memory APIs to 5.4 equivalents ==="
+          find drivers/kernelsu -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i '1i #define strncpy_from_user_nofault strncpy_from_user' {} +
+          find drivers/kernelsu -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i '1i #define copy_from_user_nofault copy_from_user' {} +
+          find drivers/kernelsu -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i '1i #define copy_to_user_nofault copy_to_user' {} +
           
-          for f in drivers/kernelsu/sucompat.c drivers/kernelsu/ksud.c; do
-            if [ -f "$f" ]; then
-              sed -i '1i #define strncpy_from_user_nofault strncpy_from_user' "$f"
-              sed -i '1i #define copy_from_user_nofault copy_from_user' "$f"
-              sed -i '1i #define copy_to_user_nofault copy_to_user' "$f"
-            fi
-          done
-          
+          echo "=== Standardizing legacy paths ==="
           find drivers/kernelsu -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's|#include <linux/pgtable.h>|#include <asm/pgtable.h>|g' {} + || true
           [ -f drivers/kernelsu/allowlist.c ] && sed -i 's/TWA_RESUME/true/g' drivers/kernelsu/allowlist.c || true
 
