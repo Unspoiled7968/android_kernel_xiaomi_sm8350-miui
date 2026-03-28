@@ -181,7 +181,7 @@ jobs:
         run: |
           set -e
           DEVICE="${{ inputs.device_name || 'venus' }}"
-          DEFCONFIG="arch/arm64/configs/vendor/${DEVICE}_QGKI.config" | head -n 1)
+          DEFCONFIG="arch/arm64/configs/vendor/${DEVICE}_QGKI.config"
           for FLAG in \
             "CONFIG_KSU=y" "CONFIG_KSU_TRACEPOINT_HOOK=y" "CONFIG_KSU_DEBUG=n" \
             "CONFIG_KSU_SUSFS=y" "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" "CONFIG_KSU_SUSFS_SUS_MOUNT=y" \
