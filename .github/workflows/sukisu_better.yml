@@ -1,4 +1,4 @@
-name: Build SukiSU Ultra + SuSFS (Tracepoint)
+name: Build SukiSU Ultra + SuSFS (star Tracepoint Final)
 
 on:
   workflow_dispatch:
@@ -38,29 +38,35 @@ jobs:
             libssl-dev ccache libncurses5-dev libncursesw5-dev cmake \
             python3 python-is-python3 cpio curl patch rsync
 
-      - name: Integrate SukiSU Ultra
+      - name: Integrate SukiSU Ultra & Patching
         run: |
           set -e
           echo "=== Setting up SukiSU Ultra ==="
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
+          
+          echo "=== Symlink KernelSU into drivers ==="
+          # Проверяем, создана ли папка KernelSU
+          [ -d KernelSU ] || (echo "KernelSU folder not found!" && exit 1)
           ln -sf "$(pwd)/KernelSU/kernel" drivers/kernelsu
 
           echo "=== Wire into drivers ==="
           grep -q "kernelsu" drivers/Makefile || echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
           grep -q "kernelsu" drivers/Kconfig || sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
 
-          echo "=== Applying Patch Linux (Fixed URL) ==="
-          # Правильный репозиторий для патчера
-          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU_patch/main/kpm/patch_linux" -o patch_linux
-          if grep -q "404" patch_linux; then
-            echo "CRITICAL ERROR: patch_linux URL is still 404!"
-            exit 1
+          echo "=== Applying SukiSU KernelPatch (Fixed URL) ==="
+          # Правильный URL к репозиторию, который ты нашел
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU_KernelPatch_patch/main/kpm/patch_linux" -o patch_linux
+          
+          # Проверка на 404 или пустой файл
+          if grep -q "404: Not Found" patch_linux || [ ! -s patch_linux ]; then
+            echo "WARNING: Patch Linux not found at URL. Skipping to manual cleanup."
+          else
+            chmod +x patch_linux
+            ./patch_linux drivers/kernelsu || echo "Patcher execution failed, continuing manually."
           fi
-          chmod +x patch_linux
-          ./patch_linux drivers/kernelsu || echo "Patcher warning, continuing..."
 
           echo "=== Aggressive Cleanup for 5.4 Compatibility ==="
-          # Удаляем filter_count и pkg_observer (гарантированно падает на 5.4)
+          # Удаляем filter_count и pkg_observer, если патчер их пропустил
           find drivers/kernelsu -type f -name "*.c" -exec sed -i '/filter_count/d' {} +
           sed -i '/pkg_observer.o/d' drivers/kernelsu/Makefile
           find drivers/kernelsu -type f -name "*.c" -exec sed -i 's/ksu_pkg_observer_init()/0/g' {} +
@@ -79,33 +85,48 @@ jobs:
                   if n > 0:
                       with open(filepath, 'w') as f: f.write(new_content)
                       print(f'{filepath}: hook applied')
-              except Exception as e: print(f"Error: {e}")
+              except Exception as e: print(f"Error patching {filepath}: {e}")
+
           def add_include(filepath, include_path):
               try:
                   with open(filepath, 'r') as f: content = f.read()
                   if include_path in content: return
-                  new_content, n = re.subn(r'(#include <linux/.*?\.h>\n)', r'\1#if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n#include ' + include_path + '\n#endif\n', content, count=1)
+                  new_content, n = re.subn(r'(#include <linux/.*?\.h>\n)', 
+                                           r'\1#if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n#include ' + include_path + '\n#endif\n', 
+                                           content, count=1)
                   with open(filepath, 'w') as f: f.write(new_content)
               except: pass
 
-          # Tracepoint Hooks
+          # Tracepoint Hooks (fs/exec.c, fs/open.c, etc.)
           add_include('fs/exec.c', '<../drivers/kernelsu/ksu_trace.h>')
-          patch_file('fs/exec.c', r'(return do_execveat_common\(AT_FDCWD, filename, argv, envp, 0\);)', r'#if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n\ttrace_ksu_trace_execveat_hook((int *)AT_FDCWD, &filename, &argv, &envp, 0);\n#endif\n\t\1', count=0)
+          patch_file('fs/exec.c', r'(return do_execveat_common\(AT_FDCWD, filename, argv, envp, 0\);)', 
+                     r'#if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n\ttrace_ksu_trace_execveat_hook((int *)AT_FDCWD, &filename, &argv, &envp, 0);\n#endif\n\t\1', count=0)
+
           add_include('fs/open.c', '<../drivers/kernelsu/ksu_trace.h>')
-          patch_file('fs/open.c', r'(SYSCALL_DEFINE3\(faccessat, int, dfd, const char __user \*, filename, int, mode\)\n{)', r'\1\n#if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n\ttrace_ksu_trace_faccessat_hook(&dfd, &filename, &mode, NULL);\n#endif\n')
+          patch_file('fs/open.c', r'(SYSCALL_DEFINE3\(faccessat, int, dfd, const char __user \*, filename, int, mode\)\n{)',
+                     r'\1\n#if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n\ttrace_ksu_trace_faccessat_hook(&dfd, &filename, &mode, NULL);\n#endif\n')
+
           add_include('fs/read_write.c', '<../drivers/kernelsu/ksu_trace.h>')
-          patch_file('fs/read_write.c', r'(SYSCALL_DEFINE3\(read, unsigned int, fd, char __user \*, buf, size_t, count\)\n{)', r'\1\n#if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n\ttrace_ksu_trace_sys_read_hook(fd, &buf, &count);\n#endif\n')
+          patch_file('fs/read_write.c', r'(SYSCALL_DEFINE3\(read, unsigned int, fd, char __user \*, buf, size_t, count\)\n{)',
+                     r'\1\n#if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n\ttrace_ksu_trace_sys_read_hook(fd, &buf, &count);\n#endif\n')
+
           add_include('fs/stat.c', '<../drivers/kernelsu/ksu_trace.h>')
-          patch_file('fs/stat.c', r'(error = vfs_fstatat\(dfd, filename, &stat, flag\);)', r'#if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n\ttrace_ksu_trace_stat_hook(&dfd, &filename, &flag);\n#endif\n\t\1', count=0)
+          patch_file('fs/stat.c', r'(error = vfs_fstatat\(dfd, filename, &stat, flag\);)',
+                     r'#if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n\ttrace_ksu_trace_stat_hook(&dfd, &filename, &flag);\n#endif\n\t\1', count=0)
+
+          add_include('drivers/input/input.c', '<../../drivers/kernelsu/ksu_trace.h>')
+          patch_file('drivers/input/input.c', r'(void input_event\(struct input_dev \*dev,\n\t\t unsigned int type, unsigned int code, int value\)\n{\n\tunsigned long flags;\n)',
+                     r'\1\n#if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n\ttrace_ksu_trace_input_hook(&type, &code, &value);\n#endif\n')
           EOF
 
-      - name: Apply JackA1ltman NonGKI Patches (MI11U Special)
+      - name: Apply JackA1ltman NonGKI Patches (MI11U HyperOS)
         run: |
           set -e
           echo "=== Cloning Specialized Patches ==="
           git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Patches.git -b mi_kernel ../altman_patches
           ALTMAN_DIR="$(pwd)/../altman_patches/mi11u_hyperos"
 
+          # Применяем патчи совместимости
           patch -p1 < "$ALTMAN_DIR/hyperos_a14_fixed.patch" || true
           patch -p1 < "$ALTMAN_DIR/hyper_susfs_157_fixed.patch" || true
           patch -p1 < "$ALTMAN_DIR/hyper_susfs_remove_all_sus_su.patch" || true
@@ -128,6 +149,7 @@ jobs:
           for f in fs/proc/task_mmu.c fs/proc/fd.c; do
             [ -f $f ] && (grep -q "linux/susfs.h" $f || sed -i '1i #include <linux/susfs.h>' $f)
           done
+          # Бэкпорты KernelSU
           find drivers/kernelsu -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's|#include <linux/pgtable.h>|#include <asm/pgtable.h>|g' {} + || true
           find drivers/kernelsu -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's/strncpy_from_user_nofault/strncpy_from_user/g' {} + || true
           [ -f drivers/kernelsu/allowlist.c ] && sed -i 's/TWA_RESUME/true/g' drivers/kernelsu/allowlist.c || true
