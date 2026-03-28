@@ -198,15 +198,31 @@ jobs:
           chmod +x ./build.sh
           ./build.sh all ${{ inputs.device_name || 'star' }} 2>&1 | tee /tmp/kbuild.log
 
-          if [ ! -f arch/arm64/boot/Image ]; then
+          # The Image is usually placed in out/arch/arm64/boot/Image on Xiaomi 5.4 trees
+          if [ ! -f out/arch/arm64/boot/Image ] && [ ! -f arch/arm64/boot/Image ]; then
             echo "BUILD FAILED"
             grep -E "error:|FAILED|undefined reference" /tmp/kbuild.log | tail -50
             exit 1
           fi
 
-      - name: Compress & Upload
-        run: tar -czvf build.tar.gz ../out/anykernel/*.zip
+      - name: Find and Prepare Artifacts
+        run: |
+          # Searching parent directory because build.sh might output to ../out/anykernel
+          ZIP_PATH=$(find .. -name "universe-kernel*.zip" | head -n 1)
+          if [ -n "$ZIP_PATH" ]; then
+            echo "Found flashable zip at: $ZIP_PATH"
+            cp "$ZIP_PATH" ./ReSukiSU-Star-Final.zip
+          else
+            echo "Zip not found! Archiving the raw Image directly."
+            IMAGE_PATH=$(find .. -name "Image" | grep "arch/arm64/boot" | head -n 1)
+            if [ -n "$IMAGE_PATH" ]; then
+              tar -czvf ReSukiSU-Star-Final.tar.gz "$IMAGE_PATH"
+            fi
+          fi
+
       - uses: actions/upload-artifact@v4
         with:
           name: Kernel-${{ inputs.device_name }}-ReSukiSU-Tracepoint-Ultimate
-          path: build.tar.gz
+          path: |
+            star-ReSukiSU-palaziks.zip
+            star-ReSukiSU-palaziks.tar.gz
