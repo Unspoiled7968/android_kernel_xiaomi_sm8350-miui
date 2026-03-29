@@ -31,6 +31,12 @@ on:
         default: 'false'
         type: choice
         options: ['false', 'true']
+      hide_stuff:
+        description: 'Apply Hide Stuff patches (not needed for SukiSU/ReSukiSU)'
+        required: true
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
 
 jobs:
   build:
@@ -50,7 +56,8 @@ jobs:
           sudo apt update
           sudo apt install -y clang lld llvm git make gcc flex bison bc \
             libssl-dev ccache libncurses5-dev libncursesw5-dev cmake \
-            python3 python-is-python3 cpio curl patch rsync zip
+            python3 python-is-python3 cpio curl patch rsync zip \
+            coccinelle perl
 
       # ── ccache ──────────────────────────────────────────────────────────────
       - name: Setup ccache
@@ -76,8 +83,8 @@ jobs:
           git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Patches.git \
             -b mi_kernel ../altman_patches
           ALTMAN_DIR="$(pwd)/../altman_patches/mi11u_hyperos"
-          patch -p1 --forward --batch < "$ALTMAN_DIR/hyperos_a14_fixed.patch"           || true
-          patch -p1 --forward --batch < "$ALTMAN_DIR/hyper_susfs_157_fixed.patch"       || true
+          patch -p1 --forward --batch < "$ALTMAN_DIR/hyperos_a14_fixed.patch"             || true
+          patch -p1 --forward --batch < "$ALTMAN_DIR/hyper_susfs_157_fixed.patch"         || true
           patch -p1 --forward --batch < "$ALTMAN_DIR/hyper_susfs_remove_all_sus_su.patch" || true
 
       - name: Integrate Selected KernelSU Variant
@@ -98,66 +105,50 @@ jobs:
             curl -LSs "https://raw.githubusercontent.com/WildKernels/Wild_KSU/wild/kernel/setup.sh" | bash -s wild
           fi
 
-          # ── Verify setup.sh created the symlink ─────────────────────────────
           echo "=== Verifying drivers/kernelsu ==="
           if [ ! -e drivers/kernelsu ]; then
             echo "ERROR: setup.sh did not create drivers/kernelsu!"
             ls -la drivers/ | grep -i ksu || true
             exit 1
           fi
-          echo "drivers/kernelsu -> $(readlink drivers/kernelsu 2>/dev/null || echo '(not a symlink)')"
 
-          # Resolve ONCE — all patches use this absolute path
-          # Never recreate the symlink; setup.sh already set it correctly
           KSU_REAL=$(realpath drivers/kernelsu)
           echo "KSU real path: $KSU_REAL"
           ls "$KSU_REAL/"
 
-          # ── FIX: ksu_is_ksu_domain → is_ksu_domain (KernelSU-Next) ─────────
           echo "=== Fix: ksu_is_ksu_domain -> is_ksu_domain ==="
           grep -rlF "ksu_is_ksu_domain" "$KSU_REAL" 2>/dev/null | while read -r f; do
-            echo "  patching: $f"
             sed -i 's/ksu_is_ksu_domain/is_ksu_domain/g' "$f"
+            echo "  patched: $f"
           done
 
-          # ── FIX: uapi/app_profile.h not found (tiann KernelSU) ──────────────
-          # policy/allowlist.h does: #include "uapi/app_profile.h"
-          # The compiler only searches the file's own directory.
-          # Fix A: add -I flags to every Makefile/Kbuild so all subdirs see
-          #        drivers/kernelsu as an include root.
-          echo "=== Fix: uapi include path in KSU Makefiles ==="
-          find "$KSU_REAL" \( -name "Makefile" -o -name "Kbuild" \) \
-          | while read -r mkfile; do
-            grep -qF 'ccflags-y += -I$(srctree)/drivers/kernelsu' "$mkfile" \
-              2>/dev/null && continue
+          echo "=== Fix: uapi include path ==="
+          find "$KSU_REAL" \( -name "Makefile" -o -name "Kbuild" \) | while read -r mkfile; do
+            grep -qF 'ccflags-y += -I$(srctree)/drivers/kernelsu' "$mkfile" 2>/dev/null && continue
             {
               echo 'ccflags-y += -I$(srctree)/drivers/kernelsu'
               echo 'ccflags-y += -I$(srctree)/drivers/kernelsu/uapi'
             } >> "$mkfile"
             echo "  updated: $mkfile"
           done
-          # Fix B: physically copy uapi/ into every subdir (belt-and-suspenders)
-          echo "=== Fix: copy uapi/ into KSU subdirs ==="
           if [ -d "$KSU_REAL/uapi" ]; then
-            find "$KSU_REAL" -mindepth 1 -maxdepth 1 -type d \
-              ! -name "uapi" | while read -r d; do
+            find "$KSU_REAL" -mindepth 1 -maxdepth 1 -type d ! -name "uapi" | while read -r d; do
               cp -rn "$KSU_REAL/uapi" "$d/" 2>/dev/null || true
             done
           fi
 
-          echo "=== Fix: pgtable.h (linux -> asm) ==="
+          echo "=== Fix: pgtable.h ==="
           find "$KSU_REAL" -type f \( -name "*.c" -o -name "*.h" \) \
             -exec sed -i 's|#include <linux/pgtable.h>|#include <asm/pgtable.h>|g' {} + || true
 
-          echo "=== Bypass Kbuild TP Locks ==="
+          echo "=== Fix: Bypass Kbuild TP locks ==="
           find "$KSU_REAL" \( -name "Kbuild" -o -name "Makefile" \) | while read -r f; do
             sed -i '/TP hooks are incompatible/d' "$f"
             sed -i 's/$(error.*TP hooks are incompatible.*)//g' "$f"
           done
 
-          echo "=== Fix: TWA_RESUME compat ==="
-          find "$KSU_REAL" -type f -name "*.c" \
-            -exec sed -i 's/TWA_RESUME/true/g' {} + || true
+          echo "=== Fix: TWA_RESUME ==="
+          find "$KSU_REAL" -type f -name "*.c" -exec sed -i 's/TWA_RESUME/true/g' {} + || true
 
           echo "=== Fix: put_task_struct header ==="
           find "$KSU_REAL" -name "allowlist.c" | while read -r f; do
@@ -165,11 +156,9 @@ jobs:
               sed -i '1s/^/#include <linux\/sched\/task.h>\n/' "$f"
           done
 
-          echo "=== Fix: pkg_observer (filter_count + stubs) ==="
-          find "$KSU_REAL" -type f -name "*.c" \
-            -exec sed -i '/filter_count/d' {} + || true
-          [ -f "$KSU_REAL/Makefile" ] && \
-            sed -i '/pkg_observer.o/d' "$KSU_REAL/Makefile" || true
+          echo "=== Fix: filter_count + pkg_observer ==="
+          find "$KSU_REAL" -type f -name "*.c" -exec sed -i '/filter_count/d' {} + || true
+          [ -f "$KSU_REAL/Makefile" ] && sed -i '/pkg_observer.o/d' "$KSU_REAL/Makefile" || true
           find "$KSU_REAL" -type f -name "*.c" \
             -exec sed -i 's/ksu_pkg_observer_init()/0/g' {} + || true
           find "$KSU_REAL" -type f -name "*.c" \
@@ -182,7 +171,7 @@ jobs:
             sed -i 's/^module_exit(kernelsu_exit);/\/\/module_exit(kernelsu_exit);/' "$f"
           done
 
-          echo "=== Fix: pkg_observer.c stub (fsnotify incompatible with 5.4) ==="
+          echo "=== Fix: pkg_observer.c stub ==="
           find "$KSU_REAL" -name "pkg_observer.c" | while read -r f; do
             cat > "$f" << 'STUB'
           #include <linux/types.h>
@@ -198,13 +187,32 @@ jobs:
             echo '#pragma clang diagnostic pop' >> "$f"
           done
 
-          echo "=== Fix: susfs_is_current_proc stubs (WildKSU) ==="
+          echo "=== Fix: susfs_is_current_proc stubs — with proper includes ==="
+          # Stub нужен только если функции реально нет в susfs.c
+          # Вставляем с правильными include чтобы bool и false были определены
           find "$KSU_REAL" -name "sucompat.c" | while read -r f; do
-            grep -q "susfs_is_current_proc_umounted" "$f" && continue
-            sed -i '1s/^/bool susfs_is_current_proc_umounted(void) { return false; }\nvoid susfs_set_current_proc_umounted(void) { }\n/' "$f" || true
+            if grep -q "susfs_is_current_proc_umounted" "$f"; then
+              # Функция вызывается — проверяем есть ли она уже определена где-то
+              KSU_ROOT=$(dirname "$f")
+              defined=$(grep -rl "susfs_is_current_proc_umounted" "$KSU_ROOT" \
+                | grep -v "sucompat.c" | wc -l)
+              if [ "$defined" -eq 0 ] && ! grep -q "^bool susfs_is_current_proc_umounted" fs/susfs.c 2>/dev/null; then
+                # Вставляем stub в начало с нужными include
+                tmpfile=$(mktemp)
+                cat > "$tmpfile" << 'STUB'
+          #include <linux/types.h>
+          #include <linux/kernel.h>
+          static bool _susfs_umounted_stub(void) { return false; }
+          bool susfs_is_current_proc_umounted(void) { return _susfs_umounted_stub(); }
+          void susfs_set_current_proc_umounted(void) { }
+          STUB
+                cat "$f" >> "$tmpfile"
+                mv "$tmpfile" "$f"
+                echo "  Added susfs stubs to $f"
+              fi
+            fi
           done
 
-          # Ensure drivers/Makefile + Kconfig reference kernelsu
           grep -q "kernelsu" drivers/Makefile || \
             echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
           grep -q "kernelsu" drivers/Kconfig || \
@@ -373,6 +381,78 @@ jobs:
           grep -q "linux/susfs.h" fs/proc/fd.c || \
             sed -i '1s/^/#include <linux\/susfs.h>\n/' fs/proc/fd.c
 
+      - name: Apply Hide Stuff (proc/maps hiding via Coccinelle)
+        if: ${{ inputs.hide_stuff == 'true' && inputs.ksu_variant != 'SukiSU' && inputs.ksu_variant != 'ReSukiSU' }}
+        run: |
+          set -e
+          PATCHES_DIR="$(pwd)/../altman_patches/HideStuff"
+
+          if [ ! -d "$PATCHES_DIR" ]; then
+            echo "WARNING: HideStuff patches not found at $PATCHES_DIR, skipping"
+            exit 0
+          fi
+
+          echo "=== Hide Stuff: show_vma_header_prefix_fake ==="
+          if grep -q "show_vma_header_prefix_fake" "fs/proc/task_mmu.c"; then
+            echo "[+] already present"
+          else
+            spatch --sp-file "$PATCHES_DIR/added_show_vma_header_prefix_fake.cocci" \
+              --in-place fs/proc/task_mmu.c
+            echo "[+] Added show_vma_header_prefix_fake"
+          fi
+
+          echo "=== Hide Stuff: dentry variable ==="
+          if grep -q "struct dentry \*dentry" "fs/proc/task_mmu.c"; then
+            echo "[+] already present"
+          else
+            sed -i '/const char \*name = NULL;/a\    struct dentry *dentry;' \
+              fs/proc/task_mmu.c
+            echo "[+] Added dentry"
+          fi
+
+          echo "=== Hide Stuff: jit-zygote-cache ==="
+          if grep -q "jit-zygote-cache" "fs/proc/task_mmu.c"; then
+            echo "[+] already present"
+          else
+            spatch --sp-file "$PATCHES_DIR/function_hide_stuff.cocci" \
+              --in-place fs/proc/task_mmu.c
+            echo "[+] Added hide stuff"
+          fi
+
+          echo "=== Hide Stuff: bypass label ==="
+          if grep -q "bypass:" "fs/proc/task_mmu.c"; then
+            echo "[+] already present"
+          else
+            if grep -q 'if (show_vma_header_prefix' "fs/proc/task_mmu.c"; then
+              perl -i -0pe \
+                's/(if \(show_vma_header_prefix\(m, start, end, flags, pgoff, dev, ino\)\)\s+return;)/$1\nbypass:/s' \
+                fs/proc/task_mmu.c
+            else
+              sed -i \
+                '/show_vma_header_prefix(m, start, end, flags, pgoff, dev, ino);/a\bypass:' \
+                fs/proc/task_mmu.c
+            fi
+            echo "[+] Added bypass"
+          fi
+
+          echo "=== Hide Stuff: proc/base.c ==="
+          if grep -q "lineage" "fs/proc/base.c"; then
+            echo "[+] already present"
+          else
+            spatch --sp-file "$PATCHES_DIR/function_hide_stuff_partii.cocci" \
+              --in-place fs/proc/base.c
+            echo "[+] Added hide stuff part ii"
+          fi
+
+          echo "=== Hide Stuff: ashmem -> framework-res ==="
+          if grep -q "/dev/ashmem" "fs/proc/task_mmu.c"; then
+            sed -i 's|"/dev/ashmem (deleted)"|"/system/framework/framework-res.apk"|g' \
+              fs/proc/task_mmu.c
+            sed -i 's|"/dev/ashmem (deleted)"|"/system/framework/framework-res.apk"|g' \
+              fs/proc/base.c
+            echo "[+] Changed ashmem to framework-res"
+          fi
+
       - name: Append Flags to Defconfig
         run: |
           set -e
@@ -407,15 +487,14 @@ jobs:
             grep -q "^${KEY}[=\ ]" "$DEFCONFIG" || echo "$FLAG" >> "$DEFCONFIG"
           done
 
-      # ── Rear screen (DTS) ───────────────────────────────────────────────────
+          echo "=== KSU flags ==="
+          grep "KSU\|KPM\|KALLSYMS" "$DEFCONFIG" || true
+
       - name: Disable Rear Screen (DTS)
         if: ${{ inputs.device_name == 'star' && inputs.disable_rear_screen == 'true' }}
         run: |
           set -e
           DTSI="arch/arm64/boot/dts/vendor/qcom/star-sm8350.dtsi"
-
-          echo "=== Before patch ==="
-          grep -n "sde_dsi1\|connectors" "$DTSI"
 
           python3 << 'PYEOF'
           import re
@@ -424,14 +503,12 @@ jobs:
           with open(path) as f:
               src = f.read()
 
-          # 1. Inject status = "disabled" into &sde_dsi1 { } override
           if 'REAR_DISABLED' not in src:
               src = re.sub(
                   r'(&sde_dsi1\s*\{)',
                   r'\1\n\tstatus = "disabled"; /* REAR_DISABLED */',
                   src, count=1)
 
-          # 2. Remove &sde_dsi1 from connectors list
           src = re.sub(
               r'(\bconnectors\s*=\s*<[^>]*?)\s*&sde_dsi1\b',
               r'\1', src)
