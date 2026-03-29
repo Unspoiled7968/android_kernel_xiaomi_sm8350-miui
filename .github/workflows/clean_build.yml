@@ -1,7 +1,6 @@
 name: Build clean kernel
 
 on:
-  # Manual trigger with custom inputs
   workflow_dispatch:
     inputs:
       device_name:
@@ -23,8 +22,15 @@ on:
         required: true
         default: '16'
         type: string
+      disable_rear_screen:
+        description: 'Disable rear display (star / Mi 11 Ultra only)'
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
-  # Automatic trigger on push to master branch
   push:
     branches:
       - master
@@ -40,25 +46,139 @@ jobs:
       - name: Dynamic Memory Allocation (Swap)
         uses: pierotofy/set-swap-space@master
         with:
-          # Uses the input value from GitHub UI, or falls back to '16'
           swap-size-gb: ${{ inputs.swap_size || '16' }}
 
       - name: Install Dependencies
         run: |
           sudo apt update
-          sudo apt install -y clang lld llvm git make gcc flex bison bc libssl-dev ccache libncurses5-dev libncursesw5-dev cmake python3 python-is-python3 cpio
-          
+          sudo apt install -y clang lld llvm git make gcc flex bison bc \
+            libssl-dev ccache libncurses5-dev libncursesw5-dev cmake \
+            python3 python-is-python3 cpio
+
+      # ── ccache ──────────────────────────────────────────────────────────────
+      # build.sh hardcodes CC=clang inside make invocation, so we intercept it
+      # via a wrapper binary that prepends ccache. PATH is set via GITHUB_PATH
+      # so the wrapper is found before the real clang.
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          max-size: 3G
+          key: kernel-${{ inputs.device_name || 'star' }}-clean
+
+      - name: Create clang ccache wrappers
+        run: |
+          mkdir -p "$HOME/.ccache_wrappers"
+          printf '#!/bin/sh\nexec ccache /usr/bin/clang "$@"\n' \
+            > "$HOME/.ccache_wrappers/clang"
+          printf '#!/bin/sh\nexec ccache /usr/bin/clang++ "$@"\n' \
+            > "$HOME/.ccache_wrappers/clang++"
+          chmod +x "$HOME/.ccache_wrappers/clang" \
+                   "$HOME/.ccache_wrappers/clang++"
+          # Prepend to PATH for all subsequent steps
+          echo "$HOME/.ccache_wrappers" >> "$GITHUB_PATH"
+          echo "Wrappers created:"
+          ls -la "$HOME/.ccache_wrappers/"
+
+      # ── DT2W: enable gesture subfeature in defconfig ─────────────────────────
+      # star_QGKI.config already has CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE=y
+      # but the gesture layer (needed for doubletap mode 14) may be missing.
+      - name: Apply Feature Flags (DT2W)
+        run: |
+          set -e
+          DEVICE="${{ inputs.device_name || 'star' }}"
+          XIAOMI_CFG="arch/arm64/configs/vendor/xiaomi_QGKI.config"
+          DEVICE_CFG="arch/arm64/configs/vendor/${DEVICE}_QGKI.config"
+
+          set_flag() {
+            local file="$1" key="$2" val="$3"
+            sed -i "/^${key}[= ]/d"          "$file"
+            sed -i "/^# ${key} is not set/d" "$file"
+            echo "${key}=${val}" >> "$file"
+            echo "  [cfg] ${key}=${val} -> $(basename $file)"
+          }
+
+          echo "=== DT2W flags ==="
+          # Gesture sublayer — enables doubletap path inside touchfeature
+          set_flag "$XIAOMI_CFG" "CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_GESTURE" "y"
+          # FTS (ST) driver wakeup path — star uses ST FTS V521
+          set_flag "$DEVICE_CFG" "CONFIG_TOUCHSCREEN_ST_FTS_DOUBLETAP_WAKE"       "y"
+          # Wakeup source must be registered so touch IRQ can wake SoC
+          set_flag "$XIAOMI_CFG" "CONFIG_PM_WAKELOCKS"                            "y"
+
+      # ── Rear screen: disable via DTS ─────────────────────────────────────────
+      # From star-sm8350.dtsi:
+      #   &sde_dsi1  { ... }          — secondary DSI controller (rear panel)
+      #   &mdss_mdp  { connectors = <... &sde_dsi1 ...>; }
+      #   &dsi_panel_pwr_supply_sec_k1 { ... }
+      #   display_sec_vddi / display_sec_cvo — regulators for rear panel
+      #
+      # Strategy: inject "status = disabled" into sde_dsi1 override block and
+      # remove &sde_dsi1 from the mdss_mdp connectors list.
+      # The panel node (dsi_k1_43_06_00_sec_cmd) stays — it won't be probed
+      # because its controller is disabled.
+      - name: Disable Rear Screen (DTS)
+        if: ${{ inputs.device_name == 'star' && inputs.disable_rear_screen == 'true' }}
+        run: |
+          set -e
+          DTSI="arch/arm64/boot/dts/vendor/qcom/star-sm8350.dtsi"
+
+          echo "=== Before patch (sde_dsi1 / connectors lines) ==="
+          grep -n "sde_dsi1\|connectors" "$DTSI"
+
+          python3 << 'PYEOF'
+          import re
+
+          path = "arch/arm64/boot/dts/vendor/qcom/star-sm8350.dtsi"
+          with open(path, "r") as f:
+              src = f.read()
+
+          # ── 1. Inject status = "disabled" into &sde_dsi1 { } override block ──
+          # Matches the first &sde_dsi1 { ... } block and appends status inside.
+          def disable_sde_dsi1(text):
+              pattern = r'(&sde_dsi1\s*\{)'
+              def replacer(m):
+                  return m.group(1) + '\n\tstatus = "disabled"; /* REAR_DISABLED */'
+              # Only patch if not already disabled
+              if 'REAR_DISABLED' not in text:
+                  text = re.sub(pattern, replacer, text, count=1)
+              return text
+
+          # ── 2. Remove &sde_dsi1 from connectors = <...> list ─────────────────
+          # connectors = <&smmu_sde_unsec &smmu_sde_sec &sde_wb &sde_dsi
+          #       &sde_dsi1 &sde_rscc>;
+          def remove_from_connectors(text):
+              # Remove &sde_dsi1 token (with surrounding whitespace) from connectors
+              text = re.sub(r'(\bconnectors\s*=\s*<[^>]*?)\s*&sde_dsi1\b', r'\1', text)
+              return text
+
+          src = disable_sde_dsi1(src)
+          src = remove_from_connectors(src)
+
+          with open(path, "w") as f:
+              f.write(src)
+
+          print("Patch applied.")
+          PYEOF
+
+          echo "=== After patch ==="
+          grep -n "sde_dsi1\|connectors\|REAR_DISABLED" "$DTSI"
+
       - name: Build Project
-        run: | 
+        run: |
           git config --global user.email "you@example.com"
           git config --global user.name "wannq-github"
-          
-          # Set the kernel suffix (uname)
+
           export LOCALVERSION="${{ inputs.localversion || '-palaziks' }}"
-          
+
+          # Confirm ccache wrapper is active
+          echo "clang -> $(which clang)"
+          ccache --zero-stats > /dev/null 2>&1 || true
+
           chmod +x ./build.sh
-          # Build for the selected device (falls back to 'star' if triggered automatically)
           ./build.sh all ${{ inputs.device_name || 'star' }}
+
+          echo "=== ccache stats ==="
+          ccache -s | grep -E "Hits|Misses|files in cache|cache size" || true
 
       - name: Compress
         run: tar -czvf build.tar.gz ../out/anykernel/*.zip
@@ -68,4 +188,3 @@ jobs:
         with:
           name: Kernel-${{ inputs.device_name || 'star' }}
           path: build.tar.gz
-          
