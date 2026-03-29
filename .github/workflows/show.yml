@@ -1,0 +1,39 @@
+name: Show kernel config info
+
+on:
+  workflow_dispatch:
+
+jobs:
+  show:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Dump star_QGKI.config
+        run: |
+          echo "====== star_QGKI.config ======"
+          cat arch/arm64/configs/vendor/star_QGKI.config
+
+      - name: Grep rear/secondary in configs
+        run: |
+          echo "====== grep rear/secondary in arch/arm64/configs ======"
+          grep -rn "rear\|REAR\|secondary\|SECONDARY\|mi11.*rear\|MI_REAR\|MI11_REAR" \
+            arch/arm64/configs/ || echo "(nothing found)"
+
+      - name: List DTS files mentioning rear/secondary panel
+        run: |
+          echo "====== DTS files with rear/secondary ======"
+          grep -rln "rear\|secondary.*panel\|panel.*secondary\|mi_rear\|rear_display" \
+            arch/arm64/boot/dts/ 2>/dev/null || echo "(nothing found)"
+
+      - name: Grep rear/secondary in DTS content
+        run: |
+          echo "====== DTS content grep ======"
+          grep -rn "rear\|secondary.*panel\|panel.*secondary\|mi_rear\|rear_display" \
+            arch/arm64/boot/dts/ 2>/dev/null | head -80 || echo "(nothing found)"
+
+      - name: Dump build.sh TARGET_CC line
+        run: |
+          echo "====== build.sh CC-related lines ======"
+          grep -n "CC\|ccache\|CLANG\|clang" build.sh
