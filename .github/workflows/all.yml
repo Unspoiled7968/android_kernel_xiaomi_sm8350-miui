@@ -327,6 +327,7 @@ jobs:
       - name: Apply Compatibility Fixes for MIUI 5.4 QGKI
         run: |
           set -e
+          echo "=== Fix: nofault API shims -> uaccess.h ==="
           if ! grep -q "strncpy_from_user_nofault" include/linux/uaccess.h; then
             cat >> include/linux/uaccess.h << 'UACCESS'
           /* 5.4 compat shims for APIs added in 5.8 */
@@ -346,6 +347,28 @@ jobs:
           #define copy_to_kernel_nofault(dst, src, size)    probe_kernel_write(dst, src, size)
           #endif
           UACCESS
+          fi
+
+          echo "=== Fix: security_inode_init_security_anon (KernelSU) ==="
+          if ! grep -q "security_inode_init_security_anon" include/linux/security.h; then
+            sed -i '/#endif \/\* !CONFIG_SECURITY \*\//i \
+          #ifndef security_inode_init_security_anon\n\
+          static inline int security_inode_init_security_anon(struct inode *inode,\n\
+          \t\t\t\t\t\t    const struct qstr *name,\n\
+          \t\t\t\t\t\t    const struct inode *context_inode)\n\
+          {\n\
+          \treturn 0;\n\
+          }\n\
+          #endif' include/linux/security.h
+          fi
+
+          echo "=== Fix: SECCOMP_ARCH_NATIVE_NR (KernelSU-Next) ==="
+          KSU_REAL=$(realpath drivers/kernelsu)
+          if [ -f "$KSU_REAL/seccomp_cache.c" ]; then
+            if ! grep -q "define SECCOMP_ARCH_NATIVE_NR" "$KSU_REAL/seccomp_cache.c"; then
+              sed -i '1i #ifndef SECCOMP_ARCH_NATIVE_NR\n#define SECCOMP_ARCH_NATIVE_NR __NR_syscalls\n#endif' "$KSU_REAL/seccomp_cache.c"
+              echo "  Added SECCOMP_ARCH_NATIVE_NR fallback to seccomp_cache.c"
+            fi
           fi
 
       - name: Setup SuSFS
