@@ -37,3 +37,11 @@ jobs:
         run: |
           echo "====== build.sh CC-related lines ======"
           grep -n "CC\|ccache\|CLANG\|clang" build.sh
+
+      - name: Dump star-sm8350.dtsi (display section)
+        run: |
+          echo "====== star-sm8350.dtsi grep display/panel/secondary ======"
+          grep -n "display\|panel\|secondary\|dsi\|sde\|mdss" \
+            arch/arm64/boot/dts/vendor/qcom/star-sm8350.dtsi | head -100
+          echo "====== dsi-panel-k1 files ======"
+          cat arch/arm64/boot/dts/vendor/qcom/display/dsi-panel-k1-43-06-00-sec-cmd.dtsi
