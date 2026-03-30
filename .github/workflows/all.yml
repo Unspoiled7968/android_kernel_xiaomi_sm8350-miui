@@ -406,16 +406,14 @@ jobs:
           void ksu_observer_exit(void) {}
           void seccomp_filter_release(void *f) {}
           bool ksu_seccomp_allow_cache(int nr) { return true; }
-          int handle_sepolicy(void __user *user_data, u64 data_len) { return 0; }
+          int handle_sepolicy(void *user_data, unsigned long data_len) { return 0; }
+          
+          /* Provide dummy path_mount for 5.4 kernels that inline/hide it */
+          struct path;
+          int path_mount(const char *dev_name, struct path *path, const char *type_page, unsigned long flags, void *data_page) {
+              return 0;
+          }
           LINKER_STUBS
-            
-            # Safely stub the path_mount call using the C preprocessor
-            find "$KSU_REAL" -name "su_mount_ns.c" | while read -r f; do
-              if ! grep -q "#define path_mount" "$f"; then
-                sed -i '1i #define path_mount(dev_name, path, type_page, flags, data_page) 0\n' "$f"
-                echo "  Added path_mount macro stub to $f"
-              fi
-            done
           fi
 
       - name: Setup SuSFS
