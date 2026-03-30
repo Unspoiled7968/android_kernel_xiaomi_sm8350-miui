@@ -59,7 +59,6 @@ jobs:
             python3 python-is-python3 cpio curl patch rsync zip \
             coccinelle perl
 
-      # ── ccache ──────────────────────────────────────────────────────────────
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
@@ -187,17 +186,13 @@ jobs:
             echo '#pragma clang diagnostic pop' >> "$f"
           done
 
-          echo "=== Fix: susfs_is_current_proc stubs — with proper includes ==="
-          # Stub нужен только если функции реально нет в susfs.c
-          # Вставляем с правильными include чтобы bool и false были определены
+          echo "=== Fix: susfs_is_current_proc stubs ==="
           find "$KSU_REAL" -name "sucompat.c" | while read -r f; do
             if grep -q "susfs_is_current_proc_umounted" "$f"; then
-              # Функция вызывается — проверяем есть ли она уже определена где-то
               KSU_ROOT=$(dirname "$f")
               defined=$(grep -rl "susfs_is_current_proc_umounted" "$KSU_ROOT" \
                 | grep -v "sucompat.c" | wc -l)
               if [ "$defined" -eq 0 ] && ! grep -q "^bool susfs_is_current_proc_umounted" fs/susfs.c 2>/dev/null; then
-                # Вставляем stub в начало с нужными include
                 tmpfile=$(mktemp)
                 cat > "$tmpfile" << 'STUB'
           #include <linux/types.h>
@@ -327,7 +322,8 @@ jobs:
       - name: Apply Compatibility Fixes for MIUI 5.4 QGKI
         run: |
           set -e
-          echo "=== Fix: nofault API shims -> uaccess.h ==="
+
+          echo "=== Fix: nofault API shims ==="
           if ! grep -q "strncpy_from_user_nofault" include/linux/uaccess.h; then
             cat >> include/linux/uaccess.h << 'UACCESS'
           /* 5.4 compat shims for APIs added in 5.8 */
@@ -349,27 +345,50 @@ jobs:
           UACCESS
           fi
 
-          echo "=== Fix: security_inode_init_security_anon (KernelSU) ==="
-          if ! grep -q "security_inode_init_security_anon" include/linux/security.h; then
-            sed -i '/#endif \/\* !CONFIG_SECURITY \*\//i \
-          #ifndef security_inode_init_security_anon\n\
-          static inline int security_inode_init_security_anon(struct inode *inode,\n\
-          \t\t\t\t\t\t    const struct qstr *name,\n\
-          \t\t\t\t\t\t    const struct inode *context_inode)\n\
-          {\n\
-          \treturn 0;\n\
-          }\n\
-          #endif' include/linux/security.h
-          fi
+          echo "=== Fix: security_inode_init_security_anon ==="
+          # Функция появилась в 5.9, в 5.4 её нет — добавляем stub через Python
+          python3 << 'EOF'
+          import os
+
+          path = 'include/linux/security.h'
+          with open(path, 'r') as f:
+              content = f.read()
+
+          if 'security_inode_init_security_anon' in content:
+              print('security_inode_init_security_anon already present, skipping')
+          else:
+              stub = (
+                  '\n'
+                  '/* 5.4 compat: security_inode_init_security_anon added in 5.9 */\n'
+                  '#ifndef security_inode_init_security_anon\n'
+                  'static inline int security_inode_init_security_anon(\n'
+                  '\t\tstruct inode *inode,\n'
+                  '\t\tconst struct qstr *name,\n'
+                  '\t\tconst struct inode *context_inode)\n'
+                  '{\n'
+                  '\treturn 0;\n'
+                  '}\n'
+                  '#endif\n'
+              )
+              # Вставляем перед последним #endif в файле
+              idx = content.rfind('#endif')
+              if idx != -1:
+                  content = content[:idx] + stub + content[idx:]
+              else:
+                  content += stub
+              with open(path, 'w') as f:
+                  f.write(content)
+              print('Added security_inode_init_security_anon stub to security.h')
+          EOF
 
           echo "=== Fix: SECCOMP_ARCH_NATIVE_NR (KernelSU-Next) ==="
           KSU_REAL=$(realpath drivers/kernelsu)
-          if [ -f "$KSU_REAL/seccomp_cache.c" ]; then
-            if ! grep -q "define SECCOMP_ARCH_NATIVE_NR" "$KSU_REAL/seccomp_cache.c"; then
-              sed -i '1i #ifndef SECCOMP_ARCH_NATIVE_NR\n#define SECCOMP_ARCH_NATIVE_NR __NR_syscalls\n#endif' "$KSU_REAL/seccomp_cache.c"
-              echo "  Added SECCOMP_ARCH_NATIVE_NR fallback to seccomp_cache.c"
+          find "$KSU_REAL" -name "seccomp_cache.c" | while read -r f; do
+            if ! grep -q "SECCOMP_ARCH_NATIVE_NR" "$f"; then
+              sed -i '1i #ifndef SECCOMP_ARCH_NATIVE_NR\n#define SECCOMP_ARCH_NATIVE_NR __NR_syscalls\n#endif' "$f"
+              echo "  Added SECCOMP_ARCH_NATIVE_NR fallback to $f"
             fi
-          fi
+          done
 
       - name: Setup SuSFS
         run: |
