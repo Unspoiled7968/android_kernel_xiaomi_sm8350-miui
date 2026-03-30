@@ -59,6 +59,7 @@ jobs:
             python3 python-is-python3 cpio curl patch rsync zip \
             coccinelle perl
 
+      # ── ccache ──────────────────────────────────────────────────────────────
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
@@ -82,8 +83,8 @@ jobs:
           git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Patches.git \
             -b mi_kernel ../altman_patches
           ALTMAN_DIR="$(pwd)/../altman_patches/mi11u_hyperos"
-          patch -p1 --forward --batch < "$ALTMAN_DIR/hyperos_a14_fixed.patch"             || true
-          patch -p1 --forward --batch < "$ALTMAN_DIR/hyper_susfs_157_fixed.patch"         || true
+          patch -p1 --forward --batch < "$ALTMAN_DIR/hyperos_a14_fixed.patch"              || true
+          patch -p1 --forward --batch < "$ALTMAN_DIR/hyper_susfs_157_fixed.patch"          || true
           patch -p1 --forward --batch < "$ALTMAN_DIR/hyper_susfs_remove_all_sus_su.patch" || true
 
       - name: Integrate Selected KernelSU Variant
@@ -140,8 +141,6 @@ jobs:
           fi
 
           echo "=== Fix: seccomp_cache.c for Kernel 5.4 ==="
-          # Completely replace seccomp_cache.c with a version that works on 5.4
-          # Using a fixed maximum syscall number (ARM64 has ~512 syscalls)
           find "$KSU_REAL" -name "seccomp_cache.c" | while read -r f; do
             echo "  Replacing $f with 5.4-compatible version"
             cat > "$f" << 'STUB'
@@ -149,11 +148,14 @@ jobs:
           #include <linux/types.h>
           #include <linux/init.h>
           #include <linux/bitmap.h>
+          #include <asm/unistd.h>
           
-          /* For kernels < 5.8, SECCOMP_ARCH_NATIVE_NR is not defined.
-           * ARM64 has ~512 syscalls, use 512 as safe maximum */
           #ifndef SECCOMP_ARCH_NATIVE_NR
+          #ifdef __NR_syscalls
+          #define SECCOMP_ARCH_NATIVE_NR __NR_syscalls
+          #else
           #define SECCOMP_ARCH_NATIVE_NR 512
+          #endif
           #endif
           
           static DECLARE_BITMAP(allow_native, SECCOMP_ARCH_NATIVE_NR);
@@ -209,6 +211,13 @@ jobs:
           find "$KSU_REAL" -type f -name "*.c" \
             -exec sed -i 's/ksu_pkg_observer_exit()//g' {} + || true
 
+          echo "=== Fix: module_init/module_exit ==="
+          find "$KSU_REAL" -name "ksu.c" | while read -r f; do
+            sed -i 's/^module_init(kernelsu_init);/\/\/module_init(kernelsu_init);/' "$f"
+            sed -i 's/^module_exit(ksu_kernelsu_exit);/\/\/module_exit(ksu_kernelsu_exit);/' "$f"
+            sed -i 's/^module_exit(kernelsu_exit);/\/\/module_exit(kernelsu_exit);/' "$f"
+          done
+
           echo "=== Fix: pkg_observer.c stub ==="
           find "$KSU_REAL" -name "pkg_observer.c" | while read -r f; do
             cat > "$f" << 'STUB'
@@ -219,11 +228,22 @@ jobs:
           STUB
           done
 
-          echo "=== Fix: module_init/module_exit ==="
-          find "$KSU_REAL" -name "ksu.c" | while read -r f; do
-            sed -i 's/^module_init(kernelsu_init);/\/\/module_init(kernelsu_init);/' "$f"
-            sed -i 's/^module_exit(ksu_kernelsu_exit);/\/\/module_exit(ksu_kernelsu_exit);/' "$f"
-            sed -i 's/^module_exit(kernelsu_exit);/\/\/module_exit(kernelsu_exit);/' "$f"
+          echo "=== Fix: 5.10+ SELinux Injections for 5.4 Kernel ==="
+          # The selinux_policy struct doesn't exist in 5.4. We MUST stub rules.c and sepolicy.c.
+          find "$KSU_REAL" -name "rules.c" | while read -r f; do
+            cat > "$f" << 'STUB'
+          void ksu_rules_init(void) {}
+          void ksu_rules_exit(void) {}
+          STUB
+          done
+          find "$KSU_REAL" -name "sepolicy.c" | while read -r f; do
+            cat > "$f" << 'STUB'
+          void ksu_sepolicy_init(void) {}
+          void ksu_sepolicy_exit(void) {}
+          STUB
+          done
+          find "$KSU_REAL" -name "selinux.c" | while read -r f; do
+            sed -i 's/apply_kernelsu_rules();/\/\/apply_kernelsu_rules();/g' "$f"
           done
 
           echo "=== Fix: sepolicy.c diagnostic suppress ==="
@@ -232,7 +252,7 @@ jobs:
             echo '#pragma clang diagnostic pop' >> "$f"
           done
 
-          echo "=== Fix: susfs_is_current_proc stubs ==="
+          echo "=== Fix: susfs_is_current_proc stubs — with proper includes ==="
           find "$KSU_REAL" -name "sucompat.c" | while read -r f; do
             if grep -q "susfs_is_current_proc_umounted" "$f"; then
               KSU_ROOT=$(dirname "$f")
