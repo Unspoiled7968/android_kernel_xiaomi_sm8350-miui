@@ -12,7 +12,7 @@ on:
       ksu_variant:
         description: 'Select KernelSU variant'
         required: true
-        default: 'KernelSU-Next'
+        default: 'ReSukiSU'
         type: choice
         options: [SukiSU, ReSukiSU, KernelSU, KernelSU-Next, WildKSU]
       localversion:
@@ -140,47 +140,35 @@ jobs:
             done
           fi
 
-          echo "=== Fix: seccomp_cache.c for Kernel 5.4 ==="
-          find "$KSU_REAL" -name "seccomp_cache.c" | while read -r f; do
-            echo "  Replacing $f with 5.4-compatible version"
+          echo "=== Fix: su_mount_ns.c stub (path_mount/do_mount 5.4 compat) ==="
+          find "$KSU_REAL" -name "su_mount_ns.c" | while read -r f; do
+            echo "  stubbing: $f"
             cat > "$f" << 'STUB'
-          /* seccomp_cache: 5.4 kernel compatibility stub */
+          /* su_mount_ns: stubbed for kernel 5.4 compatibility.
+           * path_mount() is not exported in 5.4; mount namespace setup
+           * is handled by the kernel's own mount infrastructure. */
+          #include <linux/types.h>
+          #include <linux/errno.h>
+          #include <linux/init.h>
+
+          int ksu_setup_mount_ns(void) { return 0; }
+          void ksu_cleanup_mount_ns(void) { }
+          int setup_mount_ns(void) { return 0; }
+          STUB
+          done
+
+          echo "=== Fix: seccomp_cache.c stub (SECCOMP_ARCH_NATIVE_NR n/a in 5.4) ==="
+          find "$KSU_REAL" -name "seccomp_cache.c" | while read -r f; do
+            echo "  stubbing: $f"
+            cat > "$f" << 'STUB'
+          /* seccomp_cache: stubbed for kernel 5.4 — SECCOMP_ARCH_NATIVE_NR unavailable.
+           * Seccomp filtering still works via the standard kernel seccomp path. */
           #include <linux/types.h>
           #include <linux/init.h>
-          #include <linux/bitmap.h>
-          #include <asm/unistd.h>
-          
-          #ifndef SECCOMP_ARCH_NATIVE_NR
-          #ifdef __NR_syscalls
-          #define SECCOMP_ARCH_NATIVE_NR __NR_syscalls
-          #else
-          #define SECCOMP_ARCH_NATIVE_NR 512
-          #endif
-          #endif
-          
-          static DECLARE_BITMAP(allow_native, SECCOMP_ARCH_NATIVE_NR);
-          
-          void ksu_seccomp_cache_init(void)
-          {
-              bitmap_zero(allow_native, SECCOMP_ARCH_NATIVE_NR);
-          }
-          
-          int ksu_seccomp_cache_allow(int nr)
-          {
-              if (nr >= 0 && nr < SECCOMP_ARCH_NATIVE_NR)
-                  return test_bit(nr, allow_native);
-              return 0;
-          }
-          
-          void ksu_seccomp_cache_set(int nr, int allow)
-          {
-              if (nr >= 0 && nr < SECCOMP_ARCH_NATIVE_NR) {
-                  if (allow)
-                      set_bit(nr, allow_native);
-                  else
-                      clear_bit(nr, allow_native);
-              }
-          }
+          void ksu_seccomp_cache_init(void) { }
+          int  ksu_seccomp_allow_cache(int nr) { return 1; }
+          int  ksu_seccomp_cache_allow(int nr) { return 1; }
+          void ksu_seccomp_cache_set(int nr, int allow) { }
           STUB
           done
 
@@ -203,20 +191,12 @@ jobs:
               sed -i '1s/^/#include <linux\/sched\/task.h>\n/' "$f"
           done
 
-          echo "=== Fix: filter_count + pkg_observer ==="
-          find "$KSU_REAL" -type f -name "*.c" -exec sed -i '/filter_count/d' {} + || true
+          echo "=== Fix: pkg_observer ==="
           [ -f "$KSU_REAL/Makefile" ] && sed -i '/pkg_observer.o/d' "$KSU_REAL/Makefile" || true
           find "$KSU_REAL" -type f -name "*.c" \
             -exec sed -i 's/ksu_pkg_observer_init()/0/g' {} + || true
           find "$KSU_REAL" -type f -name "*.c" \
             -exec sed -i 's/ksu_pkg_observer_exit()//g' {} + || true
-
-          echo "=== Fix: module_init/module_exit ==="
-          find "$KSU_REAL" -name "ksu.c" | while read -r f; do
-            sed -i 's/^module_init(kernelsu_init);/\/\/module_init(kernelsu_init);/' "$f"
-            sed -i 's/^module_exit(ksu_kernelsu_exit);/\/\/module_exit(ksu_kernelsu_exit);/' "$f"
-            sed -i 's/^module_exit(kernelsu_exit);/\/\/module_exit(kernelsu_exit);/' "$f"
-          done
 
           echo "=== Fix: pkg_observer.c stub ==="
           find "$KSU_REAL" -name "pkg_observer.c" | while read -r f; do
@@ -228,6 +208,13 @@ jobs:
           STUB
           done
 
+          echo "=== Fix: module_init/module_exit ==="
+          find "$KSU_REAL" -name "ksu.c" | while read -r f; do
+            sed -i 's/^module_init(kernelsu_init);/\/\/module_init(kernelsu_init);/' "$f"
+            sed -i 's/^module_exit(ksu_kernelsu_exit);/\/\/module_exit(ksu_kernelsu_exit);/' "$f"
+            sed -i 's/^module_exit(kernelsu_exit);/\/\/module_exit(kernelsu_exit);/' "$f"
+          done
+
           echo "=== Fix: sepolicy.c diagnostic suppress ==="
           find "$KSU_REAL" -name "sepolicy.c" | while read -r f; do
             sed -i '1s/^/#pragma clang diagnostic push\n#pragma clang diagnostic ignored "-Wimplicit-function-declaration"\n#pragma clang diagnostic ignored "-Wincompatible-pointer-types"\n#pragma clang diagnostic ignored "-Wincompatible-function-pointer-types"\n/' "$f"
@@ -236,42 +223,12 @@ jobs:
 
           echo "=== Fix: susfs_is_current_proc stubs ==="
           find "$KSU_REAL" -name "sucompat.c" | while read -r f; do
-            if grep -q "susfs_is_current_proc_umounted" "$f"; then
-              KSU_ROOT=$(dirname "$f")
-              defined=$(grep -rl "susfs_is_current_proc_umounted" "$KSU_ROOT" \
-                | grep -v "sucompat.c" | wc -l)
-              if [ "$defined" -eq 0 ] && ! grep -q "^bool susfs_is_current_proc_umounted" fs/susfs.c 2>/dev/null; then
-                tmpfile=$(mktemp)
-                cat > "$tmpfile" << 'STUB'
-          #include <linux/types.h>
-          #include <linux/kernel.h>
-          static bool _susfs_umounted_stub(void) { return false; }
-          bool susfs_is_current_proc_umounted(void) { return _susfs_umounted_stub(); }
-          void susfs_set_current_proc_umounted(void) { }
-          STUB
-                cat "$f" >> "$tmpfile"
-                mv "$tmpfile" "$f"
-                echo "  Added susfs stubs to $f"
-              fi
-            fi
+            grep -q "susfs_is_current_proc_umounted" "$f" && continue
+            sed -i '1s/^/bool susfs_is_current_proc_umounted(void) { return false; }\nvoid susfs_set_current_proc_umounted(void) { }\n/' "$f" || true
           done
 
-          echo "=== Fix: 5.10+ SELinux Injections for 5.4 Kernel ==="
-          find "$KSU_REAL" -name "rules.c" | while read -r f; do
-            cat > "$f" << 'STUB'
-          void ksu_rules_init(void) {}
-          void ksu_rules_exit(void) {}
-          STUB
-          done
-          find "$KSU_REAL" -name "sepolicy.c" | while read -r f; do
-            cat > "$f" << 'STUB'
-          void ksu_sepolicy_init(void) {}
-          void ksu_sepolicy_exit(void) {}
-          STUB
-          done
-          find "$KSU_REAL" -name "selinux.c" | while read -r f; do
-            sed -i 's/apply_kernelsu_rules();/\/\/apply_kernelsu_rules();/g' "$f"
-          done
+          echo "=== Fix: minmax.h -> kernel.h (Global) ==="
+          grep -rl 'linux/minmax.h' "$KSU_REAL" | xargs -r sed -i 's/linux\/minmax\.h/linux\/kernel\.h/g' || true
 
           grep -q "kernelsu" drivers/Makefile || \
             echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
@@ -280,6 +237,137 @@ jobs:
 
           echo "=== Final drivers/kernelsu/ ==="
           ls -la drivers/kernelsu/
+
+      - name: Apply Compatibility Fixes for MIUI 5.4 QGKI
+        run: |
+          set -e
+
+          echo "=== Fix: nofault API shims ==="
+          if ! grep -q "strncpy_from_user_nofault" include/linux/uaccess.h; then
+            cat >> include/linux/uaccess.h << 'UACCESS'
+          /* 5.4 compat shims for APIs added in 5.8+ */
+          #ifndef strncpy_from_user_nofault
+          #define strncpy_from_user_nofault(dst, src, size) strncpy_from_user(dst, src, size)
+          #endif
+          #ifndef copy_from_user_nofault
+          #define copy_from_user_nofault(dst, src, size)    copy_from_user(dst, src, size)
+          #endif
+          #ifndef copy_to_user_nofault
+          #define copy_to_user_nofault(dst, src, size)      copy_to_user(dst, src, size)
+          #endif
+          #ifndef copy_from_kernel_nofault
+          #define copy_from_kernel_nofault(dst, src, size)  probe_kernel_read(dst, src, size)
+          #endif
+          #ifndef copy_to_kernel_nofault
+          #define copy_to_kernel_nofault(dst, src, size)    probe_kernel_write(dst, src, size)
+          #endif
+          UACCESS
+          fi
+
+          echo "=== Fix: security_inode_init_security_anon (added in 5.9) ==="
+          python3 << 'EOF'
+          import os
+          path = 'include/linux/security.h'
+          with open(path, 'r') as f:
+              content = f.read()
+          if 'security_inode_init_security_anon' in content:
+              print('Already present, skipping')
+          else:
+              stub = (
+                  '\n/* 5.4 compat: security_inode_init_security_anon added in 5.9 */\n'
+                  '#ifndef security_inode_init_security_anon\n'
+                  'static inline int security_inode_init_security_anon(\n'
+                  '\t\tstruct inode *inode,\n'
+                  '\t\tconst struct qstr *name,\n'
+                  '\t\tconst struct inode *context_inode)\n'
+                  '{\n\treturn 0;\n}\n'
+                  '#endif\n'
+              )
+              idx = content.rfind('#endif')
+              if idx != -1:
+                  content = content[:idx] + stub + content[idx:]
+              else:
+                  content += stub
+              with open(path, 'w') as f:
+                  f.write(content)
+              print('Added security_inode_init_security_anon stub')
+          EOF
+
+          echo "=== Fix: Undefined linker symbols (tiann KernelSU 5.4 compat) ==="
+          KSU_REAL=$(realpath drivers/kernelsu)
+
+          python3 << 'PYEOF'
+          import os, subprocess
+
+          ksu_real = subprocess.check_output(
+              ['realpath', 'drivers/kernelsu'], text=True).strip()
+
+          compat_file = os.path.join(ksu_real, 'compat_5_4.c')
+
+          content = '''\
+          /* compat_5_4.c — linker satisfaction stubs for kernel 5.4.
+           * Symbols from tiann KernelSU v2 modules that are unavailable
+           * or incompatible on 5.4 kernels. */
+          #include <linux/types.h>
+          #include <linux/init.h>
+          #include <linux/errno.h>
+          #include <linux/kernel.h>
+          #include <linux/fs.h>
+
+          /* From rules.c / selinux integration */
+          void __weak apply_kernelsu_rules(void) {}
+          int  __weak handle_sepolicy(void __user *ud, u64 len) { return 0; }
+
+          /* From observer.c */
+          int  __weak ksu_observer_init(void) { return 0; }
+          void __weak ksu_observer_exit(void) {}
+
+          /* From seccomp_cache.c */
+          bool __weak ksu_seccomp_allow_cache(int nr) { return true; }
+
+          /* seccomp_filter_release — 5.4 does not export this */
+          struct task_struct;
+          void __weak seccomp_filter_release(struct task_struct *tsk) {}
+
+          /* path_mount */
+          struct path;
+          int __weak path_mount(const char *dev_name, struct path *path,
+                                const char *type_page, unsigned long flags,
+                                void *data_page) { return -ENOSYS; }
+
+          /* ── Linker stubs for KSU Next Inline Hooks ──
+           * Modern KSU removed these functions, but we need them here so the linker 
+           * doesn't crash when fs/read_write.c invokes them */
+          struct filename;
+          int __weak ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr, size_t *count_ptr, loff_t **pos) { return 0; }
+          int __weak ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags) { return 0; }
+          int __weak ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags) { return 0; }
+          int __weak ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags) { return 0; }
+          '''
+
+          with open(compat_file, 'w') as f:
+              f.write(content)
+          print(f'Written: {compat_file}')
+
+          makefile = os.path.join(ksu_real, 'Makefile')
+          with open(makefile, 'r') as f:
+              mk = f.read()
+          if 'compat_5_4.o' not in mk:
+              mk += '\nobj-$(CONFIG_KSU) += compat_5_4.o\n'
+              with open(makefile, 'w') as f:
+                  f.write(mk)
+              print('Added compat_5_4.o to KSU Makefile')
+          PYEOF
+
+          echo "=== Fix: dispatch.c tasklist_lock & init_task (Normal KSU) ==="
+          find "$KSU_REAL" -name "dispatch.c" | while read -r f; do
+            sed -i 's/write_lock_irq(&tasklist_lock);/\/\/write_lock_irq(\&tasklist_lock);/g' "$f"
+            sed -i 's/write_unlock_irq(&tasklist_lock);/\/\/write_unlock_irq(\&tasklist_lock);/g' "$f"
+            sed -i 's/struct pid \*init_group = task_pgrp(&init_task);/struct pid \*init_group = NULL;/g' "$f"
+            sed -i 's/task_session(p) != task_session(&init_task)/0/g' "$f"
+            sed -i 's/task_pgrp(p) != init_group/0/g' "$f"
+            echo "  Patched tasklist_lock in $f"
+          done
 
       - name: Apply KSU Hooks
         run: |
@@ -337,104 +425,70 @@ jobs:
           EOF
 
           else
-            echo "-> Skipping manual inline hooks (Functions ksu_handle_* were deleted from modern KSU)"
-            echo "-> Kernel will automatically register via Kprobes."
-          fi
+            echo "-> Inline hooks (KernelSU/KernelSU-Next/WildKSU)"
+            python3 << 'EOF'
+          import sys, os
 
-      - name: Apply Compatibility Fixes for MIUI 5.4 QGKI
-        run: |
-          set -e
+          def insert_after(filepath, search, insertion):
+              if not os.path.exists(filepath): return
+              with open(filepath, 'r') as f: content = f.read()
+              if 'ksu_handle' in content: return
+              if search not in content:
+                  print(f'WARNING: anchor not found in {filepath}')
+                  return
+              content = content.replace(search, search + insertion, 1)
+              with open(filepath, 'w') as f: f.write(content)
+              print(f'{filepath}: hook applied')
 
-          echo "=== Fix: nofault API shims ==="
-          if ! grep -q "strncpy_from_user_nofault" include/linux/uaccess.h; then
-            cat >> include/linux/uaccess.h << 'UACCESS'
-          /* 5.4 compat shims for APIs added in 5.8+ */
-          #ifndef strncpy_from_user_nofault
-          #define strncpy_from_user_nofault(dst, src, size) strncpy_from_user(dst, src, size)
-          #endif
-          #ifndef copy_from_user_nofault
-          #define copy_from_user_nofault(dst, src, size)    copy_from_user(dst, src, size)
-          #endif
-          #ifndef copy_to_user_nofault
-          #define copy_to_user_nofault(dst, src, size)      copy_to_user(dst, src, size)
-          #endif
-          #ifndef copy_from_kernel_nofault
-          #define copy_from_kernel_nofault(dst, src, size)  probe_kernel_read(dst, src, size)
-          #endif
-          #ifndef copy_to_kernel_nofault
-          #define copy_to_kernel_nofault(dst, src, size)    probe_kernel_write(dst, src, size)
-          #endif
-          UACCESS
-          fi
+          insert_after('fs/exec.c',
+              '\tchar *pathbuf = NULL;\n',
+              '#ifdef CONFIG_KSU\n'
+              '\textern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,\n'
+              '\t\t\t\t        void *argv, void *envp, int *flags);\n'
+              '\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n'
+              '#endif\n')
 
-          echo "=== Fix: security_inode_init_security_anon (added in 5.9) ==="
-          python3 << 'EOF'
-          import os
-          path = 'include/linux/security.h'
-          with open(path, 'r') as f:
-              content = f.read()
-          if 'security_inode_init_security_anon' in content:
-              print('Already present, skipping')
-          else:
-              stub = (
-                  '\n/* 5.4 compat: security_inode_init_security_anon added in 5.9 */\n'
-                  '#ifndef security_inode_init_security_anon\n'
-                  'static inline int security_inode_init_security_anon(\n'
-                  '\t\tstruct inode *inode,\n'
-                  '\t\tconst struct qstr *name,\n'
-                  '\t\tconst struct inode *context_inode)\n'
-                  '{\n\treturn 0;\n}\n'
+          insert_after('fs/open.c',
+              '\tconst struct cred *old_cred;\n\tstruct cred *override_cred;\n',
+              '#ifdef CONFIG_KSU\n'
+              '\textern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,\n'
+              '\t\t\t\t\tint *mode, int *flags);\n'
+              '\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n'
+              '#endif\n')
+
+          # vfs_read hook — try two possible anchors for different kernel versions
+          with open('fs/read_write.c', 'r') as f:
+              rw_content = f.read()
+
+          if 'ksu_handle_vfs_read' not in rw_content:
+              anchor1 = 'ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)\n{\n\tssize_t ret;\n'
+              anchor2 = 'ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)\n{\n'
+              insertion = (
+                  '#ifdef CONFIG_KSU\n'
+                  '\textern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,\n'
+                  '\t\t\t\t        size_t *count_ptr, loff_t **pos);\n'
+                  '\tksu_handle_vfs_read(&file, &buf, &count, &pos);\n'
                   '#endif\n'
               )
-              idx = content.rfind('#endif')
-              if idx != -1:
-                  content = content[:idx] + stub + content[idx:]
+              if anchor1 in rw_content:
+                  rw_content = rw_content.replace(anchor1, anchor1 + insertion, 1)
+                  print('fs/read_write.c: hook applied (anchor1)')
+              elif anchor2 in rw_content:
+                  rw_content = rw_content.replace(anchor2, anchor2 + insertion, 1)
+                  print('fs/read_write.c: hook applied (anchor2)')
               else:
-                  content += stub
-              with open(path, 'w') as f:
-                  f.write(content)
-              print('Added security_inode_init_security_anon stub')
+                  print('WARNING: vfs_read anchor not found in fs/read_write.c')
+              with open('fs/read_write.c', 'w') as f:
+                  f.write(rw_content)
+
+          insert_after('fs/stat.c',
+              '\tint error = -EINVAL;\n',
+              '#ifdef CONFIG_KSU\n'
+              '\textern int ksu_handle_stat(int *dfd, const char __user **filename_user,\n'
+              '\t\t\t\t   int *flags);\n'
+              '\tksu_handle_stat(&dfd, &filename, &flags);\n'
+              '#endif\n')
           EOF
-
-          echo "=== Fix: Universal Linker Symbols for Stubs ==="
-          KSU_REAL=$(realpath drivers/kernelsu)
-          
-          if [ -d "$KSU_REAL" ]; then
-            cat > "$KSU_REAL/54_stubs.c" << 'LINKER_STUBS'
-          /* Linker Satisfaction Stubs for removed 5.10+ features */
-          #include <linux/types.h>
-          #include <linux/compiler.h>
-
-          void apply_kernelsu_rules(void) {}
-          int ksu_observer_init(void) { return 0; }
-          void ksu_observer_exit(void) {}
-          void seccomp_filter_release(void *f) {}
-          bool ksu_seccomp_allow_cache(int nr) { return true; }
-          int handle_sepolicy(void __user *user_data, u64 data_len) { return 0; }
-          
-          /* Provide dummy path_mount for 5.4 kernels that inline/hide it */
-          struct path;
-          int path_mount(const char *dev_name, struct path *path, const char *type_page, unsigned long flags, void *data_page) {
-              return 0;
-          }
-          LINKER_STUBS
-
-            # Ensure the stubs are compiled regardless of variant structure
-            echo "obj-y += 54_stubs.o" >> "$KSU_REAL/Makefile"
-            [ -f "$KSU_REAL/Kbuild" ] && echo "obj-y += 54_stubs.o" >> "$KSU_REAL/Kbuild"
-
-            echo "=== Fix: minmax.h -> kernel.h (Normal KSU) ==="
-            find "$KSU_REAL" -type f -name "*.c" -exec sed -i 's|<linux/minmax.h>|<linux/kernel.h>|g' {} + || true
-
-            echo "=== Fix: dispatch.c tasklist_lock & init_task (Normal KSU) ==="
-            find "$KSU_REAL" -name "dispatch.c" | while read -r f; do
-              sed -i 's/write_lock_irq(&tasklist_lock);/\/\/write_lock_irq(\&tasklist_lock);/g' "$f"
-              sed -i 's/write_unlock_irq(&tasklist_lock);/\/\/write_unlock_irq(\&tasklist_lock);/g' "$f"
-              sed -i 's/struct pid \*init_group = task_pgrp(&init_task);/struct pid \*init_group = NULL;/g' "$f"
-              sed -i 's/task_session(p) != task_session(&init_task)/0/g' "$f"
-              sed -i 's/task_pgrp(p) != init_group/0/g' "$f"
-              echo "  Patched tasklist_lock in $f"
-            done
           fi
 
       - name: Setup SuSFS
@@ -474,32 +528,24 @@ jobs:
           grep -q "susfs.o" fs/Makefile || echo "obj-y += susfs.o" >> fs/Makefile
 
           echo "=== SuSFS structural fixes ==="
-
           grep -q "susfs_mnt_id_backup" include/linux/mount.h || \
             sed -i '/int mnt_flags;/a \ \ \ \ u64 susfs_mnt_id_backup;' \
               include/linux/mount.h
-
           grep -q "^struct kstat;" include/linux/susfs.h || \
             sed -i '1s/^/struct kstat;\n/' include/linux/susfs.h
-
           grep -q "linux/susfs.h" fs/proc/task_mmu.c || \
             sed -i '1s/^/#include <linux\/susfs.h>\n/' fs/proc/task_mmu.c
           grep -q "linux/susfs.h" fs/proc/fd.c || \
             sed -i '1s/^/#include <linux\/susfs.h>\n/' fs/proc/fd.c
-
           grep -q "linux/susfs_def.h" include/linux/susfs.h || \
             sed -i '1s/^/#include <linux\/susfs_def.h>\n/' include/linux/susfs.h
-
           grep -q "struct dentry \*dentry" fs/proc/task_mmu.c || \
             sed -i '/const char \*name = NULL;/a\\tstruct dentry *dentry = NULL;' \
               fs/proc/task_mmu.c
-
           grep -q "linux/path.h" fs/susfs.c || \
             sed -i '1s/^/#include <linux\/path.h>\n/' fs/susfs.c
-
           grep -q "linux/dcache.h" fs/susfs.c || \
             sed -i '1s/^/#include <linux\/dcache.h>\n/' fs/susfs.c
-
           grep -q "linux/mount.h" fs/susfs.c || \
             sed -i '1s/^/#include <linux\/mount.h>\n/' fs/susfs.c
 
@@ -523,25 +569,18 @@ jobs:
             echo "[+] Added show_vma_header_prefix_fake"
           fi
           echo "=== Hide Stuff: dentry variable ==="
-          if grep -q "struct dentry \*dentry" "fs/proc/task_mmu.c"; then
-            echo "[+] already present"
-          else
+          grep -q "struct dentry \*dentry" "fs/proc/task_mmu.c" || \
             sed -i '/const char \*name = NULL;/a\    struct dentry *dentry;' \
               fs/proc/task_mmu.c
-            echo "[+] Added dentry"
-          fi
           echo "=== Hide Stuff: jit-zygote-cache ==="
           if grep -q "jit-zygote-cache" "fs/proc/task_mmu.c"; then
             echo "[+] already present"
           else
             spatch --sp-file "$PATCHES_DIR/function_hide_stuff.cocci" \
               --in-place fs/proc/task_mmu.c
-            echo "[+] Added hide stuff"
           fi
           echo "=== Hide Stuff: bypass label ==="
-          if grep -q "bypass:" "fs/proc/task_mmu.c"; then
-            echo "[+] already present"
-          else
+          if ! grep -q "bypass:" "fs/proc/task_mmu.c"; then
             if grep -q 'if (show_vma_header_prefix' "fs/proc/task_mmu.c"; then
               perl -i -0pe \
                 's/(if \(show_vma_header_prefix\(m, start, end, flags, pgoff, dev, ino\)\)\s+return;)/$1\nbypass:/s' \
@@ -551,23 +590,17 @@ jobs:
                 '/show_vma_header_prefix(m, start, end, flags, pgoff, dev, ino);/a\bypass:' \
                 fs/proc/task_mmu.c
             fi
-            echo "[+] Added bypass"
           fi
           echo "=== Hide Stuff: proc/base.c ==="
-          if grep -q "lineage" "fs/proc/base.c"; then
-            echo "[+] already present"
-          else
+          grep -q "lineage" "fs/proc/base.c" || \
             spatch --sp-file "$PATCHES_DIR/function_hide_stuff_partii.cocci" \
               --in-place fs/proc/base.c
-            echo "[+] Added hide stuff part ii"
-          fi
           echo "=== Hide Stuff: ashmem -> framework-res ==="
           if grep -q "/dev/ashmem" "fs/proc/task_mmu.c"; then
             sed -i 's|"/dev/ashmem (deleted)"|"/system/framework/framework-res.apk"|g' \
               fs/proc/task_mmu.c
             sed -i 's|"/dev/ashmem (deleted)"|"/system/framework/framework-res.apk"|g' \
               fs/proc/base.c
-            echo "[+] Changed ashmem to framework-res"
           fi
 
       - name: Append Flags to Defconfig
@@ -585,7 +618,6 @@ jobs:
 
           FLAGS=(
             "CONFIG_KSU=y"
-            "CONFIG_KSU_NEXT=y"
             "CONFIG_KSU_DEBUG=n"
             "CONFIG_KPROBES=y"
             "CONFIG_HAVE_KPROBES=y"
@@ -611,18 +643,16 @@ jobs:
             grep -q "^${KEY}[=\ ]" "$DEFCONFIG" || echo "$FLAG" >> "$DEFCONFIG"
           done
 
-          echo "=== KSU flags ==="
-          grep "KSU\|KPM\|KALLSYMS\|KPROBE" "$DEFCONFIG" || true
+          echo "=== KSU/SuSFS flags in defconfig ==="
+          grep -E "KSU|KPM|KALLSYMS|KPROBE" "$DEFCONFIG" || true
 
       - name: Disable Rear Screen (DTS)
         if: ${{ inputs.device_name == 'star' && inputs.disable_rear_screen == 'true' }}
         run: |
           set -e
           DTSI="arch/arm64/boot/dts/vendor/qcom/star-sm8350.dtsi"
-
           echo "=== Before patch ==="
           grep -n "sde_dsi1\|connectors" "$DTSI"
-
           python3 << 'PYEOF'
           import re
           path = "arch/arm64/boot/dts/vendor/qcom/star-sm8350.dtsi"
@@ -640,32 +670,8 @@ jobs:
               f.write(src)
           print("DTS patch applied.")
           PYEOF
-
           echo "=== After patch ==="
           grep -n "sde_dsi1\|connectors\|REAR_DISABLED" "$DTSI"
-
-      - name: Apply Feature Flags (DT2W)
-        run: |
-          set -e
-          DEVICE="${{ inputs.device_name || 'star' }}"
-          XIAOMI_CFG="arch/arm64/configs/vendor/xiaomi_QGKI.config"
-          DEVICE_CFG="arch/arm64/configs/vendor/${DEVICE}_QGKI.config"
-
-          set_flag() {
-            local file="$1" key="$2" val="$3"
-            sed -i "/^${key}[= ]/d"          "$file"
-            sed -i "/^# ${key} is not set/d" "$file"
-            echo "${key}=${val}" >> "$file"
-            echo "  [cfg] ${key}=${val} -> $(basename $file)"
-          }
-
-          echo "=== DT2W flags ==="
-          # Gesture sublayer — enables doubletap path inside touchfeature
-          set_flag "$XIAOMI_CFG" "CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_GESTURE" "y"
-          # FTS (ST) driver wakeup path — star uses ST FTS V521
-          set_flag "$DEVICE_CFG" "CONFIG_TOUCHSCREEN_ST_FTS_DOUBLETAP_WAKE"       "y"
-          # Wakeup source must be registered so touch IRQ can wake SoC
-          set_flag "$XIAOMI_CFG" "CONFIG_PM_WAKELOCKS"                            "y"
 
       - name: Build Project
         run: |
