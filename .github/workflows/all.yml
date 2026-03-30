@@ -406,7 +406,7 @@ jobs:
           void ksu_observer_exit(void) {}
           void seccomp_filter_release(void *f) {}
           bool ksu_seccomp_allow_cache(int nr) { return true; }
-          int handle_sepolicy(void *user_data, unsigned long data_len) { return 0; }
+          int handle_sepolicy(void __user *user_data, u64 data_len) { return 0; }
           
           /* Provide dummy path_mount for 5.4 kernels that inline/hide it */
           struct path;
