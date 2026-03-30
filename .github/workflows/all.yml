@@ -140,19 +140,20 @@ jobs:
           fi
 
           echo "=== Fix: seccomp_cache.c for Kernel 5.4 ==="
-          # For KernelSU, KernelSU-Next, and WildKSU, replace with 5.4-compatible version
-          if [[ "$VARIANT" == "KernelSU" ]] || [[ "$VARIANT" == "KernelSU-Next" ]] || [[ "$VARIANT" == "WildKSU" ]]; then
-            find "$KSU_REAL" -name "seccomp_cache.c" | while read -r f; do
-              echo "  Replacing $f with 5.4-compatible version"
-              cat > "$f" << 'STUB'
+          # Completely replace seccomp_cache.c with a version that works on 5.4
+          # Using a fixed maximum syscall number (ARM64 has ~512 syscalls)
+          find "$KSU_REAL" -name "seccomp_cache.c" | while read -r f; do
+            echo "  Replacing $f with 5.4-compatible version"
+            cat > "$f" << 'STUB'
           /* seccomp_cache: 5.4 kernel compatibility stub */
           #include <linux/types.h>
           #include <linux/init.h>
           #include <linux/bitmap.h>
           
-          /* For kernels < 5.8, SECCOMP_ARCH_NATIVE_NR is not defined */
+          /* For kernels < 5.8, SECCOMP_ARCH_NATIVE_NR is not defined.
+           * ARM64 has ~512 syscalls, use 512 as safe maximum */
           #ifndef SECCOMP_ARCH_NATIVE_NR
-          #define SECCOMP_ARCH_NATIVE_NR __NR_syscalls
+          #define SECCOMP_ARCH_NATIVE_NR 512
           #endif
           
           static DECLARE_BITMAP(allow_native, SECCOMP_ARCH_NATIVE_NR);
@@ -179,16 +180,7 @@ jobs:
               }
           }
           STUB
-            done
-          else
-            # For SukiSU/ReSukiSU, only add the missing define
-            find "$KSU_REAL" -name "seccomp_cache.c" | while read -r f; do
-              echo "  Adding fallback define to $f"
-              if ! grep -q "#ifndef SECCOMP_ARCH_NATIVE_NR" "$f"; then
-                sed -i '1i #ifndef SECCOMP_ARCH_NATIVE_NR\n#define SECCOMP_ARCH_NATIVE_NR __NR_syscalls\n#endif\n' "$f"
-              fi
-            done
-          fi
+          done
 
           echo "=== Fix: pgtable.h ==="
           find "$KSU_REAL" -type f \( -name "*.c" -o -name "*.h" \) \
@@ -240,7 +232,7 @@ jobs:
             echo '#pragma clang diagnostic pop' >> "$f"
           done
 
-          echo "=== Fix: susfs_is_current_proc stubs — with proper includes ==="
+          echo "=== Fix: susfs_is_current_proc stubs ==="
           find "$KSU_REAL" -name "sucompat.c" | while read -r f; do
             if grep -q "susfs_is_current_proc_umounted" "$f"; then
               KSU_ROOT=$(dirname "$f")
