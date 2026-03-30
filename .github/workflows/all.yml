@@ -409,8 +409,8 @@ jobs:
           int handle_sepolicy(void __user *user_data, u64 data_len) { return 0; }
           LINKER_STUBS
             
-            # Remove the path_mount call that fails to link on some 5.4 trees
-            find "$KSU_REAL" -name "su_mount_ns.c" -exec sed -i 's/path_mount(/0; \/\//g' {} + || true
+            # Safely comment out the path_mount() execution block
+            find "$KSU_REAL" -name "su_mount_ns.c" -exec perl -i -pe 's/(error = path_mount\()/error = 0; \/\/$1/g' {} + || true
           fi
 
       - name: Setup SuSFS
