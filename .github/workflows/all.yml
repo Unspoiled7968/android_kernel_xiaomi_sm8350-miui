@@ -141,6 +141,8 @@ jobs:
           fi
 
           echo "=== Fix: seccomp_cache.c for Kernel 5.4 ==="
+          # Completely replace seccomp_cache.c with a version that works on 5.4
+          # Using a fixed maximum syscall number (ARM64 has ~512 syscalls)
           find "$KSU_REAL" -name "seccomp_cache.c" | while read -r f; do
             echo "  Replacing $f with 5.4-compatible version"
             cat > "$f" << 'STUB'
@@ -148,14 +150,11 @@ jobs:
           #include <linux/types.h>
           #include <linux/init.h>
           #include <linux/bitmap.h>
-          #include <asm/unistd.h>
           
+          /* For kernels < 5.8, SECCOMP_ARCH_NATIVE_NR is not defined.
+           * ARM64 has ~512 syscalls, use 512 as safe maximum */
           #ifndef SECCOMP_ARCH_NATIVE_NR
-          #ifdef __NR_syscalls
-          #define SECCOMP_ARCH_NATIVE_NR __NR_syscalls
-          #else
           #define SECCOMP_ARCH_NATIVE_NR 512
-          #endif
           #endif
           
           static DECLARE_BITMAP(allow_native, SECCOMP_ARCH_NATIVE_NR);
@@ -226,24 +225,6 @@ jobs:
           int ksu_pkg_observer_init(void) { return 0; }
           void ksu_pkg_observer_exit(void) { return; }
           STUB
-          done
-
-          echo "=== Fix: 5.10+ SELinux Injections for 5.4 Kernel ==="
-          # The selinux_policy struct doesn't exist in 5.4. We MUST stub rules.c and sepolicy.c.
-          find "$KSU_REAL" -name "rules.c" | while read -r f; do
-            cat > "$f" << 'STUB'
-          void ksu_rules_init(void) {}
-          void ksu_rules_exit(void) {}
-          STUB
-          done
-          find "$KSU_REAL" -name "sepolicy.c" | while read -r f; do
-            cat > "$f" << 'STUB'
-          void ksu_sepolicy_init(void) {}
-          void ksu_sepolicy_exit(void) {}
-          STUB
-          done
-          find "$KSU_REAL" -name "selinux.c" | while read -r f; do
-            sed -i 's/apply_kernelsu_rules();/\/\/apply_kernelsu_rules();/g' "$f"
           done
 
           echo "=== Fix: sepolicy.c diagnostic suppress ==="
@@ -338,51 +319,7 @@ jobs:
           EOF
 
           else
-            echo "-> Inline hooks (KernelSU/KernelSU-Next/WildKSU)"
-            python3 << 'EOF'
-          import sys, os
-
-          def insert_after(filepath, search, insertion):
-              if not os.path.exists(filepath): return
-              with open(filepath, 'r') as f: content = f.read()
-              if 'ksu_handle' in content: return
-              if search not in content: return
-              content = content.replace(search, search + insertion, 1)
-              with open(filepath, 'w') as f: f.write(content)
-              print(f'{filepath}: hook applied')
-
-          insert_after('fs/exec.c',
-              '\tchar *pathbuf = NULL;\n',
-              '#ifdef CONFIG_KSU\n'
-              '\textern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,\n'
-              '\t\t\t\t        void *argv, void *envp, int *flags);\n'
-              '\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n'
-              '#endif\n')
-
-          insert_after('fs/open.c',
-              '\tconst struct cred *old_cred;\n\tstruct cred *override_cred;\n',
-              '#ifdef CONFIG_KSU\n'
-              '\textern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,\n'
-              '\t\t\t\t\tint *mode, int *flags);\n'
-              '\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n'
-              '#endif\n')
-
-          insert_after('fs/read_write.c',
-              'ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)\n{\n\tssize_t ret;\n',
-              '#ifdef CONFIG_KSU\n'
-              '\textern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,\n'
-              '\t\t\t\t        size_t *count_ptr, loff_t **pos);\n'
-              '\tksu_handle_vfs_read(&file, &buf, &count, &pos);\n'
-              '#endif\n')
-
-          insert_after('fs/stat.c',
-              '\tint error = -EINVAL;\n',
-              '#ifdef CONFIG_KSU\n'
-              '\textern int ksu_handle_stat(int *dfd, const char __user **filename_user,\n'
-              '\t\t\t\t   int *flags);\n'
-              '\tksu_handle_stat(&dfd, &filename, &flags);\n'
-              '#endif\n')
-          EOF
+            echo "-> Skipping manual hooks (Modern KSU/Next use kprobes automatically)"
           fi
 
       - name: Apply Compatibility Fixes for MIUI 5.4 QGKI
@@ -439,6 +376,25 @@ jobs:
                   f.write(content)
               print('Added security_inode_init_security_anon stub')
           EOF
+
+          echo "=== Fix: Missing Linker Symbols for Stubs ==="
+          KSU_REAL=$(realpath drivers/kernelsu)
+          
+          if [ -d "$KSU_REAL" ]; then
+            cat >> "$KSU_REAL/ksu.c" << 'LINKER_STUBS'
+          
+          /* Linker Satisfaction Stubs for removed 5.10+ features */
+          void apply_kernelsu_rules(void) {}
+          int ksu_observer_init(void) { return 0; }
+          void ksu_observer_exit(void) {}
+          void seccomp_filter_release(void *f) {}
+          bool ksu_seccomp_allow_cache(int nr) { return true; }
+          int handle_sepolicy(unsigned long arg3, void *arg4) { return 0; }
+          LINKER_STUBS
+            
+            # Remove the path_mount call that fails to link on some 5.4 trees
+            find "$KSU_REAL" -name "su_mount_ns.c" -exec sed -i 's/path_mount(/0; \/\//g' {} + || true
+          fi
 
       - name: Setup SuSFS
         run: |
