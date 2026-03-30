@@ -141,8 +141,6 @@ jobs:
           fi
 
           echo "=== Fix: seccomp_cache.c for Kernel 5.4 ==="
-          # Completely replace seccomp_cache.c with a version that works on 5.4
-          # Using a fixed maximum syscall number (ARM64 has ~512 syscalls)
           find "$KSU_REAL" -name "seccomp_cache.c" | while read -r f; do
             echo "  Replacing $f with 5.4-compatible version"
             cat > "$f" << 'STUB'
@@ -150,11 +148,14 @@ jobs:
           #include <linux/types.h>
           #include <linux/init.h>
           #include <linux/bitmap.h>
+          #include <asm/unistd.h>
           
-          /* For kernels < 5.8, SECCOMP_ARCH_NATIVE_NR is not defined.
-           * ARM64 has ~512 syscalls, use 512 as safe maximum */
           #ifndef SECCOMP_ARCH_NATIVE_NR
+          #ifdef __NR_syscalls
+          #define SECCOMP_ARCH_NATIVE_NR __NR_syscalls
+          #else
           #define SECCOMP_ARCH_NATIVE_NR 512
+          #endif
           #endif
           
           static DECLARE_BITMAP(allow_native, SECCOMP_ARCH_NATIVE_NR);
@@ -255,6 +256,23 @@ jobs:
             fi
           done
 
+          echo "=== Fix: 5.10+ SELinux Injections for 5.4 Kernel ==="
+          find "$KSU_REAL" -name "rules.c" | while read -r f; do
+            cat > "$f" << 'STUB'
+          void ksu_rules_init(void) {}
+          void ksu_rules_exit(void) {}
+          STUB
+          done
+          find "$KSU_REAL" -name "sepolicy.c" | while read -r f; do
+            cat > "$f" << 'STUB'
+          void ksu_sepolicy_init(void) {}
+          void ksu_sepolicy_exit(void) {}
+          STUB
+          done
+          find "$KSU_REAL" -name "selinux.c" | while read -r f; do
+            sed -i 's/apply_kernelsu_rules();/\/\/apply_kernelsu_rules();/g' "$f"
+          done
+
           grep -q "kernelsu" drivers/Makefile || \
             echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
           grep -q "kernelsu" drivers/Kconfig || \
@@ -317,7 +335,6 @@ jobs:
               r'(void input_event\(struct input_dev \*dev,\n\t\t unsigned int type, unsigned int code, int value\)\n{\n\tunsigned long flags;\n)',
               r'\1\n#if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n\ttrace_ksu_trace_input_hook(&type, &code, &value);\n#endif\n')
           EOF
-
           else
             echo "-> Skipping manual hooks (Modern KSU/Next use kprobes automatically)"
           fi
@@ -389,7 +406,7 @@ jobs:
           void ksu_observer_exit(void) {}
           void seccomp_filter_release(void *f) {}
           bool ksu_seccomp_allow_cache(int nr) { return true; }
-          int handle_sepolicy(unsigned long arg3, void *arg4) { return 0; }
+          int handle_sepolicy(void __user *user_data, u64 data_len) { return 0; }
           LINKER_STUBS
             
             # Remove the path_mount call that fails to link on some 5.4 trees
