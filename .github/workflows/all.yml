@@ -628,6 +628,29 @@ jobs:
           echo "=== After patch ==="
           grep -n "sde_dsi1\|connectors\|REAR_DISABLED" "$DTSI"
 
+      - name: Apply Feature Flags (DT2W)
+        run: |
+          set -e
+          DEVICE="${{ inputs.device_name || 'star' }}"
+          XIAOMI_CFG="arch/arm64/configs/vendor/xiaomi_QGKI.config"
+          DEVICE_CFG="arch/arm64/configs/vendor/${DEVICE}_QGKI.config"
+
+          set_flag() {
+            local file="$1" key="$2" val="$3"
+            sed -i "/^${key}[= ]/d"          "$file"
+            sed -i "/^# ${key} is not set/d" "$file"
+            echo "${key}=${val}" >> "$file"
+            echo "  [cfg] ${key}=${val} -> $(basename $file)"
+          }
+
+          echo "=== DT2W flags ==="
+          # Gesture sublayer — enables doubletap path inside touchfeature
+          set_flag "$XIAOMI_CFG" "CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_GESTURE" "y"
+          # FTS (ST) driver wakeup path — star uses ST FTS V521
+          set_flag "$DEVICE_CFG" "CONFIG_TOUCHSCREEN_ST_FTS_DOUBLETAP_WAKE"       "y"
+          # Wakeup source must be registered so touch IRQ can wake SoC
+          set_flag "$XIAOMI_CFG" "CONFIG_PM_WAKELOCKS"                            "y"
+
       - name: Build Project
         run: |
           git config --global user.email "you@example.com"
