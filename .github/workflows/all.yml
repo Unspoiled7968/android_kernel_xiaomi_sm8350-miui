@@ -337,51 +337,8 @@ jobs:
           EOF
 
           else
-            echo "-> Inline hooks (KernelSU/KernelSU-Next/WildKSU)"
-            python3 << 'EOF'
-          import sys, os
-
-          def insert_after(filepath, search, insertion):
-              if not os.path.exists(filepath): return
-              with open(filepath, 'r') as f: content = f.read()
-              if 'ksu_handle' in content: return
-              if search not in content: return
-              content = content.replace(search, search + insertion, 1)
-              with open(filepath, 'w') as f: f.write(content)
-              print(f'{filepath}: hook applied')
-
-          insert_after('fs/exec.c',
-              '\tchar *pathbuf = NULL;\n',
-              '#ifdef CONFIG_KSU\n'
-              '\textern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,\n'
-              '\t\t\t\t        void *argv, void *envp, int *flags);\n'
-              '\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n'
-              '#endif\n')
-
-          insert_after('fs/open.c',
-              '\tconst struct cred *old_cred;\n\tstruct cred *override_cred;\n',
-              '#ifdef CONFIG_KSU\n'
-              '\textern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,\n'
-              '\t\t\t\t\tint *mode, int *flags);\n'
-              '\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n'
-              '#endif\n')
-
-          insert_after('fs/read_write.c',
-              'ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)\n{\n\tssize_t ret;\n',
-              '#ifdef CONFIG_KSU\n'
-              '\textern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,\n'
-              '\t\t\t\t        size_t *count_ptr, loff_t **pos);\n'
-              '\tksu_handle_vfs_read(&file, &buf, &count, &pos);\n'
-              '#endif\n')
-
-          insert_after('fs/stat.c',
-              '\tint error = -EINVAL;\n',
-              '#ifdef CONFIG_KSU\n'
-              '\textern int ksu_handle_stat(int *dfd, const char __user **filename_user,\n'
-              '\t\t\t\t   int *flags);\n'
-              '\tksu_handle_stat(&dfd, &filename, &flags);\n'
-              '#endif\n')
-          EOF
+            echo "-> Skipping manual inline hooks (Functions ksu_handle_* were deleted from modern KSU)"
+            echo "-> Kernel will automatically register via Kprobes."
           fi
 
       - name: Apply Compatibility Fixes for MIUI 5.4 QGKI
@@ -439,13 +396,15 @@ jobs:
               print('Added security_inode_init_security_anon stub')
           EOF
 
-          echo "=== Fix: Missing Linker Symbols for Stubs ==="
+          echo "=== Fix: Universal Linker Symbols for Stubs ==="
           KSU_REAL=$(realpath drivers/kernelsu)
           
           if [ -d "$KSU_REAL" ]; then
-            cat >> "$KSU_REAL/ksu.c" << 'LINKER_STUBS'
-          
+            cat > "$KSU_REAL/54_stubs.c" << 'LINKER_STUBS'
           /* Linker Satisfaction Stubs for removed 5.10+ features */
+          #include <linux/types.h>
+          #include <linux/compiler.h>
+
           void apply_kernelsu_rules(void) {}
           int ksu_observer_init(void) { return 0; }
           void ksu_observer_exit(void) {}
@@ -459,6 +418,10 @@ jobs:
               return 0;
           }
           LINKER_STUBS
+
+            # Ensure the stubs are compiled regardless of variant structure
+            echo "obj-y += 54_stubs.o" >> "$KSU_REAL/Makefile"
+            [ -f "$KSU_REAL/Kbuild" ] && echo "obj-y += 54_stubs.o" >> "$KSU_REAL/Kbuild"
 
             echo "=== Fix: minmax.h -> kernel.h (Normal KSU) ==="
             find "$KSU_REAL" -type f -name "*.c" -exec sed -i 's|<linux/minmax.h>|<linux/kernel.h>|g' {} + || true
@@ -680,29 +643,6 @@ jobs:
 
           echo "=== After patch ==="
           grep -n "sde_dsi1\|connectors\|REAR_DISABLED" "$DTSI"
-
-      - name: Apply Feature Flags (DT2W)
-        run: |
-          set -e
-          DEVICE="${{ inputs.device_name || 'star' }}"
-          XIAOMI_CFG="arch/arm64/configs/vendor/xiaomi_QGKI.config"
-          DEVICE_CFG="arch/arm64/configs/vendor/${DEVICE}_QGKI.config"
-
-          set_flag() {
-            local file="$1" key="$2" val="$3"
-            sed -i "/^${key}[= ]/d"          "$file"
-            sed -i "/^# ${key} is not set/d" "$file"
-            echo "${key}=${val}" >> "$file"
-            echo "  [cfg] ${key}=${val} -> $(basename $file)"
-          }
-
-          echo "=== DT2W flags ==="
-          # Gesture sublayer — enables doubletap path inside touchfeature
-          set_flag "$XIAOMI_CFG" "CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_GESTURE" "y"
-          # FTS (ST) driver wakeup path — star uses ST FTS V521
-          set_flag "$DEVICE_CFG" "CONFIG_TOUCHSCREEN_ST_FTS_DOUBLETAP_WAKE"       "y"
-          # Wakeup source must be registered so touch IRQ can wake SoC
-          set_flag "$XIAOMI_CFG" "CONFIG_PM_WAKELOCKS"                            "y"
 
       - name: Build Project
         run: |
