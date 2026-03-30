@@ -409,8 +409,13 @@ jobs:
           int handle_sepolicy(void __user *user_data, u64 data_len) { return 0; }
           LINKER_STUBS
             
-            # Safely comment out the path_mount() execution block
-            find "$KSU_REAL" -name "su_mount_ns.c" -exec perl -i -pe 's/(error = path_mount\()/error = 0; \/\/$1/g' {} + || true
+            # Safely stub the path_mount call using the C preprocessor
+            find "$KSU_REAL" -name "su_mount_ns.c" | while read -r f; do
+              if ! grep -q "#define path_mount" "$f"; then
+                sed -i '1i #define path_mount(dev_name, path, type_page, flags, data_page) 0\n' "$f"
+                echo "  Added path_mount macro stub to $f"
+              fi
+            done
           fi
 
       - name: Setup SuSFS
