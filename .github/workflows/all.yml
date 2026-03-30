@@ -12,7 +12,7 @@ on:
       ksu_variant:
         description: 'Select KernelSU variant'
         required: true
-        default: 'ReSukiSU'
+        default: 'KernelSU-Next'
         type: choice
         options: [SukiSU, ReSukiSU, KernelSU, KernelSU-Next, WildKSU]
       localversion:
@@ -234,7 +234,7 @@ jobs:
             echo '#pragma clang diagnostic pop' >> "$f"
           done
 
-          echo "=== Fix: susfs_is_current_proc stubs — with proper includes ==="
+          echo "=== Fix: susfs_is_current_proc stubs ==="
           find "$KSU_REAL" -name "sucompat.c" | while read -r f; do
             if grep -q "susfs_is_current_proc_umounted" "$f"; then
               KSU_ROOT=$(dirname "$f")
@@ -335,6 +335,7 @@ jobs:
               r'(void input_event\(struct input_dev \*dev,\n\t\t unsigned int type, unsigned int code, int value\)\n{\n\tunsigned long flags;\n)',
               r'\1\n#if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n\ttrace_ksu_trace_input_hook(&type, &code, &value);\n#endif\n')
           EOF
+
           else
             echo "-> Skipping manual hooks (Modern KSU/Next use kprobes automatically)"
           fi
@@ -414,6 +415,10 @@ jobs:
               return 0;
           }
           LINKER_STUBS
+
+            # Fix minmax.h missing on 5.4 for normal KSU
+            echo "=== Fix: minmax.h -> kernel.h ==="
+            find "$KSU_REAL" -type f -name "*.c" -exec sed -i 's|<linux/minmax.h>|<linux/kernel.h>|g' {} + || true
           fi
 
       - name: Setup SuSFS
@@ -564,7 +569,11 @@ jobs:
 
           FLAGS=(
             "CONFIG_KSU=y"
+            "CONFIG_KSU_NEXT=y"
             "CONFIG_KSU_DEBUG=n"
+            "CONFIG_KPROBES=y"
+            "CONFIG_HAVE_KPROBES=y"
+            "CONFIG_KPROBE_EVENTS=y"
             "CONFIG_KSU_SUSFS=y"
             "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y"
             "CONFIG_KSU_SUSFS_SUS_MOUNT=y"
@@ -587,7 +596,7 @@ jobs:
           done
 
           echo "=== KSU flags ==="
-          grep "KSU\|KPM\|KALLSYMS" "$DEFCONFIG" || true
+          grep "KSU\|KPM\|KALLSYMS\|KPROBE" "$DEFCONFIG" || true
 
       - name: Disable Rear Screen (DTS)
         if: ${{ inputs.device_name == 'star' && inputs.disable_rear_screen == 'true' }}
