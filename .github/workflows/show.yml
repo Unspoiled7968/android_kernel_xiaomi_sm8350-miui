@@ -1,4 +1,4 @@
-name: Show kernel config info
+name: Show vfs_read signature
 
 on:
   workflow_dispatch:
@@ -10,38 +10,23 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Dump star_QGKI.config
+      - name: Dump vfs_read signature
         run: |
-          echo "====== star_QGKI.config ======"
-          cat arch/arm64/configs/vendor/star_QGKI.config
+          echo "====== fs/read_write.c: vfs_read function ======"
+          grep -n "vfs_read" fs/read_write.c | head -20
+          echo ""
+          echo "====== exact lines around vfs_read definition ======"
+          grep -n "^ssize_t vfs_read\|^EXPORT_SYMBOL\|^{" fs/read_write.c | head -20
+          echo ""
+          echo "====== 10 lines starting from vfs_read ======"
+          grep -n "ssize_t vfs_read" fs/read_write.c | head -5 | while read line; do
+            lineno=$(echo "$line" | cut -d: -f1)
+            sed -n "${lineno},$((lineno+8))p" fs/read_write.c
+            echo "---"
+          done
 
-      - name: Grep rear/secondary in configs
-        run: |
-          echo "====== grep rear/secondary in arch/arm64/configs ======"
-          grep -rn "rear\|REAR\|secondary\|SECONDARY\|mi11.*rear\|MI_REAR\|MI11_REAR" \
-            arch/arm64/configs/ || echo "(nothing found)"
+          echo "====== fs/exec.c: pathbuf anchor ======"
+          grep -n "pathbuf" fs/exec.c | head -10
 
-      - name: List DTS files mentioning rear/secondary panel
-        run: |
-          echo "====== DTS files with rear/secondary ======"
-          grep -rln "rear\|secondary.*panel\|panel.*secondary\|mi_rear\|rear_display" \
-            arch/arm64/boot/dts/ 2>/dev/null || echo "(nothing found)"
-
-      - name: Grep rear/secondary in DTS content
-        run: |
-          echo "====== DTS content grep ======"
-          grep -rn "rear\|secondary.*panel\|panel.*secondary\|mi_rear\|rear_display" \
-            arch/arm64/boot/dts/ 2>/dev/null | head -80 || echo "(nothing found)"
-
-      - name: Dump build.sh TARGET_CC line
-        run: |
-          echo "====== build.sh CC-related lines ======"
-          grep -n "CC\|ccache\|CLANG\|clang" build.sh
-
-      - name: Dump star-sm8350.dtsi (display section)
-        run: |
-          echo "====== star-sm8350.dtsi grep display/panel/secondary ======"
-          grep -n "display\|panel\|secondary\|dsi\|sde\|mdss" \
-            arch/arm64/boot/dts/vendor/qcom/star-sm8350.dtsi | head -100
-          echo "====== dsi-panel-k1 files ======"
-          cat arch/arm64/boot/dts/vendor/qcom/display/dsi-panel-k1-43-06-00-sec-cmd.dtsi
+          echo "====== fs/open.c: faccessat anchor ======"
+          grep -n "old_cred\|override_cred\|faccessat" fs/open.c | head -15
