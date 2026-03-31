@@ -468,52 +468,33 @@ jobs:
               print('Added security_inode_init_security_anon stub')
           EOF
 
-          echo "=== Fix: LTO-proof linker stubs (appended to ksu.c) ==="
-          python3 << 'PYEOF'
-          import os, subprocess
-
-          ksu_real = subprocess.check_output(
-              ['realpath', 'drivers/kernelsu'], text=True).strip()
-
-          ksu_c = os.path.join(ksu_real, 'ksu.c')
-          content = """\n
-          /* LTO-PROOF STUBS FOR 5.4 COMPATIBILITY
-           * Appended to ksu.c so LTO cannot drop them. Using __weak so they
-           * don't clash with actual implementations if they exist. */
+          echo "=== Fix: LTO stubs — separate file with LTO disabled ==="
+          KSU_REAL=$(realpath drivers/kernelsu)
+          cat > "$KSU_REAL/compat_5_4_stubs.c" << 'STUBS'
+          /* Compiled with LTO disabled to prevent symbol elimination */
           #include <linux/types.h>
-          #include <linux/init.h>
           #include <linux/errno.h>
-          #include <linux/kernel.h>
           #include <linux/sched.h>
           #include <linux/fs.h>
 
-          int __weak handle_sepolicy(void __user *ud, u64 len) { return 0; }
-          void __weak seccomp_filter_release(struct task_struct *tsk) {}
-          struct path;
-          int __weak path_mount(const char *dev_name, struct path *path,
-                                const char *type_page, unsigned long flags,
-                                void *data_page) { return -ENOSYS; }
-
           struct filename;
-          int __weak ksu_handle_vfs_read(struct file **fp, char __user **bp,
-                                         size_t *cp, loff_t **pp) { return 0; }
-          int __weak ksu_handle_execveat(int *fd, struct filename **fnp,
-                                         void *argv, void *envp,
-                                         int *flags) { return 0; }
-          int __weak ksu_handle_faccessat(int *dfd, const char __user **fn,
-                                          int *mode, int *flags) { return 0; }
-          int __weak ksu_handle_stat(int *dfd, const char __user **fn,
-                                     int *flags) { return 0; }
+          struct path;
 
-          int  __weak ksu_observer_init(void) { return 0; }
-          void __weak ksu_observer_exit(void) {}
-          """
+          int ksu_handle_vfs_read(struct file **fp, char __user **bp, size_t *cp, loff_t **pp) { return 0; }
+          int ksu_handle_execveat(int *fd, struct filename **fnp, void *argv, void *envp, int *flags) { return 0; }
+          int ksu_handle_faccessat(int *dfd, const char __user **fn, int *mode, int *flags) { return 0; }
+          int ksu_handle_stat(int *dfd, const char __user **fn, int *flags) { return 0; }
+          int handle_sepolicy(void __user *ud, u64 len) { return 0; }
+          void seccomp_filter_release(struct task_struct *tsk) {}
+          int ksu_observer_init(void) { return 0; }
+          void ksu_observer_exit(void) {}
+          int path_mount(const char *dev_name, struct path *path, const char *type_page, unsigned long flags, void *data_page) { return -ENOSYS; }
+          STUBS
 
-          with open(ksu_c, 'a') as f:
-              f.write(content)
-          print(f'Appended LTO stubs to: {ksu_c}')
-          PYEOF
-
+          # Добавляем файл в Makefile с CFLAGS отключающим LTO для него
+          echo 'CFLAGS_compat_5_4_stubs.o := $(filter-out -flto%,$(KBUILD_CFLAGS))' >> "$KSU_REAL/Makefile"
+          echo 'kernelsu-y += compat_5_4_stubs.o' >> "$KSU_REAL/Makefile"
+          echo 'obj-y += compat_5_4_stubs.o' >> "$KSU_REAL/Makefile"
           echo "=== Fix: dispatch.c tasklist_lock (tiann KernelSU) ==="
           KSU_REAL=$(realpath drivers/kernelsu)
           find "$KSU_REAL" -name "dispatch.c" | while read -r f; do
@@ -633,6 +614,7 @@ jobs:
 
           FLAGS=(
             "CONFIG_KSU=y"
+            "CONFIG_KSU_NEXT=y"
             "CONFIG_KSU_DEBUG=n"
             "CONFIG_KPROBES=y"
             "CONFIG_HAVE_KPROBES=y"
