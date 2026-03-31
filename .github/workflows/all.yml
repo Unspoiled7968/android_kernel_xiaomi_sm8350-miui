@@ -468,19 +468,18 @@ jobs:
               print('Added security_inode_init_security_anon stub')
           EOF
 
-          echo "=== Fix: compat_5_4.c — linker stubs for missing 5.4 symbols ==="
+          echo "=== Fix: LTO-proof linker stubs (appended to ksu.c) ==="
           python3 << 'PYEOF'
           import os, subprocess
 
           ksu_real = subprocess.check_output(
               ['realpath', 'drivers/kernelsu'], text=True).strip()
 
-          compat_file = os.path.join(ksu_real, 'compat_5_4.c')
-          content = """\
-          /* compat_5_4.c: linker stubs ONLY for symbols truly absent in kernel 5.4.
-           * Do NOT stub ksu_observer_init/exit or ksu_handle_* here —
-           * those are defined in the KSU source itself.
-           * Only stub kernel APIs that 5.4 doesn't export. */
+          ksu_c = os.path.join(ksu_real, 'ksu.c')
+          content = """\n
+          /* LTO-PROOF STUBS FOR 5.4 COMPATIBILITY
+           * Appended to ksu.c so LTO cannot drop them. Using __weak so they
+           * don't clash with actual implementations if they exist. */
           #include <linux/types.h>
           #include <linux/init.h>
           #include <linux/errno.h>
@@ -488,52 +487,31 @@ jobs:
           #include <linux/sched.h>
           #include <linux/fs.h>
 
-          /* handle_sepolicy — from selinux/rules.c which we stubbed.
-           * The stub there defines apply_kernelsu_rules but dispatch.c
-           * calls handle_sepolicy which is in selinux/sepolicy.c (also stubbed). */
-          int handle_sepolicy(void __user *ud, u64 len) { return 0; }
-
-          /* seccomp_filter_release — not exported by 5.4 kernel */
-          void seccomp_filter_release(struct task_struct *tsk) {}
-
-          /* path_mount — not exported in 5.4 (su_mount_ns.c is stubbed anyway) */
+          int __weak handle_sepolicy(void __user *ud, u64 len) { return 0; }
+          void __weak seccomp_filter_release(struct task_struct *tsk) {}
           struct path;
-          int path_mount(const char *dev_name, struct path *path,
-                         const char *type_page, unsigned long flags,
-                         void *data_page) { return -ENOSYS; }
+          int __weak path_mount(const char *dev_name, struct path *path,
+                                const char *type_page, unsigned long flags,
+                                void *data_page) { return -ENOSYS; }
 
-          /* ksu_handle_* — inline hook implementations.
-           * In newer KernelSU these moved to hook/ subdirectory and may not
-           * be compiled for 5.4 QGKI. Provide fallback no-ops so the linker
-           * is satisfied; the fs/ hooks still run but do nothing. */
           struct filename;
-          int ksu_handle_vfs_read(struct file **fp, char __user **bp,
-                                  size_t *cp, loff_t **pp) { return 0; }
-          int ksu_handle_execveat(int *fd, struct filename **fnp,
-                                  void *argv, void *envp,
-                                  int *flags) { return 0; }
-          int ksu_handle_faccessat(int *dfd, const char __user **fn,
-                                   int *mode, int *flags) { return 0; }
-          int ksu_handle_stat(int *dfd, const char __user **fn,
-                              int *flags) { return 0; }
+          int __weak ksu_handle_vfs_read(struct file **fp, char __user **bp,
+                                         size_t *cp, loff_t **pp) { return 0; }
+          int __weak ksu_handle_execveat(int *fd, struct filename **fnp,
+                                         void *argv, void *envp,
+                                         int *flags) { return 0; }
+          int __weak ksu_handle_faccessat(int *dfd, const char __user **fn,
+                                          int *mode, int *flags) { return 0; }
+          int __weak ksu_handle_stat(int *dfd, const char __user **fn,
+                                     int *flags) { return 0; }
 
-          /* ksu_observer_init/exit — fallback if not provided by pkg_observer.c */
-          int  __attribute__((weak)) ksu_observer_init(void) { return 0; }
-          void __attribute__((weak)) ksu_observer_exit(void) {}
+          int  __weak ksu_observer_init(void) { return 0; }
+          void __weak ksu_observer_exit(void) {}
           """
 
-          with open(compat_file, 'w') as f:
+          with open(ksu_c, 'a') as f:
               f.write(content)
-          print(f'Written: {compat_file}')
-
-          makefile = os.path.join(ksu_real, 'Makefile')
-          with open(makefile, 'r') as f:
-              mk = f.read()
-          if 'compat_5_4.o' not in mk:
-              mk += '\nobj-$(CONFIG_KSU) += compat_5_4.o\n'
-              with open(makefile, 'w') as f:
-                  f.write(mk)
-              print('Added compat_5_4.o to KSU Makefile')
+          print(f'Appended LTO stubs to: {ksu_c}')
           PYEOF
 
           echo "=== Fix: dispatch.c tasklist_lock (tiann KernelSU) ==="
