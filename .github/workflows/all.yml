@@ -99,7 +99,7 @@ jobs:
           elif [ "$VARIANT" = "KernelSU" ]; then
             curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s main
           elif [ "$VARIANT" = "KernelSU-Next" ]; then
-            curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s next
+            curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
           elif [ "$VARIANT" = "WildKSU" ]; then
             curl -LSs "https://raw.githubusercontent.com/WildKernels/Wild_KSU/wild/kernel/setup.sh" | bash -s wild
           fi
@@ -493,17 +493,6 @@ jobs:
           int __weak path_mount(const char *dev_name, struct path *path,
                                 const char *type_page, unsigned long flags,
                                 void *data_page) { return -ENOSYS; }
-
-          struct filename;
-          int __weak ksu_handle_vfs_read(struct file **fp, char __user **bp,
-                                         size_t *cp, loff_t **pp) { return 0; }
-          int __weak ksu_handle_execveat(int *fd, struct filename **fnp,
-                                         void *argv, void *envp,
-                                         int *flags) { return 0; }
-          int __weak ksu_handle_faccessat(int *dfd, const char __user **fn,
-                                          int *mode, int *flags) { return 0; }
-          int __weak ksu_handle_stat(int *dfd, const char __user **fn,
-                                     int *flags) { return 0; }
 
           int  __weak ksu_observer_init(void) { return 0; }
           void __weak ksu_observer_exit(void) {}
