@@ -468,30 +468,61 @@ jobs:
               print('Added security_inode_init_security_anon stub')
           EOF
 
-          echo "=== Fix: STRONG stubs appended directly to ksu.c ==="
-          KSU_REAL=$(realpath drivers/kernelsu)
-          cat >> "$KSU_REAL/ksu.c" << 'STUBS'
+          echo "=== Fix: LTO-proof linker stubs (appended to ksu.c) ==="
+          python3 << 'PYEOF'
+          import os, subprocess
 
-          /* STRONG stubs appended directly to ksu.c to bypass Kbuild and LTO drops. 
-           * No __weak is used, ensuring LTO keeps them for the linker. */
+          ksu_real = subprocess.check_output(
+              ['realpath', 'drivers/kernelsu'], text=True).strip()
+
+          ksu_c = os.path.join(ksu_real, 'ksu.c')
+          content = """\n
+          /* LTO-PROOF STUBS FOR 5.4 COMPATIBILITY
+           * Appended to ksu.c so LTO cannot drop them. Using __weak so they
+           * don't clash with actual implementations if they exist. */
           #include <linux/types.h>
+          #include <linux/init.h>
           #include <linux/errno.h>
+          #include <linux/kernel.h>
           #include <linux/sched.h>
           #include <linux/fs.h>
 
-          struct filename;
+          int __weak handle_sepolicy(void __user *ud, u64 len) { return 0; }
+          void __weak seccomp_filter_release(struct task_struct *tsk) {}
           struct path;
+          int __weak path_mount(const char *dev_name, struct path *path,
+                                const char *type_page, unsigned long flags,
+                                void *data_page) { return -ENOSYS; }
 
-          int ksu_handle_vfs_read(struct file **fp, char __user **bp, size_t *cp, loff_t **pp) { return 0; }
-          int ksu_handle_execveat(int *fd, struct filename **fnp, void *argv, void *envp, int *flags) { return 0; }
-          int ksu_handle_faccessat(int *dfd, const char __user **fn, int *mode, int *flags) { return 0; }
-          int ksu_handle_stat(int *dfd, const char __user **fn, int *flags) { return 0; }
-          int handle_sepolicy(void __user *ud, u64 len) { return 0; }
-          void seccomp_filter_release(struct task_struct *tsk) {}
-          int ksu_observer_init(void) { return 0; }
-          void ksu_observer_exit(void) {}
-          int path_mount(const char *dev_name, struct path *path, const char *type_page, unsigned long flags, void *data_page) { return -ENOSYS; }
-          STUBS
+          struct filename;
+          int __weak ksu_handle_vfs_read(struct file **fp, char __user **bp,
+                                         size_t *cp, loff_t **pp) { return 0; }
+          int __weak ksu_handle_execveat(int *fd, struct filename **fnp,
+                                         void *argv, void *envp,
+                                         int *flags) { return 0; }
+          int __weak ksu_handle_faccessat(int *dfd, const char __user **fn,
+                                          int *mode, int *flags) { return 0; }
+          int __weak ksu_handle_stat(int *dfd, const char __user **fn,
+                                     int *flags) { return 0; }
+
+          int  __weak ksu_observer_init(void) { return 0; }
+          void __weak ksu_observer_exit(void) {}
+          """
+
+          with open(ksu_c, 'a') as f:
+              f.write(content)
+          print(f'Appended LTO stubs to: {ksu_c}')
+          PYEOF
+
+          echo "=== Fix: dispatch.c tasklist_lock (tiann KernelSU) ==="
+          KSU_REAL=$(realpath drivers/kernelsu)
+          find "$KSU_REAL" -name "dispatch.c" | while read -r f; do
+            sed -i 's/write_lock_irq(&tasklist_lock);/\/\/write_lock_irq(\&tasklist_lock);/g' "$f"
+            sed -i 's/write_unlock_irq(&tasklist_lock);/\/\/write_unlock_irq(\&tasklist_lock);/g' "$f"
+            sed -i 's/struct pid \*init_group = task_pgrp(&init_task);/struct pid *init_group = NULL;/g' "$f"
+            sed -i 's/task_session(p) != task_session(&init_task)/0/g' "$f"
+            sed -i 's/task_pgrp(p) != init_group/0/g' "$f"
+          done
 
       - name: Setup SuSFS
         run: |
@@ -517,8 +548,9 @@ jobs:
             echo "=== SukiSU: SuSFS built-in, skipping KSU-side patch ==="
           fi
 
-          echo "=== Apply SuSFS patch to kernel tree ==="
-          patch -p1 < "$SUSFS_DIR/kernel_patches/50_add_susfs_in_kernel-5.4.patch" \
+          echo "=== Apply SuSFS patch to kernel tree (JackA1ltman 5.4 patch) ==="
+          curl -LSsO "https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/mainline/Patches/Patch/susfs_patch_to_5.4.patch"
+          patch -p1 < susfs_patch_to_5.4.patch \
             && echo "Kernel susfs patch applied" \
             || echo "Kernel susfs patch had errors (continuing)"
 
