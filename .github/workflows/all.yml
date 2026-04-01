@@ -82,8 +82,8 @@ jobs:
           git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Patches.git \
             -b mi_kernel ../altman_patches
           ALTMAN_DIR="$(pwd)/../altman_patches/mi11u_hyperos"
-          patch -p1 --forward --batch < "$ALTMAN_DIR/hyperos_a14_fixed.patch"             || true
-          patch -p1 --forward --batch < "$ALTMAN_DIR/hyper_susfs_157_fixed.patch"         || true
+          patch -p1 --forward --batch < "$ALTMAN_DIR/hyperos_a14_fixed.patch"              || true
+          patch -p1 --forward --batch < "$ALTMAN_DIR/hyper_susfs_157_fixed.patch"          || true
           patch -p1 --forward --batch < "$ALTMAN_DIR/hyper_susfs_remove_all_sus_su.patch" || true
 
       - name: Integrate Selected KernelSU Variant
@@ -332,20 +332,14 @@ jobs:
           EOF
 
           else
-            echo "-> Inline hooks (KernelSU/KernelSU-Next/WildKSU) with local LTO stubs"
+            echo "-> Inline hooks (KernelSU/KernelSU-Next/WildKSU)"
             python3 << 'EOF'
           import os
-
-          def prepend_file(filepath, text):
-              if not os.path.exists(filepath): return
-              with open(filepath, 'r') as f: content = f.read()
-              if text.strip() in content: return
-              with open(filepath, 'w') as f: f.write(text + content)
 
           def insert_after(filepath, search, insertion):
               if not os.path.exists(filepath): return
               with open(filepath, 'r') as f: content = f.read()
-              if insertion in content: return
+              if 'ksu_handle' in content: return
               if search not in content:
                   print(f'WARNING: anchor not found in {filepath}')
                   return
@@ -353,24 +347,32 @@ jobs:
               with open(filepath, 'w') as f: f.write(content)
               print(f'{filepath}: hook applied')
 
-          # 1. fs/exec.c
-          prepend_file('fs/exec.c', '#ifdef CONFIG_KSU\nstruct filename;\nint __attribute__((weak)) ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags) { return 0; }\n#endif\n')
           insert_after('fs/exec.c',
               '\tchar *pathbuf = NULL;\n',
-              '#ifdef CONFIG_KSU\n\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n#endif\n')
+              '#ifdef CONFIG_KSU\n'
+              '\textern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,\n'
+              '\t\t\t\t        void *argv, void *envp, int *flags);\n'
+              '\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n'
+              '#endif\n')
 
-          # 2. fs/open.c
-          prepend_file('fs/open.c', '#ifdef CONFIG_KSU\nint __attribute__((weak)) ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags) { return 0; }\n#endif\n')
           insert_after('fs/open.c',
               '\tconst struct cred *old_cred;\n\tstruct cred *override_cred;\n',
-              '#ifdef CONFIG_KSU\n\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n#endif\n')
+              '#ifdef CONFIG_KSU\n'
+              '\textern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,\n'
+              '\t\t\t\t\tint *mode, int *flags);\n'
+              '\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n'
+              '#endif\n')
 
-          # 3. fs/read_write.c
-          prepend_file('fs/read_write.c', '#ifdef CONFIG_KSU\nstruct file;\nint __attribute__((weak)) ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr, size_t *count_ptr, loff_t **pos) { return 0; }\n#endif\n')
           with open('fs/read_write.c', 'r') as f:
               rw = f.read()
-          insertion = '#ifdef CONFIG_KSU\n\tksu_handle_vfs_read(&file, &buf, &count, &pos);\n#endif\n'
-          if insertion not in rw:
+          if 'ksu_handle_vfs_read' not in rw:
+              insertion = (
+                  '#ifdef CONFIG_KSU\n'
+                  '\textern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,\n'
+                  '\t\t\t\t        size_t *count_ptr, loff_t **pos);\n'
+                  '\tksu_handle_vfs_read(&file, &buf, &count, &pos);\n'
+                  '#endif\n'
+              )
               anchor1 = 'ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)\n{\n\tssize_t ret;\n'
               anchor2 = 'ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)\n{\n'
               if anchor1 in rw:
@@ -379,14 +381,18 @@ jobs:
               elif anchor2 in rw:
                   rw = rw.replace(anchor2, anchor2 + insertion, 1)
                   print('fs/read_write.c: hook applied (anchor2)')
+              else:
+                  print('WARNING: vfs_read anchor not found')
               with open('fs/read_write.c', 'w') as f:
                   f.write(rw)
 
-          # 4. fs/stat.c
-          prepend_file('fs/stat.c', '#ifdef CONFIG_KSU\nint __attribute__((weak)) ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags) { return 0; }\n#endif\n')
           insert_after('fs/stat.c',
               '\tint error = -EINVAL;\n',
-              '#ifdef CONFIG_KSU\n\tksu_handle_stat(&dfd, &filename, &flags);\n#endif\n')
+              '#ifdef CONFIG_KSU\n'
+              '\textern int ksu_handle_stat(int *dfd, const char __user **filename_user,\n'
+              '\t\t\t\t   int *flags);\n'
+              '\tksu_handle_stat(&dfd, &filename, &flags);\n'
+              '#endif\n')
           EOF
           fi
 
@@ -444,18 +450,36 @@ jobs:
               print('Added security_inode_init_security_anon stub')
           EOF
 
-          echo "=== Fix: Missing Kernel APIs local injection ==="
+          echo "=== Fix: LTO stubs — отдельный файл без LTO ==="
           KSU_REAL=$(realpath drivers/kernelsu)
-          
-          # Инжектим seccomp_filter_release прямо в app_profile.c
-          find "$KSU_REAL" -name "app_profile.c" | while read -r f; do
-            sed -i '1i #include <linux/sched.h>\nvoid __attribute__((weak)) seccomp_filter_release(struct task_struct *tsk) {}\n' "$f"
-          done
-          
-          # Инжектим handle_sepolicy прямо в dispatch.c и supercalls.c
-          find "$KSU_REAL" -name "dispatch.c" -o -name "supercalls.c" | while read -r f; do
-            sed -i '1i #include <linux/types.h>\nint __attribute__((weak)) handle_sepolicy(void __user *ud, u64 len) { return 0; }\n' "$f"
-          done
+
+          cat > "$KSU_REAL/compat_5_4_stubs.c" << 'STUBS'
+          #include <linux/types.h>
+          #include <linux/errno.h>
+          #include <linux/sched.h>
+          #include <linux/fs.h>
+          struct filename;
+          struct path;
+          int ksu_handle_vfs_read(struct file **fp, char __user **bp, size_t *cp, loff_t **pp) { return 0; }
+          int ksu_handle_execveat(int *fd, struct filename **fnp, void *argv, void *envp, int *flags) { return 0; }
+          int ksu_handle_faccessat(int *dfd, const char __user **fn, int *mode, int *flags) { return 0; }
+          int ksu_handle_stat(int *dfd, const char __user **fn, int *flags) { return 0; }
+          int handle_sepolicy(void __user *ud, u64 len) { return 0; }
+          void seccomp_filter_release(struct task_struct *tsk) {}
+          int ksu_observer_init(void) { return 0; }
+          void ksu_observer_exit(void) {}
+          int path_mount(const char *dev_name, struct path *path, const char *type_page, unsigned long flags, void *data_page) { return -ENOSYS; }
+          STUBS
+
+          KSU_MK="$KSU_REAL/Makefile"
+          echo 'CFLAGS_compat_5_4_stubs.o := $(filter-out -flto% -O%,$(KBUILD_CFLAGS)) -O1' >> "$KSU_MK"
+          echo 'kernelsu-objs += compat_5_4_stubs.o' >> "$KSU_MK"
+          echo 'kernelsu-y += compat_5_4_stubs.o' >> "$KSU_MK"
+          echo 'ksu-y += compat_5_4_stubs.o' >> "$KSU_MK"
+          echo 'obj-y += compat_5_4_stubs.o' >> "$KSU_MK"
+
+          echo "=== KSU Makefile after stubs addition ==="
+          tail -5 "$KSU_MK"
 
       - name: Setup SuSFS
         run: |
@@ -640,7 +664,7 @@ jobs:
 
           set_flag "$XIAOMI_CFG" "CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_GESTURE" "y"
           set_flag "$DEVICE_CFG" "CONFIG_TOUCHSCREEN_ST_FTS_DOUBLETAP_WAKE"       "y"
-          set_flag "$XIAOMI_CFG" "CONFIG_PM_WAKELOCKS"                            "y"
+          set_flag "$XIAOMI_CFG" "CONFIG_PM_WAKELOCKS"                              "y"
 
       - name: Build Project
         run: |
