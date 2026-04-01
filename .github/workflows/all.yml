@@ -452,6 +452,7 @@ jobs:
 
           echo "=== Fix: LTO stubs — отдельный файл без LTO ==="
           KSU_REAL=$(realpath drivers/kernelsu)
+
           cat > "$KSU_REAL/compat_5_4_stubs.c" << 'STUBS'
           #include <linux/types.h>
           #include <linux/errno.h>
@@ -469,9 +470,33 @@ jobs:
           void ksu_observer_exit(void) {}
           int path_mount(const char *dev_name, struct path *path, const char *type_page, unsigned long flags, void *data_page) { return -ENOSYS; }
           STUBS
-          # Отключаем LTO именно для этого файла
-          echo 'CFLAGS_compat_5_4_stubs.o := $(filter-out -flto%,$(KBUILD_CFLAGS))' >> "$KSU_REAL/Makefile"
-          echo 'kernelsu-y += compat_5_4_stubs.o' >> "$KSU_REAL/Makefile"
+
+          # Определяем имя главного obj в Makefile и добавляем стаб правильно
+          KSU_MK="$KSU_REAL/Makefile"
+          echo "=== KSU Makefile obj detection ==="
+          cat "$KSU_MK" | grep -E "^(obj-|kernelsu-|ksu-)" | head -5
+
+          # Добавляем CFLAGS без LTO и файл в сборку
+          # Пробуем все возможные имена obj
+          echo 'CFLAGS_compat_5_4_stubs.o := $(filter-out -flto% -O%,$(KBUILD_CFLAGS)) -O1' >> "$KSU_MK"
+
+          # kernelsu-y — для tiann/KernelSU-Next плоская структура
+          if grep -q "^kernelsu-y" "$KSU_MK" || grep -q "^kernelsu-y" "$KSU_MK"; then
+            echo 'kernelsu-y += compat_5_4_stubs.o' >> "$KSU_MK"
+          fi
+          # ksu-y — альтернативное имя
+          if grep -q "^ksu-y" "$KSU_MK"; then
+            echo 'ksu-y += compat_5_4_stubs.o' >> "$KSU_MK"
+          fi
+          # obj-y — если просто obj-y
+          if grep -q "^obj-y" "$KSU_MK" && ! grep -q "kernelsu-y\|ksu-y" "$KSU_MK"; then
+            echo 'obj-y += compat_5_4_stubs.o' >> "$KSU_MK"
+          fi
+          # Fallback — добавляем через все варианты
+          echo 'kernelsu-$(CONFIG_KSU) += compat_5_4_stubs.o' >> "$KSU_MK"
+
+          echo "=== KSU Makefile after stubs addition ==="
+          tail -5 "$KSU_MK"
 
       - name: Setup SuSFS
         run: |
