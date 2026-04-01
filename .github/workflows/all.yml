@@ -450,36 +450,30 @@ jobs:
               print('Added security_inode_init_security_anon stub')
           EOF
 
-          echo "=== Fix: LTO stubs — отдельный файл без LTO ==="
+          echo "=== Fix: Missing Symbol Stubs (Direct Injection) ==="
           KSU_REAL=$(realpath drivers/kernelsu)
 
-          cat > "$KSU_REAL/compat_5_4_stubs.c" << 'STUBS'
-          #include <linux/types.h>
-          #include <linux/errno.h>
-          #include <linux/sched.h>
-          #include <linux/fs.h>
+          # Inject directly into an existing file to guarantee compilation and bypass Makefile limits
+          TARGET_FILE="$KSU_REAL/sucompat.c"
+          [ ! -f "$TARGET_FILE" ] && TARGET_FILE="$KSU_REAL/ksu.c"
+
+          cat >> "$TARGET_FILE" << 'STUBS'
+
+          /* --- COMPATIBILITY STUBS --- */
           struct filename;
           struct path;
-          int ksu_handle_vfs_read(struct file **fp, char __user **bp, size_t *cp, loff_t **pp) { return 0; }
-          int ksu_handle_execveat(int *fd, struct filename **fnp, void *argv, void *envp, int *flags) { return 0; }
-          int ksu_handle_faccessat(int *dfd, const char __user **fn, int *mode, int *flags) { return 0; }
-          int ksu_handle_stat(int *dfd, const char __user **fn, int *flags) { return 0; }
-          int handle_sepolicy(void __user *ud, u64 len) { return 0; }
-          void seccomp_filter_release(struct task_struct *tsk) {}
-          int ksu_observer_init(void) { return 0; }
-          void ksu_observer_exit(void) {}
-          int path_mount(const char *dev_name, struct path *path, const char *type_page, unsigned long flags, void *data_page) { return -ENOSYS; }
+          struct task_struct;
+          
+          __attribute__((used)) int ksu_handle_vfs_read(struct file **fp, char __user **bp, size_t *cp, loff_t **pp) { return 0; }
+          __attribute__((used)) int ksu_handle_execveat(int *fd, struct filename **fnp, void *argv, void *envp, int *flags) { return 0; }
+          __attribute__((used)) int ksu_handle_faccessat(int *dfd, const char __user **fn, int *mode, int *flags) { return 0; }
+          __attribute__((used)) int ksu_handle_stat(int *dfd, const char __user **fn, int *flags) { return 0; }
+          __attribute__((used)) int handle_sepolicy(void __user *ud, u64 len) { return 0; }
+          __attribute__((used)) void seccomp_filter_release(struct task_struct *tsk) {}
+          __attribute__((used)) int path_mount(const char *dev_name, struct path *path, const char *type_page, unsigned long flags, void *data_page) { return -ENOSYS; }
           STUBS
-
-          KSU_MK="$KSU_REAL/Makefile"
-          echo 'CFLAGS_compat_5_4_stubs.o := $(filter-out -flto% -O%,$(KBUILD_CFLAGS)) -O1' >> "$KSU_MK"
-          echo 'kernelsu-objs += compat_5_4_stubs.o' >> "$KSU_MK"
-          echo 'kernelsu-y += compat_5_4_stubs.o' >> "$KSU_MK"
-          echo 'ksu-y += compat_5_4_stubs.o' >> "$KSU_MK"
-          echo 'obj-y += compat_5_4_stubs.o' >> "$KSU_MK"
-
-          echo "=== KSU Makefile after stubs addition ==="
-          tail -5 "$KSU_MK"
+          
+          echo "Stubs successfully injected into $TARGET_FILE"
 
       - name: Setup SuSFS
         run: |
