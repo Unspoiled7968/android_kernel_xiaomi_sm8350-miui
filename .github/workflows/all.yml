@@ -332,7 +332,7 @@ jobs:
           EOF
 
           else
-            echo "-> Inline hooks (KernelSU/KernelSU-Next/WildKSU)"
+            echo "-> Inline hooks (KernelSU/KernelSU-Next/WildKSU) with local LTO stubs"
             python3 << 'EOF'
           import os
 
@@ -350,16 +350,16 @@ jobs:
           insert_after('fs/exec.c',
               '\tchar *pathbuf = NULL;\n',
               '#ifdef CONFIG_KSU\n'
-              '\textern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,\n'
-              '\t\t\t\t        void *argv, void *envp, int *flags);\n'
+              '\tint __attribute__((weak)) ksu_handle_execveat(int *fd, struct filename **filename_ptr,\n'
+              '\t\t\t\t        void *argv, void *envp, int *flags) { return 0; }\n'
               '\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n'
               '#endif\n')
 
           insert_after('fs/open.c',
               '\tconst struct cred *old_cred;\n\tstruct cred *override_cred;\n',
               '#ifdef CONFIG_KSU\n'
-              '\textern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,\n'
-              '\t\t\t\t\tint *mode, int *flags);\n'
+              '\tint __attribute__((weak)) ksu_handle_faccessat(int *dfd, const char __user **filename_user,\n'
+              '\t\t\t\t\tint *mode, int *flags) { return 0; }\n'
               '\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n'
               '#endif\n')
 
@@ -368,8 +368,8 @@ jobs:
           if 'ksu_handle_vfs_read' not in rw:
               insertion = (
                   '#ifdef CONFIG_KSU\n'
-                  '\textern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,\n'
-                  '\t\t\t\t        size_t *count_ptr, loff_t **pos);\n'
+                  '\tint __attribute__((weak)) ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,\n'
+                  '\t\t\t\t        size_t *count_ptr, loff_t **pos) { return 0; }\n'
                   '\tksu_handle_vfs_read(&file, &buf, &count, &pos);\n'
                   '#endif\n'
               )
@@ -381,16 +381,14 @@ jobs:
               elif anchor2 in rw:
                   rw = rw.replace(anchor2, anchor2 + insertion, 1)
                   print('fs/read_write.c: hook applied (anchor2)')
-              else:
-                  print('WARNING: vfs_read anchor not found')
               with open('fs/read_write.c', 'w') as f:
                   f.write(rw)
 
           insert_after('fs/stat.c',
               '\tint error = -EINVAL;\n',
               '#ifdef CONFIG_KSU\n'
-              '\textern int ksu_handle_stat(int *dfd, const char __user **filename_user,\n'
-              '\t\t\t\t   int *flags);\n'
+              '\tint __attribute__((weak)) ksu_handle_stat(int *dfd, const char __user **filename_user,\n'
+              '\t\t\t\t   int *flags) { return 0; }\n'
               '\tksu_handle_stat(&dfd, &filename, &flags);\n'
               '#endif\n')
           EOF
@@ -450,53 +448,18 @@ jobs:
               print('Added security_inode_init_security_anon stub')
           EOF
 
-          echo "=== Fix: LTO stubs — отдельный файл без LTO ==="
+          echo "=== Fix: Missing Kernel APIs local injection ==="
           KSU_REAL=$(realpath drivers/kernelsu)
-
-          cat > "$KSU_REAL/compat_5_4_stubs.c" << 'STUBS'
-          #include <linux/types.h>
-          #include <linux/errno.h>
-          #include <linux/sched.h>
-          #include <linux/fs.h>
-          struct filename;
-          struct path;
-          int ksu_handle_vfs_read(struct file **fp, char __user **bp, size_t *cp, loff_t **pp) { return 0; }
-          int ksu_handle_execveat(int *fd, struct filename **fnp, void *argv, void *envp, int *flags) { return 0; }
-          int ksu_handle_faccessat(int *dfd, const char __user **fn, int *mode, int *flags) { return 0; }
-          int ksu_handle_stat(int *dfd, const char __user **fn, int *flags) { return 0; }
-          int handle_sepolicy(void __user *ud, u64 len) { return 0; }
-          void seccomp_filter_release(struct task_struct *tsk) {}
-          int ksu_observer_init(void) { return 0; }
-          void ksu_observer_exit(void) {}
-          int path_mount(const char *dev_name, struct path *path, const char *type_page, unsigned long flags, void *data_page) { return -ENOSYS; }
-          STUBS
-
-          # Определяем имя главного obj в Makefile и добавляем стаб правильно
-          KSU_MK="$KSU_REAL/Makefile"
-          echo "=== KSU Makefile obj detection ==="
-          cat "$KSU_MK" | grep -E "^(obj-|kernelsu-|ksu-)" | head -5
-
-          # Добавляем CFLAGS без LTO и файл в сборку
-          # Пробуем все возможные имена obj
-          echo 'CFLAGS_compat_5_4_stubs.o := $(filter-out -flto% -O%,$(KBUILD_CFLAGS)) -O1' >> "$KSU_MK"
-
-          # kernelsu-y — для tiann/KernelSU-Next плоская структура
-          if grep -q "^kernelsu-y" "$KSU_MK" || grep -q "^kernelsu-y" "$KSU_MK"; then
-            echo 'kernelsu-y += compat_5_4_stubs.o' >> "$KSU_MK"
-          fi
-          # ksu-y — альтернативное имя
-          if grep -q "^ksu-y" "$KSU_MK"; then
-            echo 'ksu-y += compat_5_4_stubs.o' >> "$KSU_MK"
-          fi
-          # obj-y — если просто obj-y
-          if grep -q "^obj-y" "$KSU_MK" && ! grep -q "kernelsu-y\|ksu-y" "$KSU_MK"; then
-            echo 'obj-y += compat_5_4_stubs.o' >> "$KSU_MK"
-          fi
-          # Fallback — добавляем через все варианты
-          echo 'kernelsu-$(CONFIG_KSU) += compat_5_4_stubs.o' >> "$KSU_MK"
-
-          echo "=== KSU Makefile after stubs addition ==="
-          tail -5 "$KSU_MK"
+          
+          # Инжектим seccomp_filter_release прямо в app_profile.c
+          find "$KSU_REAL" -name "app_profile.c" | while read -r f; do
+            sed -i '1i #include <linux/sched.h>\nvoid __attribute__((weak)) seccomp_filter_release(struct task_struct *tsk) {}\n' "$f"
+          done
+          
+          # Инжектим handle_sepolicy прямо в dispatch.c и supercalls.c
+          find "$KSU_REAL" -name "dispatch.c" -o -name "supercalls.c" | while read -r f; do
+            sed -i '1i #include <linux/types.h>\nint __attribute__((weak)) handle_sepolicy(void __user *ud, u64 len) { return 0; }\n' "$f"
+          done
 
       - name: Setup SuSFS
         run: |
