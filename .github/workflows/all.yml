@@ -336,10 +336,16 @@ jobs:
             python3 << 'EOF'
           import os
 
+          def prepend_file(filepath, text):
+              if not os.path.exists(filepath): return
+              with open(filepath, 'r') as f: content = f.read()
+              if text.strip() in content: return
+              with open(filepath, 'w') as f: f.write(text + content)
+
           def insert_after(filepath, search, insertion):
               if not os.path.exists(filepath): return
               with open(filepath, 'r') as f: content = f.read()
-              if 'ksu_handle' in content: return
+              if insertion in content: return
               if search not in content:
                   print(f'WARNING: anchor not found in {filepath}')
                   return
@@ -347,32 +353,24 @@ jobs:
               with open(filepath, 'w') as f: f.write(content)
               print(f'{filepath}: hook applied')
 
+          # 1. fs/exec.c
+          prepend_file('fs/exec.c', '#ifdef CONFIG_KSU\nstruct filename;\nint __attribute__((weak)) ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags) { return 0; }\n#endif\n')
           insert_after('fs/exec.c',
               '\tchar *pathbuf = NULL;\n',
-              '#ifdef CONFIG_KSU\n'
-              '\tint __attribute__((weak)) ksu_handle_execveat(int *fd, struct filename **filename_ptr,\n'
-              '\t\t\t\t        void *argv, void *envp, int *flags) { return 0; }\n'
-              '\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n'
-              '#endif\n')
+              '#ifdef CONFIG_KSU\n\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n#endif\n')
 
+          # 2. fs/open.c
+          prepend_file('fs/open.c', '#ifdef CONFIG_KSU\nint __attribute__((weak)) ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags) { return 0; }\n#endif\n')
           insert_after('fs/open.c',
               '\tconst struct cred *old_cred;\n\tstruct cred *override_cred;\n',
-              '#ifdef CONFIG_KSU\n'
-              '\tint __attribute__((weak)) ksu_handle_faccessat(int *dfd, const char __user **filename_user,\n'
-              '\t\t\t\t\tint *mode, int *flags) { return 0; }\n'
-              '\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n'
-              '#endif\n')
+              '#ifdef CONFIG_KSU\n\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n#endif\n')
 
+          # 3. fs/read_write.c
+          prepend_file('fs/read_write.c', '#ifdef CONFIG_KSU\nstruct file;\nint __attribute__((weak)) ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr, size_t *count_ptr, loff_t **pos) { return 0; }\n#endif\n')
           with open('fs/read_write.c', 'r') as f:
               rw = f.read()
-          if 'ksu_handle_vfs_read' not in rw:
-              insertion = (
-                  '#ifdef CONFIG_KSU\n'
-                  '\tint __attribute__((weak)) ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,\n'
-                  '\t\t\t\t        size_t *count_ptr, loff_t **pos) { return 0; }\n'
-                  '\tksu_handle_vfs_read(&file, &buf, &count, &pos);\n'
-                  '#endif\n'
-              )
+          insertion = '#ifdef CONFIG_KSU\n\tksu_handle_vfs_read(&file, &buf, &count, &pos);\n#endif\n'
+          if insertion not in rw:
               anchor1 = 'ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)\n{\n\tssize_t ret;\n'
               anchor2 = 'ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)\n{\n'
               if anchor1 in rw:
@@ -384,13 +382,11 @@ jobs:
               with open('fs/read_write.c', 'w') as f:
                   f.write(rw)
 
+          # 4. fs/stat.c
+          prepend_file('fs/stat.c', '#ifdef CONFIG_KSU\nint __attribute__((weak)) ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags) { return 0; }\n#endif\n')
           insert_after('fs/stat.c',
               '\tint error = -EINVAL;\n',
-              '#ifdef CONFIG_KSU\n'
-              '\tint __attribute__((weak)) ksu_handle_stat(int *dfd, const char __user **filename_user,\n'
-              '\t\t\t\t   int *flags) { return 0; }\n'
-              '\tksu_handle_stat(&dfd, &filename, &flags);\n'
-              '#endif\n')
+              '#ifdef CONFIG_KSU\n\tksu_handle_stat(&dfd, &filename, &flags);\n#endif\n')
           EOF
           fi
 
