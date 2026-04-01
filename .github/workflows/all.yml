@@ -468,45 +468,25 @@ jobs:
               print('Added security_inode_init_security_anon stub')
           EOF
 
-          echo "=== Fix: LTO-proof linker stubs (appended to ksu.c) ==="
-          python3 << 'PYEOF'
-          import os, subprocess
+          echo "=== Fix: Local weak stubs for LTO survival ==="
+          KSU_REAL=$(realpath drivers/kernelsu)
+          
+          # Стабы для внутренних файлов KernelSU-Next
+          find "$KSU_REAL" -name "supercalls.c" | while read -r f; do
+            sed -i '1s/^/#include <linux\/types.h>\nint __attribute__((weak)) handle_sepolicy(void __user *ud, u64 len) { return 0; }\n/' "$f"
+          done
+          find "$KSU_REAL" -name "dispatch.c" | while read -r f; do
+            sed -i '1s/^/#include <linux\/types.h>\nint __attribute__((weak)) handle_sepolicy(void __user *ud, u64 len) { return 0; }\n/' "$f"
+          done
+          find "$KSU_REAL" -name "app_profile.c" | while read -r f; do
+            sed -i '1s/^/#include <linux\/sched.h>\nvoid __attribute__((weak)) seccomp_filter_release(struct task_struct *tsk) {}\n/' "$f"
+          done
 
-          ksu_real = subprocess.check_output(
-              ['realpath', 'drivers/kernelsu'], text=True).strip()
-
-          ksu_c = os.path.join(ksu_real, 'ksu.c')
-          content = """\n
-          /* LTO-PROOF STRONG STUBS FOR 5.4 COMPATIBILITY
-           * No __weak used, ensuring LTO keeps them for the linker. */
-          #include <linux/types.h>
-          #include <linux/init.h>
-          #include <linux/errno.h>
-          #include <linux/kernel.h>
-          #include <linux/sched.h>
-          #include <linux/fs.h>
-
-          int handle_sepolicy(void __user *ud, u64 len) { return 0; }
-          void seccomp_filter_release(struct task_struct *tsk) {}
-          struct path;
-          int path_mount(const char *dev_name, struct path *path,
-                         const char *type_page, unsigned long flags,
-                         void *data_page) { return -ENOSYS; }
-
-          struct filename;
-          int ksu_handle_vfs_read(struct file **fp, char __user **bp, size_t *cp, loff_t **pp) { return 0; }
-          int ksu_handle_execveat(int *fd, struct filename **fnp, void *argv, void *envp, int *flags) { return 0; }
-          int ksu_handle_faccessat(int *dfd, const char __user **fn, int *mode, int *flags) { return 0; }
-          int ksu_handle_stat(int *dfd, const char __user **fn, int *flags) { return 0; }
-
-          int ksu_observer_init(void) { return 0; }
-          void ksu_observer_exit(void) {}
-          """
-
-          with open(ksu_c, 'a') as f:
-              f.write(content)
-          print(f'Appended STRONG LTO stubs to: {ksu_c}')
-          PYEOF
+          # Стабы для файлов ядра
+          sed -i '1s/^/#include <linux\/fs.h>\nint __attribute__((weak)) ksu_handle_vfs_read(struct file **fp, char __user **bp, size_t *cp, loff_t **pp) { return 0; }\n/' fs/read_write.c
+          sed -i '1s/^/#include <linux\/fs.h>\nstruct filename;\nint __attribute__((weak)) ksu_handle_execveat(int *fd, struct filename **fnp, void *argv, void *envp, int *flags) { return 0; }\n/' fs/exec.c
+          sed -i '1s/^/#include <linux\/fs.h>\nint __attribute__((weak)) ksu_handle_faccessat(int *dfd, const char __user **fn, int *mode, int *flags) { return 0; }\n/' fs/open.c
+          sed -i '1s/^/#include <linux\/fs.h>\nint __attribute__((weak)) ksu_handle_stat(int *dfd, const char __user **fn, int *flags) { return 0; }\n/' fs/stat.c
 
           echo "=== Fix: dispatch.c tasklist_lock (tiann KernelSU) ==="
           KSU_REAL=$(realpath drivers/kernelsu)
