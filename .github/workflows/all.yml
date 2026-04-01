@@ -99,7 +99,8 @@ jobs:
           elif [ "$VARIANT" = "KernelSU" ]; then
             curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s main
           elif [ "$VARIANT" = "KernelSU-Next" ]; then
-            curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
+            # sidex15 fork — legacy-susfs-v2 branch, SuSFS v2 already built-in
+            curl -LSs "https://raw.githubusercontent.com/sidex15/KernelSU-Next/legacy-susfs-v2/kernel/setup.sh" | bash -s legacy-susfs-v2
           elif [ "$VARIANT" = "WildKSU" ]; then
             curl -LSs "https://raw.githubusercontent.com/WildKernels/Wild_KSU/wild/kernel/setup.sh" | bash -s wild
           fi
@@ -162,13 +163,9 @@ jobs:
           STUB
           done
 
-          # ── FIX: app_profile.c — seccomp.filter_count removed in 5.4 QGKI ──
-          # struct seccomp in 5.4 does not have filter_count field.
-          # Comment out the offending line.
           echo "=== Fix: app_profile.c seccomp.filter_count ==="
           find "$KSU_REAL" -name "app_profile.c" | while read -r f; do
             sed -i 's/atomic_set(&current->seccomp\.filter_count,.*)/\/\/ filter_count not in 5.4 seccomp struct/' "$f"
-            echo "  patched: $f"
           done
 
           echo "=== Fix: pgtable.h ==="
@@ -193,6 +190,7 @@ jobs:
 
           echo "=== Fix: pkg_observer ==="
           [ -f "$KSU_REAL/Makefile" ] && sed -i '/pkg_observer.o/d' "$KSU_REAL/Makefile" || true
+          find "$KSU_REAL" -name "Makefile" -exec sed -i '/pkg_observer.o/d' {} + || true
           find "$KSU_REAL" -type f -name "*.c" \
             -exec sed -i 's/ksu_pkg_observer_init()/0/g' {} + || true
           find "$KSU_REAL" -type f -name "*.c" \
@@ -203,7 +201,6 @@ jobs:
             cat > "$f" << 'STUB'
           #include <linux/types.h>
           #include <linux/init.h>
-          /* ksu_observer_init/exit are called from ksu.c — must be defined here */
           int ksu_pkg_observer_init(void) { return 0; }
           void ksu_pkg_observer_exit(void) { return; }
           int ksu_observer_init(void) { return 0; }
@@ -218,31 +215,18 @@ jobs:
             sed -i 's/^module_exit(kernelsu_exit);/\/\/module_exit(kernelsu_exit);/' "$f"
           done
 
-          # ── FIX: selinux/rules.c and selinux/sepolicy.c ──────────────────────
-          # These files use selinux_state.policy / policy_mutex which were added
-          # in kernel 5.8. In 5.4 the SELinux policy structure is completely
-          # different. Stub both files — SELinux rules patching is a no-op,
-          # which is safe: the kernel's own SELinux still enforces policy normally.
-          echo "=== Fix: selinux/rules.c stub (selinux_state.policy n/a in 5.4) ==="
+          echo "=== Fix: selinux/rules.c stub ==="
           find "$KSU_REAL" -path "*/selinux/rules.c" | while read -r f; do
-            echo "  stubbing: $f"
             cat > "$f" << 'STUB'
-          /* selinux/rules.c: stubbed for kernel 5.4.
-           * selinux_state.policy and policy_mutex were added in 5.8.
-           * KernelSU SELinux rule patching is disabled on this kernel. */
           #include <linux/types.h>
           #include <linux/init.h>
           void apply_kernelsu_rules(void) { }
           STUB
           done
 
-          echo "=== Fix: selinux/sepolicy.c stub (selinux_policy struct n/a in 5.4) ==="
+          echo "=== Fix: selinux/sepolicy.c stub ==="
           find "$KSU_REAL" -path "*/selinux/sepolicy.c" | while read -r f; do
-            echo "  stubbing: $f"
             cat > "$f" << 'STUB'
-          /* selinux/sepolicy.c: stubbed for kernel 5.4.
-           * struct selinux_policy, filename_trans_key and related APIs
-           * changed significantly between 5.4 and 5.8. */
           #include <linux/types.h>
           #include <linux/init.h>
           void *ksu_dup_sepolicy(void *old_pol) { return NULL; }
@@ -250,20 +234,16 @@ jobs:
           STUB
           done
 
-          echo "=== Fix: sepolicy.c diagnostic suppress (non-selinux files only) ==="
+          echo "=== Fix: sepolicy.c diagnostic suppress (non-selinux) ==="
           find "$KSU_REAL" -name "sepolicy.c" \
             ! -path "*/selinux/sepolicy.c" | while read -r f; do
             sed -i '1s/^/#pragma clang diagnostic push\n#pragma clang diagnostic ignored "-Wimplicit-function-declaration"\n#pragma clang diagnostic ignored "-Wincompatible-pointer-types"\n#pragma clang diagnostic ignored "-Wincompatible-function-pointer-types"\n/' "$f"
             echo '#pragma clang diagnostic pop' >> "$f"
           done
 
-          # ── FIX: susfs stubs — must include linux/types.h BEFORE bool/false ──
-          # Previous version inserted bare 'bool ...' at line 1 without includes,
-          # causing "unknown type name 'bool'" on kernel C files.
-          echo "=== Fix: susfs_is_current_proc stubs (with proper includes) ==="
+          echo "=== Fix: susfs_is_current_proc stubs ==="
           find "$KSU_REAL" -name "sucompat.c" | while read -r f; do
             grep -q "susfs_is_current_proc_umounted" "$f" && continue
-            # Prepend a proper include block, then the stubs
             tmpfile=$(mktemp)
             cat > "$tmpfile" << 'STUB'
           #include <linux/types.h>
@@ -274,7 +254,15 @@ jobs:
           STUB
             cat "$f" >> "$tmpfile"
             mv "$tmpfile" "$f"
-            echo "  Added susfs stubs with includes to $f"
+          done
+
+          echo "=== Fix: dispatch.c tasklist_lock ==="
+          find "$KSU_REAL" -name "dispatch.c" | while read -r f; do
+            sed -i 's/write_lock_irq(&tasklist_lock);/\/\/write_lock_irq(\&tasklist_lock);/g' "$f"
+            sed -i 's/write_unlock_irq(&tasklist_lock);/\/\/write_unlock_irq(\&tasklist_lock);/g' "$f"
+            sed -i 's/struct pid \*init_group = task_pgrp(&init_task);/struct pid *init_group = NULL;/g' "$f"
+            sed -i 's/task_session(p) != task_session(&init_task)/0/g' "$f"
+            sed -i 's/task_pgrp(p) != init_group/0/g' "$f"
           done
 
           echo "=== Fix: minmax.h -> kernel.h ==="
@@ -367,7 +355,6 @@ jobs:
               '\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n'
               '#endif\n')
 
-          # fs/open.c — this kernel uses do_faccessat(), anchor confirmed from show_vfs log
           insert_after('fs/open.c',
               '\tconst struct cred *old_cred;\n\tstruct cred *override_cred;\n',
               '#ifdef CONFIG_KSU\n'
@@ -376,8 +363,6 @@ jobs:
               '\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n'
               '#endif\n')
 
-          # fs/read_write.c — confirmed from show_vfs: vfs_read at line 446,
-          # signature: ssize_t vfs_read(...)\n{\n\tssize_t ret;\n
           with open('fs/read_write.c', 'r') as f:
               rw = f.read()
           if 'ksu_handle_vfs_read' not in rw:
@@ -388,9 +373,7 @@ jobs:
                   '\tksu_handle_vfs_read(&file, &buf, &count, &pos);\n'
                   '#endif\n'
               )
-              # anchor1: with 'ssize_t ret;' on same brace line (most common)
               anchor1 = 'ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)\n{\n\tssize_t ret;\n'
-              # anchor2: without ret on same line
               anchor2 = 'ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)\n{\n'
               if anchor1 in rw:
                   rw = rw.replace(anchor1, anchor1 + insertion, 1)
@@ -441,7 +424,6 @@ jobs:
 
           echo "=== Fix: security_inode_init_security_anon (added in 5.9) ==="
           python3 << 'EOF'
-          import os
           path = 'include/linux/security.h'
           with open(path, 'r') as f:
               content = f.read()
@@ -468,35 +450,28 @@ jobs:
               print('Added security_inode_init_security_anon stub')
           EOF
 
-          echo "=== Fix: Local weak stubs for LTO survival ==="
+          echo "=== Fix: LTO stubs — отдельный файл без LTO ==="
           KSU_REAL=$(realpath drivers/kernelsu)
-          
-          # Стабы для внутренних файлов KernelSU-Next
-          find "$KSU_REAL" -name "supercalls.c" | while read -r f; do
-            sed -i '1s/^/#include <linux\/types.h>\nint __attribute__((weak)) handle_sepolicy(void __user *ud, u64 len) { return 0; }\n/' "$f"
-          done
-          find "$KSU_REAL" -name "dispatch.c" | while read -r f; do
-            sed -i '1s/^/#include <linux\/types.h>\nint __attribute__((weak)) handle_sepolicy(void __user *ud, u64 len) { return 0; }\n/' "$f"
-          done
-          find "$KSU_REAL" -name "app_profile.c" | while read -r f; do
-            sed -i '1s/^/#include <linux\/sched.h>\nvoid __attribute__((weak)) seccomp_filter_release(struct task_struct *tsk) {}\n/' "$f"
-          done
-
-          # Стабы для файлов ядра
-          sed -i '1s/^/#include <linux\/fs.h>\nint __attribute__((weak)) ksu_handle_vfs_read(struct file **fp, char __user **bp, size_t *cp, loff_t **pp) { return 0; }\n/' fs/read_write.c
-          sed -i '1s/^/#include <linux\/fs.h>\nstruct filename;\nint __attribute__((weak)) ksu_handle_execveat(int *fd, struct filename **fnp, void *argv, void *envp, int *flags) { return 0; }\n/' fs/exec.c
-          sed -i '1s/^/#include <linux\/fs.h>\nint __attribute__((weak)) ksu_handle_faccessat(int *dfd, const char __user **fn, int *mode, int *flags) { return 0; }\n/' fs/open.c
-          sed -i '1s/^/#include <linux\/fs.h>\nint __attribute__((weak)) ksu_handle_stat(int *dfd, const char __user **fn, int *flags) { return 0; }\n/' fs/stat.c
-
-          echo "=== Fix: dispatch.c tasklist_lock (tiann KernelSU) ==="
-          KSU_REAL=$(realpath drivers/kernelsu)
-          find "$KSU_REAL" -name "dispatch.c" | while read -r f; do
-            sed -i 's/write_lock_irq(&tasklist_lock);/\/\/write_lock_irq(\&tasklist_lock);/g' "$f"
-            sed -i 's/write_unlock_irq(&tasklist_lock);/\/\/write_unlock_irq(\&tasklist_lock);/g' "$f"
-            sed -i 's/struct pid \*init_group = task_pgrp(&init_task);/struct pid *init_group = NULL;/g' "$f"
-            sed -i 's/task_session(p) != task_session(&init_task)/0/g' "$f"
-            sed -i 's/task_pgrp(p) != init_group/0/g' "$f"
-          done
+          cat > "$KSU_REAL/compat_5_4_stubs.c" << 'STUBS'
+          #include <linux/types.h>
+          #include <linux/errno.h>
+          #include <linux/sched.h>
+          #include <linux/fs.h>
+          struct filename;
+          struct path;
+          int ksu_handle_vfs_read(struct file **fp, char __user **bp, size_t *cp, loff_t **pp) { return 0; }
+          int ksu_handle_execveat(int *fd, struct filename **fnp, void *argv, void *envp, int *flags) { return 0; }
+          int ksu_handle_faccessat(int *dfd, const char __user **fn, int *mode, int *flags) { return 0; }
+          int ksu_handle_stat(int *dfd, const char __user **fn, int *flags) { return 0; }
+          int handle_sepolicy(void __user *ud, u64 len) { return 0; }
+          void seccomp_filter_release(struct task_struct *tsk) {}
+          int ksu_observer_init(void) { return 0; }
+          void ksu_observer_exit(void) {}
+          int path_mount(const char *dev_name, struct path *path, const char *type_page, unsigned long flags, void *data_page) { return -ENOSYS; }
+          STUBS
+          # Отключаем LTO именно для этого файла
+          echo 'CFLAGS_compat_5_4_stubs.o := $(filter-out -flto%,$(KBUILD_CFLAGS))' >> "$KSU_REAL/Makefile"
+          echo 'kernelsu-y += compat_5_4_stubs.o' >> "$KSU_REAL/Makefile"
 
       - name: Setup SuSFS
         run: |
@@ -504,6 +479,9 @@ jobs:
           VARIANT="${{ inputs.ksu_variant }}"
           SUSFS_DIR="$(pwd)/../susfs4ksu"
 
+          # KernelSU-Next (sidex15 legacy-susfs-v2) уже включает SuSFS —
+          # клонируем susfs4ksu только для файлов ядра (susfs.c, susfs.h)
+          # и для других вариантов (KernelSU, WildKSU, SukiSU, ReSukiSU)
           if [ ! -d "$SUSFS_DIR" ]; then
             git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git \
               -b kernel-5.4 "$SUSFS_DIR"
@@ -511,7 +489,8 @@ jobs:
 
           KSU_REAL=$(realpath drivers/kernelsu)
 
-          if [ "$VARIANT" != "SukiSU" ]; then
+          # KSU-side patch: не нужен для SukiSU (built-in) и KernelSU-Next/sidex15 (built-in)
+          if [ "$VARIANT" != "SukiSU" ] && [ "$VARIANT" != "KernelSU-Next" ]; then
             echo "=== Apply SuSFS patch to KernelSU ($VARIANT) ==="
             cd "$KSU_REAL"
             patch -p1 < "$SUSFS_DIR/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" \
@@ -519,7 +498,7 @@ jobs:
               || echo "KSU susfs patch skipped"
             cd - > /dev/null
           else
-            echo "=== SukiSU: SuSFS built-in, skipping KSU-side patch ==="
+            echo "=== $VARIANT: SuSFS built-in, skipping KSU-side patch ==="
           fi
 
           echo "=== Apply SuSFS patch to kernel tree (JackA1ltman 5.4 patch) ==="
