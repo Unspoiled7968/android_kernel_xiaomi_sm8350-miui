@@ -655,6 +655,22 @@ out_unlock:
 	return -EBADF;
 }
 EXPORT_SYMBOL(__close_fd); /* for ksys_close() */
+int __close_range(unsigned int fd, unsigned int max_fd, unsigned int flags)
+{
+	unsigned int cur_fd;
+	struct files_struct *files = current->files;
+
+	if (flags & ~(CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC))
+		return -EINVAL;
+
+	if (fd > max_fd)
+		return -EINVAL;
+
+	for (cur_fd = fd; cur_fd <= max_fd; cur_fd++)
+		__close_fd(files, cur_fd);
+
+	return 0;
+}
 EXPORT_SYMBOL_GPL(__close_range);
 
 /*
