@@ -4687,11 +4687,9 @@ enum {
 					 */
 	BPF_SOCK_OPS_RTT_CB,		/* Called on every RTT.
 					 */
-<<<<<<< HEAD
 
 	BPF_SOCK_OPS_VOIP_CB,		/* Called on every udp states. 
 					*/
-=======
 	BPF_SOCK_OPS_PARSE_HDR_OPT_CB,	/* Parse the header option.
 					 * It will be called to handle
 					 * the packets received at
@@ -4749,7 +4747,6 @@ enum {
 					 * by the kernel or the
 					 * earlier bpf-progs.
 					 */
->>>>>>> 6bcf0d8d038d (UPSTREAM: bpf: tcp: Allow bpf prog to write and parse TCP header option)
 };
 
 /* List of TCP states. There is a build check in net/ipv4/tcp.c to detect
