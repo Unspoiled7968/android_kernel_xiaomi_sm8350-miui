@@ -92,7 +92,6 @@ extern unsigned long sysctl_reclaim_pages;
 extern int sysctl_reclaim_pages_handler(struct ctl_table *table, int write,
             void __user *buffer, size_t *length, loff_t *ppos);
 #endif
-			void *buffer, size_t *length, loff_t *ppos);
 extern int sysctl_extfrag_threshold;
 extern int sysctl_compact_unevictable_allowed;
 
