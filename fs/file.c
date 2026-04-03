@@ -690,19 +690,6 @@ out_unlock:
 }
 EXPORT_SYMBOL(close_fd_get_file);
 
-int close_fd_get_file(unsigned int fd, struct file **res)
-{
-	/* ... existing body ... */
-}
-EXPORT_SYMBOL(close_fd_get_file);
-
-/* alias for binder compatibility */
-int __close_fd_get_file(unsigned int fd, struct file **res)
-{
-	return close_fd_get_file(fd, res);
-}
-EXPORT_SYMBOL(__close_fd_get_file);
-
 void do_close_on_exec(struct files_struct *files)
 {
 	unsigned i;
