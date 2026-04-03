@@ -80,6 +80,7 @@ static void copy_fdtable(struct fdtable *nfdt, struct fdtable *ofdt)
 	copy_fd_bitmaps(nfdt, ofdt, fdt_words(ofdt));
 }
 
+struct fdtable;
 static struct fdtable * alloc_fdtable(unsigned int nr)
 
 /*
