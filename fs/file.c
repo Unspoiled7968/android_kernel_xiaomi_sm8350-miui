@@ -655,6 +655,7 @@ out_unlock:
 	return -EBADF;
 }
 EXPORT_SYMBOL(__close_fd); /* for ksys_close() */
+EXPORT_SYMBOL_GPL(__close_range);
 
 /*
  * variant of close_fd that gets a ref on the file for later fput.
@@ -687,6 +688,7 @@ out_unlock:
 	*res = NULL;
 	return -ENOENT;
 }
+EXPORT_SYMBOL(close_fd_get_file);
 
 void do_close_on_exec(struct files_struct *files)
 {
