@@ -80,50 +80,6 @@ static void copy_fdtable(struct fdtable *nfdt, struct fdtable *ofdt)
 	copy_fd_bitmaps(nfdt, ofdt, fdt_words(ofdt));
 }
 
-static struct fdtable * alloc_fdtable(unsigned int nr)
-{
-	struct fdtable *fdt;
-	void *data;
-
-	nr /= (1024 / sizeof(struct file *));
-	nr = roundup_pow_of_two(nr + 1);
-	nr *= (1024 / sizeof(struct file *));
-
-	if (nr < NR_OPEN_DEFAULT)
-		nr = NR_OPEN_DEFAULT;
-
-	fdt = kvzalloc(sizeof(*fdt), GFP_KERNEL_ACCOUNT);
-	if (!fdt)
-		goto out;
-
-	fdt->max_fds = nr;
-	data = kvmalloc_array(nr, sizeof(struct file *), GFP_KERNEL_ACCOUNT);
-	if (!data)
-		goto out_fdt;
-	fdt->fd = data;
-
-	data = kvmalloc(max_t(size_t,
-						  L1_CACHE_ALIGN(BITS_TO_LONGS(nr) * sizeof(unsigned long)) * 3,
-						  PAGE_SIZE), GFP_KERNEL_ACCOUNT);
-	if (!data)
-		goto out_arr;
-
-	memset(data, 0, L1_CACHE_ALIGN(BITS_TO_LONGS(nr) * sizeof(unsigned long)) * 3);
-	fdt->open_fds = data;
-	data += L1_CACHE_ALIGN(BITS_TO_LONGS(nr) * sizeof(unsigned long));
-	fdt->close_on_exec = data;
-	data += L1_CACHE_ALIGN(BITS_TO_LONGS(nr) * sizeof(unsigned long));
-	fdt->full_fds_bits = data;
-
-	return fdt;
-
-	out_arr:
-	kvfree(fdt->fd);
-	out_fdt:
-	kvfree(fdt);
-	out:
-	return NULL;
-}
 /*
  * Note how the fdtable bitmap allocations very much have to be a multiple of
  * BITS_PER_LONG. This is not only because we walk those things in chunks of
