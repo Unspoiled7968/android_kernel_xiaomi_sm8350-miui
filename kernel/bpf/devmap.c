@@ -416,7 +416,7 @@ void __dev_flush(void)
 	struct xdp_dev_bulk_queue *bq, *tmp;
 
 	list_for_each_entry_safe(bq, tmp, flush_list, flush_node)
-		bq_xmit_all(bq, XDP_XMIT_FLUSH);
+		bq_xmit_all(bq, XDP_XMIT_FLUSH, false);
 }
 
 /* rcu_read_lock (from syscall and BPF contexts) ensures that if a delete and/or
@@ -559,7 +559,7 @@ static void *dev_map_hash_lookup_elem(struct bpf_map *map, void *key)
 static void dev_map_flush_old(struct bpf_dtab_netdev *dev)
 {
 	if (dev->dev->netdev_ops->ndo_xdp_xmit) {
-		struct xdp_bulk_queue *bq;
+		struct xdp_dev_bulk_queue *bq;
 		int cpu;
 
 		rcu_read_lock();
