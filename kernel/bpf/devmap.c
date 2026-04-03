@@ -67,12 +67,14 @@ struct bpf_dtab_netdev {
 	struct bpf_prog *xdp_prog;
 	struct rcu_head rcu;
 	unsigned int idx;
+	struct xdp_dev_bulk_queue __percpu *bulkq;
 	struct bpf_devmap_val val;
 };
 
 struct bpf_dtab {
 	struct bpf_map map;
 	struct bpf_dtab_netdev **netdev_map; /* DEVMAP type only */
+	struct list_head __percpu *flush_list;
 	struct list_head list;
 
 	/* these are only used for DEVMAP_HASH type maps */
@@ -351,7 +353,7 @@ bool dev_map_can_have_prog(struct bpf_map *map)
 	return false;
 }
 
-static void bq_xmit_all(struct xdp_dev_bulk_queue *bq, u32 flags)
+static void bq_xmit_all(struct xdp_dev_bulk_queue *bq, u32 flags, bool ndo_xmit)
 {
 	struct net_device *dev = bq->dev;
 	int sent = 0, drops = 0, err = 0;
@@ -386,6 +388,7 @@ error:
 	 */
 	for (i = 0; i < bq->count; i++) {
 		struct xdp_frame *xdpf = bq->q[i];
+		bool in_napi_ctx = true;
 
 		/* RX path under NAPI protection, can return frames faster */
 		if (likely(in_napi_ctx))
