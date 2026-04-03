@@ -654,7 +654,11 @@ out_unlock:
 	spin_unlock(&files->file_lock);
 	return -EBADF;
 }
+<<<<<<< HEAD
 EXPORT_SYMBOL(__close_fd); /* for ksys_close() */
+=======
+EXPORT_SYMBOL_GPL(__close_range);
+>>>>>>> ba6ea48e6a07 (fix)
 
 /*
  * variant of close_fd that gets a ref on the file for later fput.
@@ -687,6 +691,20 @@ out_unlock:
 	*res = NULL;
 	return -ENOENT;
 }
+EXPORT_SYMBOL(close_fd_get_file);
+
+int close_fd_get_file(unsigned int fd, struct file **res)
+{
+	/* ... existing body ... */
+}
+EXPORT_SYMBOL(close_fd_get_file);
+
+/* alias for binder compatibility */
+int __close_fd_get_file(unsigned int fd, struct file **res)
+{
+	return close_fd_get_file(fd, res);
+}
+EXPORT_SYMBOL(__close_fd_get_file);
 
 void do_close_on_exec(struct files_struct *files)
 {
