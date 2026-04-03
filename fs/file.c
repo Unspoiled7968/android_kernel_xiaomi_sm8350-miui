@@ -89,10 +89,10 @@ static struct fdtable * alloc_fdtable(unsigned int nr)
 	nr = roundup_pow_of_two(nr + 1);
 	nr *= (1024 / sizeof(struct file *));
 
-	if (nr <= NR_OPEN_DEFAULT)
+	if (nr < NR_OPEN_DEFAULT)
 		nr = NR_OPEN_DEFAULT;
 
-	fdt = kmalloc(sizeof(*fdt), GFP_KERNEL);
+	fdt = kvzalloc(sizeof(*fdt), GFP_KERNEL_ACCOUNT);
 	if (!fdt)
 		goto out;
 
@@ -102,10 +102,25 @@ static struct fdtable * alloc_fdtable(unsigned int nr)
 		goto out_fdt;
 	fdt->fd = data;
 
+	data = kvmalloc(max_t(size_t,
+						  L1_CACHE_ALIGN(BITS_TO_LONGS(nr) * sizeof(unsigned long)) * 3,
+						  PAGE_SIZE), GFP_KERNEL_ACCOUNT);
+	if (!data)
+		goto out_arr;
+
+	memset(data, 0, L1_CACHE_ALIGN(BITS_TO_LONGS(nr) * sizeof(unsigned long)) * 3);
+	fdt->open_fds = data;
+	data += L1_CACHE_ALIGN(BITS_TO_LONGS(nr) * sizeof(unsigned long));
+	fdt->close_on_exec = data;
+	data += L1_CACHE_ALIGN(BITS_TO_LONGS(nr) * sizeof(unsigned long));
+	fdt->full_fds_bits = data;
+
 	return fdt;
 
+	out_arr:
+	kvfree(fdt->fd);
 	out_fdt:
-	kfree(fdt);
+	kvfree(fdt);
 	out:
 	return NULL;
 }
