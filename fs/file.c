@@ -82,9 +82,33 @@ static void copy_fdtable(struct fdtable *nfdt, struct fdtable *ofdt)
 
 static struct fdtable * alloc_fdtable(unsigned int nr)
 {
-	struct fdtable;
-}
+	struct fdtable *fdt;
+	void *data;
 
+	nr /= (1024 / sizeof(struct file *));
+	nr = roundup_pow_of_two(nr + 1);
+	nr *= (1024 / sizeof(struct file *));
+
+	if (nr <= NR_OPEN_DEFAULT)
+		nr = NR_OPEN_DEFAULT;
+
+	fdt = kmalloc(sizeof(*fdt), GFP_KERNEL);
+	if (!fdt)
+		goto out;
+
+	fdt->max_fds = nr;
+	data = kvmalloc_array(nr, sizeof(struct file *), GFP_KERNEL_ACCOUNT);
+	if (!data)
+		goto out_fdt;
+	fdt->fd = data;
+
+	return fdt;
+
+	out_fdt:
+	kfree(fdt);
+	out:
+	return NULL;
+}
 /*
  * Note how the fdtable bitmap allocations very much have to be a multiple of
  * BITS_PER_LONG. This is not only because we walk those things in chunks of
