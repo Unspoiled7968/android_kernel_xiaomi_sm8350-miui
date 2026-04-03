@@ -654,11 +654,8 @@ out_unlock:
 	spin_unlock(&files->file_lock);
 	return -EBADF;
 }
-<<<<<<< HEAD
 EXPORT_SYMBOL(__close_fd); /* for ksys_close() */
-=======
 EXPORT_SYMBOL_GPL(__close_range);
->>>>>>> ba6ea48e6a07 (fix)
 
 /*
  * variant of close_fd that gets a ref on the file for later fput.
