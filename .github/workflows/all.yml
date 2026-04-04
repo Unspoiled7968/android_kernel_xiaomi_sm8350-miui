@@ -76,16 +76,6 @@ jobs:
                    "$HOME/.ccache_wrappers/clang++"
           echo "$HOME/.ccache_wrappers" >> "$GITHUB_PATH"
 
-      - name: Apply Specialized MIUI Patches (JackA1ltman)
-        run: |
-          set -e
-          git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Patches.git \
-            -b mi_kernel ../altman_patches
-          ALTMAN_DIR="$(pwd)/../altman_patches/mi11u_hyperos"
-          patch -p1 --forward --batch < "$ALTMAN_DIR/hyperos_a14_fixed.patch"              || true
-          patch -p1 --forward --batch < "$ALTMAN_DIR/hyper_susfs_157_fixed.patch"          || true
-          patch -p1 --forward --batch < "$ALTMAN_DIR/hyper_susfs_remove_all_sus_su.patch" || true
-
       - name: Integrate Selected KernelSU Variant
         run: |
           set -e
