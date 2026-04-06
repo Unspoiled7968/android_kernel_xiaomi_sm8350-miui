@@ -32,9 +32,16 @@ jobs:
 
           echo "====== drivers/kernelsu/ contents ======"
           ls -la "$KSU_REAL/"
-
-          echo "====== Full KSU Makefile ======"
-          cat "$KSU_MK"
+          
+          echo "====== Full KSU Kbuild ======"
+          cat "$KSU_REAL/Kbuild"
+          echo "====== obj variables in Kbuild ======"
+          grep -E "^[a-z_-]+[-_][ym]" "$KSU_REAL/Kbuild" | head -20
+          echo "====== sucompat.c location ======"
+          find "$KSU_REAL" -name "sucompat.c" | while read f; do
+            echo "--- $f ---"
+            grep "^int ksu_handle\|^static.*ksu_handle" "$f" | head -10
+          done
 
           echo "====== obj variables ======"
           grep -E "^[a-z_-]+[-_][ym]" "$KSU_MK" | head -20
