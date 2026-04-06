@@ -450,30 +450,82 @@ jobs:
               print('Added security_inode_init_security_anon stub')
           EOF
 
-          echo "=== Fix: Missing Symbol Stubs (Direct Injection) ==="
+          echo "=== Fix: LTO stubs — отдельный файл без LTO ==="
           KSU_REAL=$(realpath drivers/kernelsu)
+          KSU_MK="$KSU_REAL/Makefile"
 
-          # Inject directly into an existing file to guarantee compilation and bypass Makefile limits
-          TARGET_FILE="$KSU_REAL/sucompat.c"
-          [ ! -f "$TARGET_FILE" ] && TARGET_FILE="$KSU_REAL/ksu.c"
-
-          cat >> "$TARGET_FILE" << 'STUBS'
-
-          /* --- COMPATIBILITY STUBS --- */
+          cat > "$KSU_REAL/compat_5_4_stubs.c" << 'STUBS'
+          #include <linux/types.h>
+          #include <linux/errno.h>
+          #include <linux/sched.h>
+          #include <linux/fs.h>
           struct filename;
           struct path;
-          struct task_struct;
-          
-          __attribute__((used)) int ksu_handle_vfs_read(struct file **fp, char __user **bp, size_t *cp, loff_t **pp) { return 0; }
-          __attribute__((used)) int ksu_handle_execveat(int *fd, struct filename **fnp, void *argv, void *envp, int *flags) { return 0; }
-          __attribute__((used)) int ksu_handle_faccessat(int *dfd, const char __user **fn, int *mode, int *flags) { return 0; }
-          __attribute__((used)) int ksu_handle_stat(int *dfd, const char __user **fn, int *flags) { return 0; }
-          __attribute__((used)) int handle_sepolicy(void __user *ud, u64 len) { return 0; }
-          __attribute__((used)) void seccomp_filter_release(struct task_struct *tsk) {}
-          __attribute__((used)) int path_mount(const char *dev_name, struct path *path, const char *type_page, unsigned long flags, void *data_page) { return -ENOSYS; }
+          int ksu_handle_vfs_read(struct file **fp, char __user **bp, size_t *cp, loff_t **pp) { return 0; }
+          int ksu_handle_execveat(int *fd, struct filename **fnp, void *argv, void *envp, int *flags) { return 0; }
+          int ksu_handle_faccessat(int *dfd, const char __user **fn, int *mode, int *flags) { return 0; }
+          int ksu_handle_stat(int *dfd, const char __user **fn, int *flags) { return 0; }
+          int handle_sepolicy(void __user *ud, u64 len) { return 0; }
+          void seccomp_filter_release(struct task_struct *tsk) {}
+          int ksu_observer_init(void) { return 0; }
+          void ksu_observer_exit(void) {}
+          int path_mount(const char *dev_name, struct path *path, const char *type_page, unsigned long flags, void *data_page) { return -ENOSYS; }
           STUBS
-          
-          echo "Stubs successfully injected into $TARGET_FILE"
+
+          # Определяем имя obj-переменной в Makefile KSU
+          echo "=== Detecting KSU Makefile obj variable ==="
+          head -30 "$KSU_MK"
+          OBJ_VAR=$(grep -oE '^(kernelsu|ksu)-y' "$KSU_MK" | head -1)
+          if [ -z "$OBJ_VAR" ]; then
+            OBJ_VAR=$(grep -oE '^obj-y' "$KSU_MK" | head -1)
+          fi
+          if [ -z "$OBJ_VAR" ]; then
+            OBJ_VAR="kernelsu-y"
+          fi
+          echo "Using obj variable: $OBJ_VAR"
+
+          # LTO отключаем для стаб-файла, добавляем в сборку
+          echo "CFLAGS_compat_5_4_stubs.o := \$(filter-out -flto%,\$(KBUILD_CFLAGS))" >> "$KSU_MK"
+          echo "${OBJ_VAR} += compat_5_4_stubs.o" >> "$KSU_MK"
+
+          # Для KernelSU-Next (sidex15) sucompat.c уже содержит реальные ksu_handle_* —
+          # убираем из стаб-файла те функции которые там уже определены
+          if grep -q "ksu_handle_faccessat\|ksu_handle_stat\|ksu_handle_vfs_read\|ksu_handle_execveat" \
+              "$KSU_REAL/sucompat.c" 2>/dev/null; then
+            echo "=== sucompat.c has real hooks — removing duplicate stubs ==="
+            python3 << 'EOF'
+          import re
+          path = 'drivers/kernelsu/compat_5_4_stubs.c'
+          # Читаем реальные определения из sucompat.c
+          import subprocess, os
+          sucompat = os.path.join(os.path.dirname(path), 'sucompat.c')
+          defined = set()
+          with open(sucompat) as f:
+              for line in f:
+                  m = re.match(r'^(?:static\s+)?(?:\w+\s+)+(\w+)\s*\(', line)
+                  if m:
+                      defined.add(m.group(1))
+          with open(path) as f:
+              content = f.read()
+          # Удаляем строки-стабы для функций которые уже определены в sucompat.c
+          lines = content.splitlines(keepends=True)
+          out = []
+          for line in lines:
+              m = re.search(r'\b(\w+ksu_handle\w*|handle_sepolicy|seccomp_filter_release|ksu_observer_\w+|path_mount)\b', line)
+              if m and m.group(1) in defined:
+                  out.append(f'// REMOVED (defined in sucompat.c): {line}')
+              else:
+                  out.append(line)
+          with open(path, 'w') as f:
+              f.writelines(out)
+          print('Deduped stubs written')
+          EOF
+          fi
+
+          echo "=== Final compat_5_4_stubs.c ==="
+          cat "$KSU_REAL/compat_5_4_stubs.c"
+          echo "=== KSU Makefile tail ==="
+          tail -5 "$KSU_MK"
 
       - name: Setup SuSFS
         run: |
