@@ -1,32 +1,44 @@
-name: Show vfs_read signature
+name: Show KSU Makefile
 
 on:
   workflow_dispatch:
+    inputs:
+      ksu_variant:
+        description: 'KSU variant'
+        required: true
+        default: 'KernelSU'
+        type: choice
+        options: [KernelSU, KernelSU-Next, WildKSU]
 
 jobs:
   show:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Dump vfs_read signature
+      - name: Setup KSU and dump Makefile
         run: |
-          echo "====== fs/read_write.c: vfs_read function ======"
-          grep -n "vfs_read" fs/read_write.c | head -20
-          echo ""
-          echo "====== exact lines around vfs_read definition ======"
-          grep -n "^ssize_t vfs_read\|^EXPORT_SYMBOL\|^{" fs/read_write.c | head -20
-          echo ""
-          echo "====== 10 lines starting from vfs_read ======"
-          grep -n "ssize_t vfs_read" fs/read_write.c | head -5 | while read line; do
-            lineno=$(echo "$line" | cut -d: -f1)
-            sed -n "${lineno},$((lineno+8))p" fs/read_write.c
-            echo "---"
-          done
+          if [ "${{ inputs.ksu_variant }}" = "KernelSU" ]; then
+            curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s main
+          elif [ "${{ inputs.ksu_variant }}" = "KernelSU-Next" ]; then
+            curl -LSs "https://raw.githubusercontent.com/sidex15/KernelSU-Next/legacy-susfs-v2/kernel/setup.sh" | bash -s legacy-susfs-v2
+          elif [ "${{ inputs.ksu_variant }}" = "WildKSU" ]; then
+            curl -LSs "https://raw.githubusercontent.com/WildKernels/Wild_KSU/wild/kernel/setup.sh" | bash -s wild
+          fi
 
-          echo "====== fs/exec.c: pathbuf anchor ======"
-          grep -n "pathbuf" fs/exec.c | head -10
+          KSU_REAL=$(realpath drivers/kernelsu)
+          KSU_MK="$KSU_REAL/Makefile"
 
-          echo "====== fs/open.c: faccessat anchor ======"
-          grep -n "old_cred\|override_cred\|faccessat" fs/open.c | head -15
+          echo "====== drivers/kernelsu/ contents ======"
+          ls -la "$KSU_REAL/"
+
+          echo "====== Full KSU Makefile ======"
+          cat "$KSU_MK"
+
+          echo "====== obj variables ======"
+          grep -E "^[a-z_-]+[-_][ym]" "$KSU_MK" | head -20
+
+          echo "====== sucompat.c ksu_handle presence ======"
+          grep -c "ksu_handle" "$KSU_REAL/sucompat.c" 2>/dev/null || echo "sucompat.c not found"
+          grep "^ksu_handle\|^int ksu_handle\|^static.*ksu_handle" "$KSU_REAL/sucompat.c" 2>/dev/null | head -10 || true
