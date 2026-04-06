@@ -452,7 +452,7 @@ jobs:
 
           echo "=== Fix: LTO stubs — отдельный файл без LTO ==="
           KSU_REAL=$(realpath drivers/kernelsu)
-          KSU_MK="$KSU_REAL/Makefile"
+          KSU_MK="$KSU_REAL/Kbuild"
 
           cat > "$KSU_REAL/compat_5_4_stubs.c" << 'STUBS'
           #include <linux/types.h>
@@ -486,7 +486,7 @@ jobs:
 
           # LTO отключаем для стаб-файла, добавляем в сборку
           echo "CFLAGS_compat_5_4_stubs.o := \$(filter-out -flto%,\$(KBUILD_CFLAGS))" >> "$KSU_MK"
-          echo "${OBJ_VAR} += compat_5_4_stubs.o" >> "$KSU_MK"
+          echo "kernelsu-objs += compat_5_4_stubs.o" >> "$KSU_MK"
 
           # Для KernelSU-Next (sidex15) sucompat.c уже содержит реальные ksu_handle_* —
           # убираем из стаб-файла те функции которые там уже определены
