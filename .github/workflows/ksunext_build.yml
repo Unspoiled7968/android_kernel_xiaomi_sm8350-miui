@@ -73,6 +73,11 @@ jobs:
           # ✅ Ensure build system includes susfs
           grep -q "susfs.o" fs/Makefile || echo "obj-y += susfs.o" >> fs/Makefile
 
+          # fix missing susfs includes
+          sed -i '1i #include <linux/susfs.h>' kernel/kallsyms.c
+          sed -i '1i #include <linux/susfs.h>' fs/proc/task_mmu.c
+          sed -i '1i #include <linux/susfs.h>' fs/notify/fdinfo.c
+
       - name: Apply SuSFS 5.4 Patch
         run: |
           set -e
