@@ -88,51 +88,6 @@ jobs:
           # 6. ФИКС ОШИБКИ seccomp (удаляем filter_count, как было в SukiSU)
           find drivers/kernelsu -type f -name "*.c" -exec sed -i '/filter_count/d' {} +
 
-      - name: Apply Tracepoint Hooks (Smart Python)
-        run: |
-          python3 << 'EOF'
-          import sys, re, os
-
-          def smart_patch(filepath, pattern, replacement):
-              if not os.path.exists(filepath): return
-              with open(filepath, 'r') as f: content = f.read()
-              if 'ksu_trace' in content:
-                  print(f'{filepath}: hook already applied, skipping')
-                  return
-              new_content, n = re.subn(pattern, replacement, content, count=0)
-              if n > 0:
-                  with open(filepath, 'w') as f: f.write(new_content)
-                  print(f'{filepath}: successfully patched ({n} hunks)')
-              else:
-                  print(f'WARNING: Could not find anchor in {filepath}')
-
-          def add_include(filepath, include_path):
-              if not os.path.exists(filepath): return
-              with open(filepath, 'r') as f: content = f.read()
-              if include_path in content: return
-              new_content = re.sub(r'(#include <linux/.*?\.h>\n)', 
-                                   r'\1#if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n#include ' + include_path + '\n#endif\n', 
-                                   content, count=1)
-              with open(filepath, 'w') as f: f.write(new_content)
-
-          # Хуки для Tracepoint (SukiSU/KSU Next)
-          add_include('fs/exec.c', '<../drivers/kernelsu/ksu_trace.h>')
-          smart_patch('fs/exec.c', r'(return do_execveat_common\(AT_FDCWD, filename, argv, envp, 0\);)', 
-                       r'#if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n\ttrace_ksu_trace_execveat_hook((int *)AT_FDCWD, &filename, &argv, &envp, 0);\n#endif\n\t\1')
-
-          add_include('fs/open.c', '<../drivers/kernelsu/ksu_trace.h>')
-          smart_patch('fs/open.c', r'(SYSCALL_DEFINE3\(faccessat, int, dfd, const char __user \*, filename, int, mode\)\n{)',
-                       r'\1\n#if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n\ttrace_ksu_trace_faccessat_hook(&dfd, &filename, &mode, NULL);\n#endif\n')
-
-          add_include('fs/read_write.c', '<../drivers/kernelsu/ksu_trace.h>')
-          smart_patch('fs/read_write.c', r'(SYSCALL_DEFINE3\(read, unsigned int, fd, char __user \*, buf, size_t, count\)\n{)',
-                       r'\1\n#if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n\ttrace_ksu_trace_sys_read_hook(fd, &buf, &count);\n#endif\n')
-
-          add_include('fs/stat.c', '<../drivers/kernelsu/ksu_trace.h>')
-          smart_patch('fs/stat.c', r'(error = vfs_fstatat\(dfd, filename, &stat, flag\);)',
-                       r'#if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n\ttrace_ksu_trace_stat_hook(&dfd, &filename, &flag);\n#endif\n\t\1')
-          EOF
-
       - name: Setup SuSFS for KSU Next
         run: |
           set -e
@@ -178,25 +133,22 @@ jobs:
           set -e
           DEVICE="${{ inputs.device_name || 'star' }}"
           DEFCONFIG=$(find arch/arm64/configs -name "*${DEVICE}*defconfig" | head -n 1)
+
+          echo "CONFIG_KSU=y" >> "$DEFCONFIG"
+          echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG"
+          echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG"
           
-          echo "=== Updating Defconfig: $DEFCONFIG ==="
-          for FLAG in \
-            "CONFIG_KSU=y" \
-            "CONFIG_KSU_NEXT=y" \
-            "CONFIG_KSU_TRACEPOINT_HOOK=y" \
-            "CONFIG_KSU_SUSFS=y" \
-            "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" \
-            "CONFIG_KSU_SUSFS_SUS_MOUNT=y" \
-            "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" \
-            "CONFIG_KSU_SUSFS_ENABLE_LOG=y" \
-            "CONFIG_KPM=y" \
-            "CONFIG_KALLSYMS=y" \
-            "CONFIG_KALLSYMS_ALL=y"; do
-            KEY=$(echo "$FLAG" | cut -d= -f1)
-            sed -i "/^# $KEY is not set/d" "$DEFCONFIG"
-            sed -i "/^$KEY=/d" "$DEFCONFIG"
-            echo "$FLAG" >> "$DEFCONFIG"
-          done
+          echo "📦 启用 SUSFS 功能..."
+          echo "CONFIG_KSU_SUSFS=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_SUS_MAP=y" >> ./common/arch/arm64/configs/gki_defconfig
 
       - name: Build Project
         run: |
