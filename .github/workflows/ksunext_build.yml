@@ -1,4 +1,4 @@
-name: Build KernelSU Next + SuSFS (Tracepoint)
+name: Build KernelSU Next + SuSFS
 
 on:
   workflow_dispatch:
@@ -51,16 +51,19 @@ jobs:
           patch -p1 --forward --batch < "$ALTMAN_DIR/hyper_susfs_157_fixed.patch" || true
           patch -p1 --forward --batch < "$ALTMAN_DIR/hyper_susfs_remove_all_sus_su.patch" || true
 
-      - name: Integrate KernelSU Next
+      - name: "⚡ Setup KernelSU Next | 配置 KernelSU Next"
         run: |
-          set -e
-          echo "=== Setting up KernelSU Next ==="
-          # Качаем скрипт и запускаем для ветки next
-          curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s next
-          
-          # Прописка в драйверы
-          grep -q "kernelsu" drivers/Makefile || echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
-          grep -q "kernelsu" drivers/Kconfig || sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          cd kernel_workspace/kernel_platform
+          # 下载并执行设置脚本
+          echo "🛠️ 正在设置KernelSU Next..."
+          curl -LSs "https://raw.githubusercontent.com/pershoot/KernelSU-Next/dev-susfs/kernel/setup.sh" | bash -s dev-susfs
+
+          cd KernelSU-Next
+          KSU_VERSION=$(expr $(curl -sI "https://api.github.com/repos/KernelSU-Next/KernelSU-Next/commits?sha=dev&per_page=1" | grep -i "link:" | sed -n 's/.*page=\([0-9]*\)>; rel="last".*/\1/p') "+" 30000)
+          echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
+          sed -i "s/DKSU_VERSION=11998/DKSU_VERSION=${KSU_VERSION}/" kernel/Makefile
+
+          echo "✅ KernelSU Next 配置完成"
 
       - name: Kernel 5.4 & KSU Next Compatibility Fixes
         run: |
