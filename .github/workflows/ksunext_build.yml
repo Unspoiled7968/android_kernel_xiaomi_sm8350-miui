@@ -43,14 +43,18 @@ jobs:
           set -e
           echo "=== Setting up KernelSU Next (legacy-susfs-v2) ==="
       
-          # clone correct branch
+          KERNEL_REPO="$(pwd)"
+      
+          # clone
           git clone --depth=1 -b legacy-susfs-v2 https://github.com/sidex15/KernelSU-Next.git KernelSU-Next
       
-          # run setup script (THIS does everything correctly)
-          cd KernelSU-Next/kernel
-          bash setup.sh
+          # ✅ run setup.sh FROM kernel root
+          bash KernelSU-Next/kernel/setup.sh "$KERNEL_REPO"
       
-          echo "✅ KernelSU Next integrated via setup.sh"
+          # ✅ fix pgtable after setup
+          sed -i '/pgtable.h/c\#include <asm/pgtable.h>' drivers/kernelsu/feature/sucompat.c
+      
+          echo "✅ KernelSU Next integrated + pgtable fixed"
 
       - name: Setup SuSFS for KSU Next
         run: |
