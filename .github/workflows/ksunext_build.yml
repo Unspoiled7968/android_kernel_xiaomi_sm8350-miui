@@ -95,31 +95,6 @@ jobs:
       
           patch -p1 --forward --batch < "$PATCH_FILE" || echo "Patch already applied or partially applied"
 
-      - name: Setup SuSFS for KSU Next
-        run: |
-          set -e
-          echo "=== Setting up SuSFS 1.5.7 ==="
-          git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 ../susfs4ksu
-          SUSFS_DIR="$(pwd)/../susfs4ksu"
-          
-          # Копируем заголовочные файлы и сурс
-          cp -v "$SUSFS_DIR/kernel_patches/fs/susfs.c" fs/
-          cp -v "$SUSFS_DIR/kernel_patches/include/linux/susfs.h" include/linux/
-          cp -v "$SUSFS_DIR/kernel_patches/include/linux/susfs_def.h" include/linux/
-          
-          # Патчим KernelSU Next для поддержки SuSFS
-          KSU_PATCH="$SUSFS_DIR/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
-          if [ -f "$KSU_PATCH" ]; then
-             cp -v "$KSU_PATCH" drivers/kernelsu/
-             cd drivers/kernelsu && patch -p1 < 10_enable_susfs_for_ksu.patch || echo "Patch already applied"
-             cd ../..
-          else
-             echo "CRITICAL: Patch 10_enable_susfs_for_ksu.patch not found!"
-             exit 1
-          fi
-
-          grep -q "susfs.o" fs/Makefile || echo "obj-y += susfs.o" >> fs/Makefile
-
       - name: Append Defconfig Flags
         run: |
           set -e
