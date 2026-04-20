@@ -46,7 +46,7 @@ jobs:
           KERNEL_REPO="$(pwd)"
       
           # clone
-          git clone --depth=1 -b legacy-susfs-v2 https://github.com/sidex15/KernelSU-Next.git KernelSU-Next
+          git clone --depth=1 -b legacy_susfs https://github.com/KernelSU-Next/KernelSU-Next.git KernelSU-Next
       
           # ✅ run setup.sh FROM kernel root
           bash KernelSU-Next/kernel/setup.sh "$KERNEL_REPO"
