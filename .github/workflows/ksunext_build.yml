@@ -53,32 +53,6 @@ jobs:
         
           echo "✅ KernelSU 配置完成"
 
-      - name: Kernel 5.4 & KSU Next Compatibility Fixes
-        run: |
-          set -e
-          echo "=== Fixing KSU Next for Kernel 5.4 ==="
-          
-          # 1. Замена pgtable.h для старых ядер
-          find drivers/kernelsu -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's|#include <linux/pgtable.h>|#include <asm/pgtable.h>|g' {} + || true
-          
-          # 2. Бэкпорт функций копирования
-          find drivers/kernelsu -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's/strncpy_from_user_nofault/strncpy_from_user/g' {} + || true
-          
-          # 3. Фикс TWA_RESUME (специфично для Non-GKI 5.4)
-          [ -f drivers/kernelsu/allowlist.c ] && sed -i 's/TWA_RESUME/true/g' drivers/kernelsu/allowlist.c || true
-          
-          # 4. Отключение module_exit для встроенного ядра
-          find drivers/kernelsu -type f -name "*.c" -exec sed -i 's/module_exit(ksu_kernelsu_exit);/\/\/module_exit(ksu_kernelsu_exit);/g' {} +
-
-          # 5. ФИКС ОШИБКИ put_task_struct (Добавляем нужные заголовочные файлы)
-          if [ -f drivers/kernelsu/allowlist.c ]; then
-            sed -i '1i #include <linux/sched/task.h>' drivers/kernelsu/allowlist.c
-            sed -i '1i #include <linux/sched.h>' drivers/kernelsu/allowlist.c
-          fi
-          
-          # 6. ФИКС ОШИБКИ seccomp (удаляем filter_count, как было в SukiSU)
-          find drivers/kernelsu -type f -name "*.c" -exec sed -i '/filter_count/d' {} +
-
       - name: Apply SuSFS 5.4 Patch
         run: |
           set -e
@@ -94,6 +68,25 @@ jobs:
           fi
       
           patch -p1 --forward --batch < "$PATCH_FILE" || echo "Patch already applied or partially applied"
+
+      - name: Setup SuSFS for KSU Next
+        run: |
+          set -e
+          echo "=== Setting up SuSFS 1.5.7 ==="
+          
+          KERNEL_REPO="$(pwd)"
+          
+          git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 ../susfs4ksu
+          SUSFS_DIR="$KERNEL_REPO/../susfs4ksu"
+          
+          cd "$KERNEL_REPO"
+          
+          # ✅ Patch 1: KernelSU integration patch
+          echo "📦 Applying KernelSU SuSFS patch..."
+          patch -p1 --forward --batch < "$SUSFS_DIR/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || echo "Already applied"
+          
+          # ✅ Ensure build system includes susfs
+          grep -q "susfs.o" fs/Makefile || echo "obj-y += susfs.o" >> fs/Makefile
 
       - name: Append Defconfig Flags
         run: |
