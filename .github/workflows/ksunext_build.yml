@@ -38,18 +38,24 @@ jobs:
             libssl-dev ccache libncurses5-dev libncursesw5-dev cmake \
             python3 python-is-python3 cpio curl patch rsync
 
-      - name: "⚡ Setup KernelSU Next | 配置 KernelSU Next"
+      - name: "⚡ Setup KernelSU Next (legacy-susfs-v2)"
         run: |
-          # 下载并执行设置脚本
-          echo "🛠️ 正在设置KernelSU Next..."
-          curl -LSs "https://raw.githubusercontent.com/pershoot/KernelSU-Next/dev-susfs/kernel/setup.sh" | bash -s legacy_susfs
-
-          cd KernelSU-Next
-          KSU_VERSION=$(expr $(curl -sI "https://api.github.com/repos/KernelSU-Next/KernelSU-Next/commits?sha=dev&per_page=1" | grep -i "link:" | sed -n 's/.*page=\([0-9]*\)>; rel="last".*/\1/p') "+" 30000)
-          echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
-          sed -i "s/DKSU_VERSION=11998/DKSU_VERSION=${KSU_VERSION}/" kernel/Makefile
-
-          echo "✅ KernelSU Next 配置完成"
+          set -e
+          echo "=== Setting up KernelSU Next (legacy-susfs-v2) ==="
+      
+          KERNEL_REPO="$(pwd)"
+      
+          # ✅ clone correct branch into correct folder
+          git clone --depth=1 -b legacy-susfs-v2 https://github.com/sidex15/KernelSU-Next.git KernelSU-Next
+      
+          # ✅ inject into kernel source
+          cp -r KernelSU-Next/kernel/* "$KERNEL_REPO/"
+      
+          # ✅ hook build system
+          grep -q "kernelsu" fs/Makefile || echo "obj-y += kernelsu/" >> fs/Makefile
+          grep -q "kernelsu/Kconfig" fs/Kconfig || echo 'source "fs/kernelsu/Kconfig"' >> fs/Kconfig
+      
+          echo "✅ KernelSU Next (legacy-susfs-v2) integrated"
 
       - name: Setup SuSFS for KSU Next
         run: |
