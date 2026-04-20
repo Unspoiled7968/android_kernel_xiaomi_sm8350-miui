@@ -53,6 +53,23 @@ jobs:
         
           echo "✅ KernelSU 配置完成"
 
+      - name: Setup SuSFS for KSU Next
+        run: |
+          set -e
+          echo "=== Setting up SuSFS 2.1.0 ==="
+          
+          KERNEL_REPO="$(pwd)"
+          
+          git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 ../susfs4ksu
+          SUSFS_DIR="$KERNEL_REPO/../susfs4ksu"
+          
+          cd "$KERNEL_REPO"
+          cp ./kernel_patches/fs/* "$KERNEL_REPO/fs/"
+          cp ./kernel_patches/include/linux/* "$KERNEL_REPO/include/linux/"
+          
+          # ✅ Ensure build system includes susfs
+          grep -q "susfs.o" fs/Makefile || echo "obj-y += susfs.o" >> fs/Makefile
+
       - name: Apply SuSFS 5.4 Patch
         run: |
           set -e
@@ -68,25 +85,6 @@ jobs:
           fi
       
           patch -p1 --forward --batch < "$PATCH_FILE" || echo "Patch already applied or partially applied"
-
-      - name: Setup SuSFS for KSU Next
-        run: |
-          set -e
-          echo "=== Setting up SuSFS 1.5.7 ==="
-          
-          KERNEL_REPO="$(pwd)"
-          
-          git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 ../susfs4ksu
-          SUSFS_DIR="$KERNEL_REPO/../susfs4ksu"
-          
-          cd "$KERNEL_REPO"
-          
-          # ✅ Patch 1: KernelSU integration patch
-          echo "📦 Applying KernelSU SuSFS patch..."
-          patch -p1 --forward --batch < "$SUSFS_DIR/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || echo "Already applied"
-          
-          # ✅ Ensure build system includes susfs
-          grep -q "susfs.o" fs/Makefile || echo "obj-y += susfs.o" >> fs/Makefile
 
       - name: Append Defconfig Flags
         run: |
