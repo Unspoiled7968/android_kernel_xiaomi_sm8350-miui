@@ -38,31 +38,20 @@ jobs:
             libssl-dev ccache libncurses5-dev libncursesw5-dev cmake \
             python3 python-is-python3 cpio curl patch rsync
 
-      - name: Apply Specialized MIUI Patches (JackA1ltman)
+      - name: ⚡ Setup KernelSU | 配置 KernelSU
         run: |
-          set -e
-          echo "=== Cloning Specialized Patches for star ==="
-          git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Patches.git -b mi_kernel ../altman_patches
-          ALTMAN_DIR="$(pwd)/../altman_patches/mi11u_hyperos"
+          echo "🛠️ 正在设置KernelSU..."
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/refs/heads/main/kernel/setup.sh" | bash -s main
 
-          echo "Applying HyperOS specialized patches..."
-          # Используем || true, так как Python-скрипт ниже подстрахует, если патч не ляжет
-          patch -p1 --forward --batch < "$ALTMAN_DIR/hyperos_a14_fixed.patch" || true
-          patch -p1 --forward --batch < "$ALTMAN_DIR/hyper_susfs_157_fixed.patch" || true
-          patch -p1 --forward --batch < "$ALTMAN_DIR/hyper_susfs_remove_all_sus_su.patch" || true
+          cd KernelSU
 
-      - name: "⚡ Setup KernelSU Next | 配置 KernelSU Next"
-        run: |
-          # 下载并执行设置脚本
-          echo "🛠️ 正在设置KernelSU Next..."
-          curl -LSs "https://raw.githubusercontent.com/pershoot/KernelSU-Next/dev-susfs/kernel/setup.sh" | bash -s legacy_susfs
+          KSU_VERSION=$(expr $(curl -sI "https://api.github.com/repos/tiann/KernelSU/commits?sha=main&per_page=1" | grep -i "link:" | sed -n 's/.*page=\([0-9]*\)>; rel="last".*/\1/p') "+" 30000)
 
-          cd KernelSU-Next
-          KSU_VERSION=$(expr $(curl -sI "https://api.github.com/repos/KernelSU-Next/KernelSU-Next/commits?sha=dev&per_page=1" | grep -i "link:" | sed -n 's/.*page=\([0-9]*\)>; rel="last".*/\1/p') "+" 30000)
           echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
-          sed -i "s/DKSU_VERSION=11998/DKSU_VERSION=${KSU_VERSION}/" kernel/Makefile
 
-          echo "✅ KernelSU Next 配置完成"
+          sed -i "s/DKSU_VERSION=16/DKSU_VERSION=${KSU_VERSION}/" kernel/Kbuild
+        
+          echo "✅ KernelSU 配置完成"
 
       - name: Kernel 5.4 & KSU Next Compatibility Fixes
         run: |
@@ -90,6 +79,22 @@ jobs:
           # 6. ФИКС ОШИБКИ seccomp (удаляем filter_count, как было в SukiSU)
           find drivers/kernelsu -type f -name "*.c" -exec sed -i '/filter_count/d' {} +
 
+      - name: Apply SuSFS 5.4 Patch
+        run: |
+          set -e
+          echo "=== Applying SuSFS patch ==="
+      
+          git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git ../susfs_patch_repo
+      
+          PATCH_FILE="../susfs_patch_repo/Patches/Patch/susfs_patch_to_5.4.patch"
+      
+          if [ ! -f "$PATCH_FILE" ]; then
+            echo "❌ Patch not found!"
+            exit 1
+          fi
+      
+          patch -p1 --forward --batch < "$PATCH_FILE" || echo "Patch already applied or partially applied"
+
       - name: Setup SuSFS for KSU Next
         run: |
           set -e
@@ -114,21 +119,6 @@ jobs:
           fi
 
           grep -q "susfs.o" fs/Makefile || echo "obj-y += susfs.o" >> fs/Makefile
-
-      - name: Final MIUI & SuSFS Fixes
-        run: |
-          set -e
-          echo "=== Finalizing MIUI/SuSFS integration ==="
-          # Резервная копия ID монтирования (нужно для SuSFS)
-          grep -q "susfs_mnt_id_backup" include/linux/mount.h || sed -i '/int mnt_flags;/a \ \ \ \ u64 susfs_mnt_id_backup;' include/linux/mount.h
-          
-          # Пре-декларация kstat (фикс ошибок компиляции)
-          [ -f include/linux/susfs.h ] && grep -q "^struct kstat;" include/linux/susfs.h || sed -i '1s/^/struct kstat;\n/' include/linux/susfs.h || true
-          
-          # Инъекция инклудов в системные файлы
-          for f in fs/proc/task_mmu.c fs/proc/fd.c; do
-            [ -f $f ] && (grep -q "linux/susfs.h" $f || sed -i '1i #include <linux/susfs.h>' $f)
-          done
 
       - name: Append Defconfig Flags
         run: |
