@@ -73,7 +73,7 @@ jobs:
 
           grep -q "susfs.o" fs/Makefile || echo 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' >> fs/Makefile
 
-          # Fix .handle_inode_event -> .handle_event
+          # Fix fsnotify API: .handle_inode_event -> .handle_event
           sed -i 's/\.handle_inode_event = susfs_handle_sdcard_inode_event,/.handle_event = susfs_handle_sdcard_inode_event,/' fs/susfs.c
 
           # Rewrite function signature to match 5.4 handle_event prototype (multiline safe)
@@ -108,18 +108,18 @@ jobs:
           patch -p1 --forward --batch < "$PATCH_FILE" || echo "⚠️ Patch partially applied"
           echo "✅ JackA1ltman susfs 5.4 patch applied"
 
+          # Dedup susfs_add_try_umount AFTER patch (patch may have added a second copy)
+          awk '
+          /static inline int susfs_add_try_umount/ { count++; if (count > 1) { skip=1; next } }
+          skip && /^}/ { skip=0; next }
+          skip { next }
+          { print }
+          ' include/linux/susfs.h > include/linux/susfs.h.tmp && mv include/linux/susfs.h.tmp include/linux/susfs.h
+          echo "✅ susfs.h deduped"
+
           # supercall.c
           grep -q "susfs.h" drivers/kernelsu/supercall/supercall.c || \
             sed -i '1s/^/#include <linux\/susfs.h>\n/' drivers/kernelsu/supercall/supercall.c
-
-          # susfs_add_try_umount stub if missing
-          if ! grep -q "susfs_add_try_umount" include/linux/susfs.h; then
-            echo "⚠️ Injecting susfs_add_try_umount stub"
-            sed -i '/^#endif/i static inline int susfs_add_try_umount(void *arg) { return 0; }' \
-              include/linux/susfs.h
-          else
-            echo "✅ susfs_add_try_umount found in susfs.h"
-          fi
 
           # fs/open.c
           grep -q "susfs.h" fs/open.c || \
