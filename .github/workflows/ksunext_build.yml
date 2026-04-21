@@ -76,19 +76,12 @@ jobs:
           # Fix fsnotify API: .handle_inode_event -> .handle_event
           sed -i 's/\.handle_inode_event = susfs_handle_sdcard_inode_event,/.handle_event = susfs_handle_sdcard_inode_event,/' fs/susfs.c
 
-          # Rewrite function signature to match 5.4 handle_event prototype (multiline safe)
-          awk '
-          /static int susfs_handle_sdcard_inode_event\(struct fsnotify_mark/ {
-            skip=1
-            print "static int susfs_handle_sdcard_inode_event(struct fsnotify_group *group,"
-            print "\tstruct inode *inode, u32 mask, const void *data, int data_type,"
-            print "\tconst struct qstr *file_name, u32 cookie, struct fsnotify_iter_info *iter_info)"
-            next
-          }
-          skip && /^\)/ { skip=0; next }
-          skip { next }
-          { print }
-          ' fs/susfs.c > fs/susfs.c.tmp && mv fs/susfs.c.tmp fs/susfs.c
+          # Rewrite function signature to match 5.4 handle_event prototype
+          # Use a range delete + insert approach: remove old sig lines, insert new one before the {
+          perl -i -0pe '
+            s/static int susfs_handle_sdcard_inode_event\s*\([^)]*\bfsnotify_mark\b[^{]*\)/static int susfs_handle_sdcard_inode_event(struct fsnotify_group *group,\n\tstruct inode *inode, u32 mask, const void *data, int data_type,\n\tconst struct qstr *file_name, u32 cookie, struct fsnotify_iter_info *iter_info)/s
+          ' fs/susfs.c
+          echo "✅ fsnotify fix applied"
 
           echo "✅ SuSFS v2.x headers + source copied + fsnotify patched"
 
