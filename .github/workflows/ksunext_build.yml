@@ -92,6 +92,26 @@ jobs:
           patch -p1 --forward --batch < "$PATCH_FILE" || echo "⚠️ Patch partially applied"
           echo "✅ JackA1ltman susfs 5.4 patch applied"
 
+          # supercall.c
+          grep -q "susfs.h" drivers/kernelsu/supercall/supercall.c || \
+            sed -i '1i #include <linux/susfs.h>' drivers/kernelsu/supercall/supercall.c
+
+          # fs/open.c
+          grep -q "susfs.h" fs/open.c || \
+            sed -i '/#include <linux\/fs.h>/a #include <linux\/susfs.h>' fs/open.c
+
+          # kernel/kallsyms.c
+          grep -q "susfs.h" kernel/kallsyms.c || \
+            sed -i '/#include <linux\/seq_file.h>/a #include <linux\/susfs.h>' kernel/kallsyms.c
+
+          # fs/notify/fdinfo.c
+          grep -q "susfs.h" fs/notify/fdinfo.c || \
+            sed -i '/#include <linux\/fs.h>/a #include <linux\/susfs.h>' fs/notify/fdinfo.c
+
+          # drivers/kernelsu/hook/setuid_hook.c
+          grep -q "susfs.h" drivers/kernelsu/hook/setuid_hook.c || \
+            sed -i '/#include <linux\/uidgid.h>/a #include <linux\/susfs.h>' drivers/kernelsu/hook/setuid_hook.c
+
       - name: Append Defconfig Flags
         run: |
           set -e
@@ -128,7 +148,9 @@ jobs:
           echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> "$DEFCONFIG"
           echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> "$DEFCONFIG"
           echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> "$DEFCONFIG"
-          echo "CONFIG_KSU_SUSFS_SUS_MAP=y" >> "$DEFCONFIG"
+          # CONFIG_KSU_SUSFS_SUS_MAP убран — не существует в v2.x
+          echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y" >> "$DEFCONFIG"
+          echo "CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y" >> "$DEFCONFIG"
 
       - name: Build Project
         run: |
