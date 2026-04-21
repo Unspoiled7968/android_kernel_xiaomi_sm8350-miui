@@ -57,48 +57,69 @@ jobs:
         run: |
           set -e
           KERNEL_REPO="$(pwd)"
-      
-          # gki-android12-5.10 — актуальная ветка с v2.x API (susfs_def.h, susfs_fake_qstr_name и т.д.)
+
           git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git \
             -b gki-android12-5.10 ../susfs4ksu
           SUSFS_DIR="$KERNEL_REPO/../susfs4ksu"
-      
+
           cd "$KERNEL_REPO"
-      
-          # Копируем только исходники — НЕ патч simonpunk, патч будет от JackA1ltman
+
           cp "$SUSFS_DIR/kernel_patches/fs/susfs.c" "$KERNEL_REPO/fs/"
           cp "$SUSFS_DIR/kernel_patches/include/linux/susfs.h" "$KERNEL_REPO/include/linux/"
           cp "$SUSFS_DIR/kernel_patches/include/linux/susfs_def.h" "$KERNEL_REPO/include/linux/"
 
-          # susfs_def.h использует current_uid() но не включает cred.h — фикс для 5.4
           grep -q "linux/cred.h" "$KERNEL_REPO/include/linux/susfs_def.h" || \
-            sed -i '1i #include <linux/cred.h>' "$KERNEL_REPO/include/linux/susfs_def.h"
-      
-          # fs/Makefile — патч JackA1ltman уже добавляет obj-$(CONFIG_KSU_SUSFS) += susfs.o
-          # на всякий случай fallback:
+            sed -i '1s/^/#include <linux\/cred.h>\n/' "$KERNEL_REPO/include/linux/susfs_def.h"
+
           grep -q "susfs.o" fs/Makefile || echo 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' >> fs/Makefile
-      
-          echo "✅ SuSFS v2.x headers + source copied"
+
+          # Fix .handle_inode_event -> .handle_event
+          sed -i 's/\.handle_inode_event = susfs_handle_sdcard_inode_event,/.handle_event = susfs_handle_sdcard_inode_event,/' fs/susfs.c
+
+          # Rewrite function signature to match 5.4 handle_event prototype (multiline safe)
+          awk '
+          /static int susfs_handle_sdcard_inode_event\(struct fsnotify_mark/ {
+            skip=1
+            print "static int susfs_handle_sdcard_inode_event(struct fsnotify_group *group,"
+            print "\tstruct inode *inode, u32 mask, const void *data, int data_type,"
+            print "\tconst struct qstr *file_name, u32 cookie, struct fsnotify_iter_info *iter_info)"
+            next
+          }
+          skip && /^\)/ { skip=0; next }
+          skip { next }
+          { print }
+          ' fs/susfs.c > fs/susfs.c.tmp && mv fs/susfs.c.tmp fs/susfs.c
+
+          echo "✅ SuSFS v2.x headers + source copied + fsnotify patched"
 
       - name: Apply SuSFS 5.4 Patch (JackA1ltman)
         run: |
           set -e
           git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git ../jacka_repo
-      
+
           PATCH_FILE="../jacka_repo/Patches/Patch/susfs_patch_to_5.4.patch"
-      
+
           if [ ! -f "$PATCH_FILE" ]; then
             echo "❌ Patch not found, available:"
             ls ../jacka_repo/Patches/Patch/ || true
             exit 1
           fi
-      
+
           patch -p1 --forward --batch < "$PATCH_FILE" || echo "⚠️ Patch partially applied"
           echo "✅ JackA1ltman susfs 5.4 patch applied"
 
           # supercall.c
           grep -q "susfs.h" drivers/kernelsu/supercall/supercall.c || \
-            sed -i '1i #include <linux/susfs.h>' drivers/kernelsu/supercall/supercall.c
+            sed -i '1s/^/#include <linux\/susfs.h>\n/' drivers/kernelsu/supercall/supercall.c
+
+          # susfs_add_try_umount stub if missing
+          if ! grep -q "susfs_add_try_umount" include/linux/susfs.h; then
+            echo "⚠️ Injecting susfs_add_try_umount stub"
+            sed -i '/^#endif/i static inline int susfs_add_try_umount(void *arg) { return 0; }' \
+              include/linux/susfs.h
+          else
+            echo "✅ susfs_add_try_umount found in susfs.h"
+          fi
 
           # fs/open.c
           grep -q "susfs.h" fs/open.c || \
@@ -110,7 +131,7 @@ jobs:
 
           # fs/notify/fdinfo.c
           grep -q "susfs.h" fs/notify/fdinfo.c || \
-            sed -i '1i #include <linux/cred.h>\n#include <linux/susfs.h>' fs/notify/fdinfo.c
+            sed -i '1s/^/#include <linux\/cred.h>\n#include <linux\/susfs.h>\n/' fs/notify/fdinfo.c
 
           # drivers/kernelsu/hook/setuid_hook.c
           grep -q "susfs.h" drivers/kernelsu/hook/setuid_hook.c || \
