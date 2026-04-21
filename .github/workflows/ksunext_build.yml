@@ -58,48 +58,39 @@ jobs:
           set -e
           KERNEL_REPO="$(pwd)"
       
-          git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 ../susfs4ksu
+          # gki-android12-5.10 — актуальная ветка с v2.x API (susfs_def.h, susfs_fake_qstr_name и т.д.)
+          git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git \
+            -b gki-android12-5.10 ../susfs4ksu
           SUSFS_DIR="$KERNEL_REPO/../susfs4ksu"
       
           cd "$KERNEL_REPO"
       
-          # Копируем только исходники (susfs.c, susfs.h) - патч трогать не будем дважды
+          # Копируем только исходники — НЕ патч simonpunk, патч будет от JackA1ltman
           cp "$SUSFS_DIR/kernel_patches/fs/susfs.c" "$KERNEL_REPO/fs/"
           cp "$SUSFS_DIR/kernel_patches/include/linux/susfs.h" "$KERNEL_REPO/include/linux/"
+          cp "$SUSFS_DIR/kernel_patches/include/linux/susfs_def.h" "$KERNEL_REPO/include/linux/"
       
-          grep -q "susfs.o" fs/Makefile || echo "obj-y += susfs.o" >> fs/Makefile
+          # fs/Makefile — патч JackA1ltman уже добавляет obj-$(CONFIG_KSU_SUSFS) += susfs.o
+          # на всякий случай fallback:
+          grep -q "susfs.o" fs/Makefile || echo 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' >> fs/Makefile
+      
+          echo "✅ SuSFS v2.x headers + source copied"
 
       - name: Apply SuSFS 5.4 Patch (JackA1ltman)
         run: |
           set -e
-          KERNEL_REPO="$(pwd)"
-      
           git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git ../jacka_repo
       
           PATCH_FILE="../jacka_repo/Patches/Patch/susfs_patch_to_5.4.patch"
       
           if [ ! -f "$PATCH_FILE" ]; then
-            echo "❌ Patch not found, listing available patches:"
+            echo "❌ Patch not found, available:"
             ls ../jacka_repo/Patches/Patch/ || true
             exit 1
           fi
       
-          echo "Applying: $PATCH_FILE"
-          patch -p1 --forward --batch < "$PATCH_FILE" || echo "⚠️ Patch partially applied or already applied"
-      
-          # Добавляем include ПОСЛЕ патча, чтобы не было конфликтов
-          grep -q "susfs.h" kernel/kallsyms.c || \
-            sed -i '/#include <linux\/seq_file.h>/a #include <linux\/susfs.h>' kernel/kallsyms.c
-      
-          grep -q "susfs.h" fs/notify/fdinfo.c || \
-            sed -i '/#include <linux\/fs.h>/a #include <linux\/susfs.h>' fs/notify/fdinfo.c
-      
-          grep -q "susfs.h" drivers/kernelsu/hook/setuid_hook.c || \
-            sed -i '/#include <linux\/uidgid.h>/a #include <linux\/susfs.h>' drivers/kernelsu/hook/setuid_hook.c
-      
-          # DEFAULT_KSU_MNT_ID fallback
-          grep -q "DEFAULT_KSU_MNT_ID" fs/notify/fdinfo.c || \
-            sed -i '1i #ifndef DEFAULT_KSU_MNT_ID\n#define DEFAULT_KSU_MNT_ID 0\n#endif' fs/notify/fdinfo.c
+          patch -p1 --forward --batch < "$PATCH_FILE" || echo "⚠️ Patch partially applied"
+          echo "✅ JackA1ltman susfs 5.4 patch applied"
 
       - name: Append Defconfig Flags
         run: |
