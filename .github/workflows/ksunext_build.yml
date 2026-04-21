@@ -56,46 +56,50 @@ jobs:
       - name: Setup SuSFS for KSU Next
         run: |
           set -e
-          echo "=== Setting up SuSFS 2.1.0 ==="
-          
           KERNEL_REPO="$(pwd)"
-          
+      
           git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 ../susfs4ksu
           SUSFS_DIR="$KERNEL_REPO/../susfs4ksu"
-          
+      
           cd "$KERNEL_REPO"
-          cp "$SUSFS_DIR/kernel_patches/fs/"* "$KERNEL_REPO/fs/"
-          cp "$SUSFS_DIR/kernel_patches/include/linux/"* "$KERNEL_REPO/include/linux/"
-          
-          # ✅ Ensure build system includes susfs
+      
+          # Копируем только исходники (susfs.c, susfs.h) - патч трогать не будем дважды
+          cp "$SUSFS_DIR/kernel_patches/fs/susfs.c" "$KERNEL_REPO/fs/"
+          cp "$SUSFS_DIR/kernel_patches/include/linux/susfs.h" "$KERNEL_REPO/include/linux/"
+      
           grep -q "susfs.o" fs/Makefile || echo "obj-y += susfs.o" >> fs/Makefile
 
-          # ✅ Smarter header includes (appended AFTER core headers to fix implicit declarations)
-          sed -i '/#include <linux\/sched.h>/a #include <linux\/susfs.h>' kernel/kallsyms.c || sed -i '1i #include <linux/susfs.h>' kernel/kallsyms.c
-          sed -i '/#include <linux\/sched.h>/a #include <linux\/susfs.h>' fs/proc/task_mmu.c || sed -i '1i #include <linux/susfs.h>' fs/proc/task_mmu.c
-          sed -i '/#include <linux\/fs.h>/a #include <linux\/susfs.h>' fs/notify/fdinfo.c || sed -i '1i #include <linux/susfs.h>' fs/notify/fdinfo.c
-
-          # ✅ Fix KernelSU-Next missing the SuSFS include in setuid_hook.c
-          sed -i '/#include <linux\/uidgid.h>/a #include <linux\/susfs.h>' drivers/kernelsu/hook/setuid_hook.c
-
-          # ✅ Fallback definition for DEFAULT_KSU_MNT_ID to fix undeclared identifier error
-          sed -i '1i #ifndef DEFAULT_KSU_MNT_ID\n#define DEFAULT_KSU_MNT_ID 0\n#endif' fs/notify/fdinfo.c
-
-      - name: Apply SuSFS 5.4 Patch
+      - name: Apply SuSFS 5.4 Patch (JackA1ltman)
         run: |
           set -e
-          echo "=== Applying SuSFS patch ==="
+          KERNEL_REPO="$(pwd)"
       
-          git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git ../susfs_patch_repo
+          git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git ../jacka_repo
       
-          PATCH_FILE="../susfs_patch_repo/Patches/Patch/susfs_patch_to_5.4.patch"
+          PATCH_FILE="../jacka_repo/Patches/Patch/susfs_patch_to_5.4.patch"
       
           if [ ! -f "$PATCH_FILE" ]; then
-            echo "❌ Patch not found!"
+            echo "❌ Patch not found, listing available patches:"
+            ls ../jacka_repo/Patches/Patch/ || true
             exit 1
           fi
       
-          patch -p1 --forward --batch < "$PATCH_FILE" || echo "Patch already applied or partially applied"
+          echo "Applying: $PATCH_FILE"
+          patch -p1 --forward --batch < "$PATCH_FILE" || echo "⚠️ Patch partially applied or already applied"
+      
+          # Добавляем include ПОСЛЕ патча, чтобы не было конфликтов
+          grep -q "susfs.h" kernel/kallsyms.c || \
+            sed -i '/#include <linux\/seq_file.h>/a #include <linux\/susfs.h>' kernel/kallsyms.c
+      
+          grep -q "susfs.h" fs/notify/fdinfo.c || \
+            sed -i '/#include <linux\/fs.h>/a #include <linux\/susfs.h>' fs/notify/fdinfo.c
+      
+          grep -q "susfs.h" drivers/kernelsu/hook/setuid_hook.c || \
+            sed -i '/#include <linux\/uidgid.h>/a #include <linux\/susfs.h>' drivers/kernelsu/hook/setuid_hook.c
+      
+          # DEFAULT_KSU_MNT_ID fallback
+          grep -q "DEFAULT_KSU_MNT_ID" fs/notify/fdinfo.c || \
+            sed -i '1i #ifndef DEFAULT_KSU_MNT_ID\n#define DEFAULT_KSU_MNT_ID 0\n#endif' fs/notify/fdinfo.c
 
       - name: Append Defconfig Flags
         run: |
