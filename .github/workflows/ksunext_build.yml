@@ -69,6 +69,10 @@ jobs:
           cp "$SUSFS_DIR/kernel_patches/fs/susfs.c" "$KERNEL_REPO/fs/"
           cp "$SUSFS_DIR/kernel_patches/include/linux/susfs.h" "$KERNEL_REPO/include/linux/"
           cp "$SUSFS_DIR/kernel_patches/include/linux/susfs_def.h" "$KERNEL_REPO/include/linux/"
+
+          # susfs_def.h использует current_uid() но не включает cred.h — фикс для 5.4
+          grep -q "linux/cred.h" "$KERNEL_REPO/include/linux/susfs_def.h" || \
+            sed -i '1i #include <linux/cred.h>' "$KERNEL_REPO/include/linux/susfs_def.h"
       
           # fs/Makefile — патч JackA1ltman уже добавляет obj-$(CONFIG_KSU_SUSFS) += susfs.o
           # на всякий случай fallback:
@@ -106,7 +110,7 @@ jobs:
 
           # fs/notify/fdinfo.c
           grep -q "susfs.h" fs/notify/fdinfo.c || \
-            sed -i '/#include <linux\/fs.h>/a #include <linux\/susfs.h>' fs/notify/fdinfo.c
+            sed -i '1i #include <linux/cred.h>\n#include <linux/susfs.h>' fs/notify/fdinfo.c
 
           # drivers/kernelsu/hook/setuid_hook.c
           grep -q "susfs.h" drivers/kernelsu/hook/setuid_hook.c || \
