@@ -101,13 +101,21 @@ jobs:
           patch -p1 --forward --batch < "$PATCH_FILE" || echo "⚠️ Patch partially applied"
           echo "✅ JackA1ltman susfs 5.4 patch applied"
 
-          # Dedup susfs_add_try_umount AFTER patch (patch may have added a second copy)
+          # Dedup susfs_add_try_umount (single-line inline, just skip duplicate lines)
           awk '
-          /static inline int susfs_add_try_umount/ { count++; if (count > 1) { skip=1; next } }
-          skip && /^}/ { skip=0; next }
-          skip { next }
+          /static inline int susfs_add_try_umount/ {
+            count++
+            if (count > 1) next
+          }
           { print }
           ' include/linux/susfs.h > include/linux/susfs.h.tmp && mv include/linux/susfs.h.tmp include/linux/susfs.h
+
+          # If it got wiped entirely, add stub back
+          if ! grep -q "susfs_add_try_umount" include/linux/susfs.h; then
+            echo "⚠️ susfs_add_try_umount missing — adding stub"
+            sed -i '/^#endif/i static inline int susfs_add_try_umount(void *arg) { return 0; }' \
+              include/linux/susfs.h
+          fi
           echo "✅ susfs.h deduped"
 
           # supercall.c
