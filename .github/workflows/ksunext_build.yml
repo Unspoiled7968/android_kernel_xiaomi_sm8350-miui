@@ -97,22 +97,13 @@ jobs:
           patch -p1 --forward --batch < "$PATCH_FILE" || echo "⚠️ Patch partially applied"
           echo "✅ JackA1ltman susfs 5.4 patch applied"
 
-          # supercall.c calls susfs_add_try_umount inside #ifdef CONFIG_KSU_SUSFS_TRY_UMOUNT
-          # That config is not set so it won't compile — just ensure include is present
+          # supercall.c — needs susfs.h for susfs functions
           grep -q "susfs.h" drivers/kernelsu/supercall/supercall.c || \
             sed -i '1s/^/#include <linux\/susfs.h>\n/' drivers/kernelsu/supercall/supercall.c
 
-          # fs/open.c
+          # fs/open.c — needs susfs.h for open_redirect hooks
           grep -q "susfs.h" fs/open.c || \
             sed -i '/#include <linux\/fs.h>/a #include <linux\/susfs.h>' fs/open.c
-
-          # fs/notify/fdinfo.c
-          grep -q "susfs.h" fs/notify/fdinfo.c || \
-            sed -i '1s/^/#include <linux\/cred.h>\n#include <linux\/susfs.h>\n/' fs/notify/fdinfo.c
-
-          # drivers/kernelsu/hook/setuid_hook.c
-          grep -q "susfs.h" drivers/kernelsu/hook/setuid_hook.c || \
-            sed -i '/#include <linux\/uidgid.h>/a #include <linux\/susfs.h>' drivers/kernelsu/hook/setuid_hook.c
 
       - name: Append Defconfig Flags
         run: |
