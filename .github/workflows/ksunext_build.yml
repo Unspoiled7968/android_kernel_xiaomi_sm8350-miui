@@ -101,22 +101,16 @@ jobs:
           patch -p1 --forward --batch < "$PATCH_FILE" || echo "⚠️ Patch partially applied"
           echo "✅ JackA1ltman susfs 5.4 patch applied"
 
-          # Dedup susfs_add_try_umount (single-line inline, just skip duplicate lines)
-          awk '
-          /static inline int susfs_add_try_umount/ {
-            count++
-            if (count > 1) next
-          }
-          { print }
-          ' include/linux/susfs.h > include/linux/susfs.h.tmp && mv include/linux/susfs.h.tmp include/linux/susfs.h
+          # Find all line numbers containing susfs_add_try_umount, keep first, delete rest
+          LINES=$(grep -n "susfs_add_try_umount" include/linux/susfs.h | cut -d: -f1 | tail -n +2)
+          for LINE in $LINES; do
+            sed -i "${LINE}d" include/linux/susfs.h
+          done
+          echo "✅ susfs.h duplicates removed (kept line 1 definition)"
 
-          # If it got wiped entirely, add stub back
-          if ! grep -q "susfs_add_try_umount" include/linux/susfs.h; then
-            echo "⚠️ susfs_add_try_umount missing — adding stub"
-            sed -i '/^#endif/i static inline int susfs_add_try_umount(void *arg) { return 0; }' \
-              include/linux/susfs.h
-          fi
-          echo "✅ susfs.h deduped"
+          # Verify
+          COUNT=$(grep -c "susfs_add_try_umount" include/linux/susfs.h || true)
+          echo "susfs_add_try_umount count in susfs.h: $COUNT"
 
           # supercall.c
           grep -q "susfs.h" drivers/kernelsu/supercall/supercall.c || \
