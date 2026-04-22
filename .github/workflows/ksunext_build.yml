@@ -101,6 +101,10 @@ jobs:
           sed -i 's/susfs_add_try_umount(arg);/\/\/ susfs_add_try_umount not in v2.x/' \
             drivers/kernelsu/supercall/supercall.c
 
+          # susfs_try_umount does not exist in SuSFS v2.x — replace with ksu_handle_umount
+          sed -i 's/susfs_try_umount(new_uid);/ksu_handle_umount(old_uid, new_uid);/' \
+            drivers/kernelsu/hook/setuid_hook.c
+
           # supercall.c — needs susfs.h for susfs functions
           grep -q "susfs.h" drivers/kernelsu/supercall/supercall.c || \
             sed -i '1s/^/#include <linux\/susfs.h>\n/' drivers/kernelsu/supercall/supercall.c
