@@ -73,17 +73,7 @@ jobs:
 
           grep -q "susfs.o" fs/Makefile || echo 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' >> fs/Makefile
 
-          # Fix fsnotify API: .handle_inode_event -> .handle_event
-          sed -i 's/\.handle_inode_event = susfs_handle_sdcard_inode_event,/.handle_event = susfs_handle_sdcard_inode_event,/' fs/susfs.c
-
-          # Rewrite function signature to match 5.4 handle_event prototype
-          # Use a range delete + insert approach: remove old sig lines, insert new one before the {
-          perl -i -0pe '
-            s/static int susfs_handle_sdcard_inode_event\s*\([^)]*\bfsnotify_mark\b[^{]*\)/static int susfs_handle_sdcard_inode_event(struct fsnotify_group *group,\n\tstruct inode *inode, u32 mask, const void *data, int data_type,\n\tconst struct qstr *file_name, u32 cookie, struct fsnotify_iter_info *iter_info)/s
-          ' fs/susfs.c
-          echo "✅ fsnotify fix applied"
-
-          echo "✅ SuSFS v2.x headers + source copied + fsnotify patched"
+          echo "✅ SuSFS v2.x headers + source copied"
 
       - name: Apply SuSFS 5.4 Patch (JackA1ltman)
         run: |
@@ -101,18 +91,13 @@ jobs:
           patch -p1 --forward --batch < "$PATCH_FILE" || echo "⚠️ Patch partially applied"
           echo "✅ JackA1ltman susfs 5.4 patch applied"
 
-          # Find all line numbers containing susfs_add_try_umount, keep first, delete rest
-          LINES=$(grep -n "susfs_add_try_umount" include/linux/susfs.h | cut -d: -f1 | tail -n +2)
-          for LINE in $LINES; do
-            sed -i "${LINE}d" include/linux/susfs.h
-          done
-          echo "✅ susfs.h duplicates removed (kept line 1 definition)"
+          # The patch adds SUSFS_DECL_FSNOTIFY_OPS macro which handles fsnotify per kernel version.
+          # susfs.c uses it — no manual signature rewrite needed.
+          # Just fix the ops field name: handle_inode_event -> handle_event (5.4 name)
+          sed -i 's/\.handle_inode_event = /.handle_event = /' fs/susfs.c
 
-          # Verify
-          COUNT=$(grep -c "susfs_add_try_umount" include/linux/susfs.h || true)
-          echo "susfs_add_try_umount count in susfs.h: $COUNT"
-
-          # supercall.c
+          # supercall.c calls susfs_add_try_umount inside #ifdef CONFIG_KSU_SUSFS_TRY_UMOUNT
+          # That config is not set, so just ensure the include is there for other susfs calls
           grep -q "susfs.h" drivers/kernelsu/supercall/supercall.c || \
             sed -i '1s/^/#include <linux\/susfs.h>\n/' drivers/kernelsu/supercall/supercall.c
 
@@ -120,10 +105,7 @@ jobs:
           grep -q "susfs.h" fs/open.c || \
             sed -i '/#include <linux\/fs.h>/a #include <linux\/susfs.h>' fs/open.c
 
-          # kernel/kallsyms.c
-          grep -q "susfs.h" kernel/kallsyms.c || \
-            sed -i '/#include <linux\/seq_file.h>/a #include <linux\/susfs.h>' kernel/kallsyms.c
-
+          # kernel/kallsyms.c — patch already adds susfs_def.h, no susfs.h needed
           # fs/notify/fdinfo.c
           grep -q "susfs.h" fs/notify/fdinfo.c || \
             sed -i '1s/^/#include <linux\/cred.h>\n#include <linux\/susfs.h>\n/' fs/notify/fdinfo.c
@@ -146,19 +128,12 @@ jobs:
           
           echo "✅ Using defconfig: $DEFCONFIG"
           
-          # Remove old entries if they exist (prevents duplicates)
-          sed -i '/CONFIG_KSU/d' "$DEFCONFIG"
-          sed -i '/CONFIG_TMPFS_XATTR/d' "$DEFCONFIG"
-          sed -i '/CONFIG_TMPFS_POSIX_ACL/d' "$DEFCONFIG"
-          sed -i '/CONFIG_KSU_SUSFS/d' "$DEFCONFIG"
-          
-          # Append fresh config
+          # KSU base
           echo "CONFIG_KSU=y" >> "$DEFCONFIG"
           echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG"
           echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG"
           
-          echo "📦 Enabling SUSFS..."
-          
+          # SuSFS v2.x features
           echo "CONFIG_KSU_SUSFS=y" >> "$DEFCONFIG"
           echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> "$DEFCONFIG"
           echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> "$DEFCONFIG"
@@ -168,9 +143,10 @@ jobs:
           echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> "$DEFCONFIG"
           echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> "$DEFCONFIG"
           echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> "$DEFCONFIG"
-          # CONFIG_KSU_SUSFS_SUS_MAP убран — не существует в v2.x
           echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y" >> "$DEFCONFIG"
           echo "CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y" >> "$DEFCONFIG"
+          # TRY_UMOUNT does not exist in SuSFS v2.x — explicitly disable to prevent implicit declaration
+          echo "# CONFIG_KSU_SUSFS_TRY_UMOUNT is not set" >> "$DEFCONFIG"
 
       - name: Build Project
         run: |
