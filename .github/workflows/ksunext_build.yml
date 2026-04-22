@@ -73,7 +73,13 @@ jobs:
 
           grep -q "susfs.o" fs/Makefile || echo 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' >> fs/Makefile
 
-          echo "✅ SuSFS v2.x headers + source copied"
+          # Fix fsnotify for 5.4: rewrite 3-line 5.9+ signature to 5.4 handle_event prototype
+          perl -i -0pe 's/static int susfs_handle_sdcard_inode_event\(struct fsnotify_mark \*mark, u32 mask,\s*struct inode \*inode, struct inode \*dir,\s*const struct qstr \*file_name, u32 cookie\)/static int susfs_handle_sdcard_inode_event(struct fsnotify_group *group, struct inode *inode, u32 mask, const void *data, int data_type, const struct qstr *file_name, u32 cookie, struct fsnotify_iter_info *iter_info)/s' fs/susfs.c
+
+          # Rename ops field to match 5.4
+          sed -i 's/\.handle_inode_event = /.handle_event = /' fs/susfs.c
+
+          echo "✅ SuSFS copied + fsnotify fixed for 5.4"
 
       - name: Apply SuSFS 5.4 Patch (JackA1ltman)
         run: |
@@ -91,13 +97,8 @@ jobs:
           patch -p1 --forward --batch < "$PATCH_FILE" || echo "⚠️ Patch partially applied"
           echo "✅ JackA1ltman susfs 5.4 patch applied"
 
-          # The patch adds SUSFS_DECL_FSNOTIFY_OPS macro which handles fsnotify per kernel version.
-          # susfs.c uses it — no manual signature rewrite needed.
-          # Just fix the ops field name: handle_inode_event -> handle_event (5.4 name)
-          sed -i 's/\.handle_inode_event = /.handle_event = /' fs/susfs.c
-
           # supercall.c calls susfs_add_try_umount inside #ifdef CONFIG_KSU_SUSFS_TRY_UMOUNT
-          # That config is not set, so just ensure the include is there for other susfs calls
+          # That config is not set so it won't compile — just ensure include is present
           grep -q "susfs.h" drivers/kernelsu/supercall/supercall.c || \
             sed -i '1s/^/#include <linux\/susfs.h>\n/' drivers/kernelsu/supercall/supercall.c
 
@@ -105,7 +106,6 @@ jobs:
           grep -q "susfs.h" fs/open.c || \
             sed -i '/#include <linux\/fs.h>/a #include <linux\/susfs.h>' fs/open.c
 
-          # kernel/kallsyms.c — patch already adds susfs_def.h, no susfs.h needed
           # fs/notify/fdinfo.c
           grep -q "susfs.h" fs/notify/fdinfo.c || \
             sed -i '1s/^/#include <linux\/cred.h>\n#include <linux\/susfs.h>\n/' fs/notify/fdinfo.c
