@@ -326,7 +326,6 @@ jobs:
         run: |
           echo "Enabling Baseband Guard Support..."
           echo "CONFIG_BBG=y" >> "$DEFCONFIG"
-          cd ./common
           curl -sSL https://github.com/cctv18/Baseband-guard/raw/master/setup.sh | bash
           sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' security/Kconfig
 
