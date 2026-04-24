@@ -177,7 +177,7 @@ jobs:
           DEVICE="${{ inputs.device_name || 'star' }}"
           DEFCONFIG=$(find arch/arm64/configs -name "*${DEVICE}*defconfig" | head -n 1)
 
-          echo "DEFCONFIG" >> $GITHUB_ENV
+          echo "DEFCONFIG=$DEFCONFIG" >> $GITHUB_ENV
           
           if [ -z "$DEFCONFIG" ] || [ ! -f "$DEFCONFIG" ]; then
             echo "❌ Defconfig not found!"
@@ -282,7 +282,6 @@ jobs:
         run: |
           if [[ "${{ github.event.inputs.bbr_enable }}" != "false" ]]; then
             echo "Adding TCP Congestion Algorithms..."
-            cd kernel_workspace
             echo "CONFIG_TCP_CONG_ADVANCED=y" >> "$DEFCONFIG"
             echo "CONFIG_TCP_CONG_BBR=y" >> "$DEFCONFIG"
             echo "CONFIG_TCP_CONG_CUBIC=y" >> "$DEFCONFIG"
@@ -313,7 +312,6 @@ jobs:
         if: inputs.adios_enable
         run: |
           echo "Enabling ADIOS IO Scheduler..."
-          cd kernel_workspace
           echo "CONFIG_MQ_IOSCHED_ADIOS=y" >> "$DEFCONFIG"
           echo "CONFIG_MQ_IOSCHED_DEFAULT_ADIOS=y" >> "$DEFCONFIG"
 
@@ -321,14 +319,12 @@ jobs:
         if: inputs.rekernel_enable
         run: |
           echo "Enabling Re-Kernel Support..."
-          cd kernel_workspace
           echo "CONFIG_REKERNEL=y" >> "$DEFCONFIG"
 
       - name: Configure Baseband Guard
         if: inputs.baseband_guard
         run: |
           echo "Enabling Baseband Guard Support..."
-          cd kernel_workspace
           echo "CONFIG_BBG=y" >> "$DEFCONFIG"
           cd ./common
           curl -sSL https://github.com/cctv18/Baseband-guard/raw/master/setup.sh | bash
