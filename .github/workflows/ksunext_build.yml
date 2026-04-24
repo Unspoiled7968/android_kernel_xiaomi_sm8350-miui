@@ -97,18 +97,6 @@ jobs:
           patch -p1 --forward --batch < "$PATCH_FILE" || echo "⚠️ Patch partially applied"
           echo "✅ JackA1ltman susfs 5.4 patch applied"
 
-          # susfs_add_try_umount does not exist in SuSFS v2.x — comment out the call
-          sed -i 's/susfs_add_try_umount(arg);/\/\/ susfs_add_try_umount not in v2.x/' \
-            drivers/kernelsu/supercall/supercall.c
-
-          # Comment out susfs_try_umount call directly by line number
-          sed -i '179s/.*/    ksu_handle_umount(0, new_uid); \/\/ susfs_try_umount not in v2.x/' \
-            drivers/kernelsu/hook/setuid_hook.c
-
-          # Force CONFIG_KSU_SUSFS_TRY_UMOUNT off by commenting out the extern declaration
-          sed -i 's/extern void susfs_try_umount(uid_t uid);/\/\/ susfs_try_umount not in v2.x/' \
-            drivers/kernelsu/hook/setuid_hook.c
-
           # supercall.c — needs susfs.h for susfs functions
           grep -q "susfs.h" drivers/kernelsu/supercall/supercall.c || \
             sed -i '1s/^/#include <linux\/susfs.h>\n/' drivers/kernelsu/supercall/supercall.c
