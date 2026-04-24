@@ -176,6 +176,8 @@ jobs:
 
           DEVICE="${{ inputs.device_name || 'star' }}"
           DEFCONFIG=$(find arch/arm64/configs -name "*${DEVICE}*defconfig" | head -n 1)
+
+          echo "DEFCONFIG" >> $GITHUB_ENV
           
           if [ -z "$DEFCONFIG" ] || [ ! -f "$DEFCONFIG" ]; then
             echo "❌ Defconfig not found!"
