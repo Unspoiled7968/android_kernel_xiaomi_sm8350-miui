@@ -13,6 +13,64 @@ on:
         description: 'Custom version suffix'
         required: true
         default: '-next-palaziks'
+      bbr_enable:
+        description: "Enable TCP BBR/Brutal (false=off, true=add, default=set as default)"
+        required: true
+        type: choice
+        default: 'true'
+        options:
+          - 'false'
+          - 'true'
+          - 'default'
+      huawei_lz4ko:
+        description: 'Huawei LZ4KO patch'
+        required: true
+        type: boolean
+        default: true
+      adios_enable:
+        description: 'Enable ADIOS IO Scheduler (Improves IO read/write performance)'
+        required: true
+        type: boolean
+        default: true
+      rekernel_enable:
+        description: 'Enable Re-Kernel Support (Enhances app freezing via NoActive/Freezer)'
+        required: true
+        type: boolean
+        default: false
+      baseband_guard:
+        description: 'Enable Baseband Guard (Anti-brick modem protection)'
+        required: true
+        type: boolean
+        default: true
+      lto_type:
+        description: 'LTO Optimization (none = fast compile, thin = default, full = slow)'
+        required: true
+        type: choice
+        default: 'thin'
+        options:
+          - 'none'
+          - 'thin'
+          - 'full'
+      unicode_fix:
+        description: 'Enable Unicode Bypass Fix (path traversal protection)'
+        required: true
+        type: boolean
+        default: true
+      wireguard:
+        description: 'Enable WireGuard VPN support'
+        required: true
+        type: boolean
+        default: false
+      netfilter_full:
+        description: 'Full Netfilter (conntrack, NAT, hashlimit)'
+        required: true
+        type: boolean
+        default: false
+      wakelock_blocker:
+        description: 'Enable Wakelock Blocker (better idle battery drain)'
+        required: true
+        type: boolean
+        default: true
       swap_size:
         description: 'Swap size in GB'
         required: true
@@ -30,6 +88,13 @@ jobs:
         uses: pierotofy/set-swap-space@master
         with:
           swap-size-gb: ${{ inputs.swap_size || '16' }}
+
+      - name: Restore CCache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ inputs.device_name }}-${{ github.sha }}
+          restore-keys: ccache-${{ inputs.device_name }}-
 
       - name: Install Dependencies
         run: |
@@ -135,14 +200,148 @@ jobs:
           echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> "$DEFCONFIG"
           echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> "$DEFCONFIG"
           echo "CONFIG_KSU_SUSFS_SUS_MAP=y" >> "$DEFCONFIG"
+          
+          # Enable Huawei LZ4KO Crypto Algorithm
+          if [ "${{ github.event.inputs.huawei_lz4ko }}" == "true" ]; then
+            echo "CONFIG_ZSMALLOC=y" >> "$DEFCONFIG"
+            echo "CONFIG_CRYPTO_LZ4=y" >> "$DEFCONFIG"
+            echo "CONFIG_CRYPTO_LZ4K=y" >> "$DEFCONFIG"
+          fi
+
+      - name: Apply Unicode Bypass Fix
+        if: inputs.unicode_fix
+        run: |
+          PATCH_URL="https://github.com/TheWildJames/kernel_patches/raw/main/common/unicode_bypass_fix_6.1-.patch"
+          wget -qO /tmp/ub_fix.patch "$PATCH_URL" 2>/dev/null && \
+            patch -p1 --forward < /tmp/ub_fix.patch || true
+          echo "Unicode fix applied"
+
+      - name: 🚀 Apply Huawei LZ4KO ZRAM Patch
+        if: inputs.huawei_lz4ko
+        run: |
+          curl -sSL "https://github.com/crdroidandroid/android_kernel_xiaomi_courbet/commit/94caa27.patch" -o lz4ko.patch
+          patch -p1 -F 3 < lz4ko.patch || echo "⚠️ Patch had minor conflicts"
+
+      - name: Enable WireGuard
+        if: inputs.wireguard
+        run: |
+          echo "Enabling WireGuard..."
+          cat >> "$DEFCONFIG" << 'EOF'
+          CONFIG_WIREGUARD=y
+          EOF
+
+      - name: Enable Full Netfilter
+        if: inputs.netfilter_full
+        run: |
+          echo "Enabling full Netfilter support..."
+          cat >> "$DEFCONFIG" << 'EOF'
+          CONFIG_NF_CONNTRACK=y
+          CONFIG_NF_CONNTRACK_MARK=y
+          CONFIG_NF_CONNTRACK_ZONES=y
+          CONFIG_NF_CONNTRACK_TIMESTAMP=y
+          CONFIG_NF_CONNTRACK_EVENTS=y
+          CONFIG_NF_CONNTRACK_TIMEOUT=y
+          CONFIG_NF_CONNTRACK_LABELS=y
+          CONFIG_NF_NAT=y
+          CONFIG_NF_NAT_MASQUERADE=y
+          CONFIG_NETFILTER_XT_MATCH_HASHLIMIT=y
+          CONFIG_NETFILTER_XT_MATCH_CONNTRACK=y
+          CONFIG_NETFILTER_XT_MATCH_CONNLIMIT=y
+          CONFIG_NETFILTER_XT_MATCH_STATE=y
+          CONFIG_NETFILTER_XT_TARGET_MASQUERADE=y
+          CONFIG_NETFILTER_XT_TARGET_REDIRECT=y
+          EOF
+
+      - name: Enable Wakelock Blocker
+        if: inputs.wakelock_blocker
+        run: |
+          echo "Enabling Wakelock Blocker..."
+          cat >> "$DEFCONFIG" << 'EOF'
+          CONFIG_PM_WAKELOCKS=y
+          CONFIG_PM_WAKELOCKS_GC=y
+          CONFIG_PM_WAKELOCKS_LIMIT=100
+          EOF
+          # Патч для принудительного блокирования известных wakelocks
+          WAKELOCK_C="kernel/power/wakelock.c"
+          if [ -f "$WAKELOCK_C" ]; then
+            # Добавляем список заблокированных wakelocks от cctv18/Epicmann24
+            cat >> "$WAKELOCK_C" << 'WLEOF'
+          /* palaziks: wakelock blocker list */
+          static const char * const blocked_wakelocks[] = {
+              "WLAN_pm_wlock",
+              "IPA_WS",
+              "qcom_rx_wakelock",
+              "event0",
+          };
+          WLEOF
+          fi
+
+      - name: Configure BBR & Brutal
+        run: |
+          if [[ "${{ github.event.inputs.bbr_enable }}" != "false" ]]; then
+            echo "Adding TCP Congestion Algorithms..."
+            cd kernel_workspace
+            echo "CONFIG_TCP_CONG_ADVANCED=y" >> "$DEFCONFIG"
+            echo "CONFIG_TCP_CONG_BBR=y" >> "$DEFCONFIG"
+            echo "CONFIG_TCP_CONG_CUBIC=y" >> "$DEFCONFIG"
+            echo "CONFIG_TCP_CONG_VEGAS=y" >> "$DEFCONFIG"
+            echo "CONFIG_TCP_CONG_NV=y" >> "$DEFCONFIG"
+            echo "CONFIG_TCP_CONG_WESTWOOD=y" >> "$DEFCONFIG"
+            echo "CONFIG_TCP_CONG_HTCP=y" >> "$DEFCONFIG"
+            echo "CONFIG_TCP_CONG_BRUTAL=y" >> "$DEFCONFIG"
+            if [[ "${{ github.event.inputs.bbr_enable }}" == "default" ]]; then
+              echo "Setting BBR as default algorithm..."
+              echo "CONFIG_DEFAULT_TCP_CONG=bbr" >> "$DEFCONFIG"
+            else
+              echo "CONFIG_DEFAULT_TCP_CONG=cubic" >> "$DEFCONFIG"
+            fi
+          fi
+
+      - name: Configure LTO
+        run: |
+          if [[ "${{ github.event.inputs.lto_type }}" == "none" ]]; then
+            echo "CONFIG_LTO_CLANG_NONE=y" >> "$DEFCONFIG"
+          elif [[ "${{ github.event.inputs.lto_type }}" == "full" ]]; then
+            echo "CONFIG_LTO_CLANG_FULL=y" >> "$DEFCONFIG"
+          else
+            echo "CONFIG_LTO_CLANG_THIN=y" >> "$DEFCONFIG"
+          fi
+
+      - name: Configure ADIOS IO
+        if: inputs.adios_enable
+        run: |
+          echo "Enabling ADIOS IO Scheduler..."
+          cd kernel_workspace
+          echo "CONFIG_MQ_IOSCHED_ADIOS=y" >> "$DEFCONFIG"
+          echo "CONFIG_MQ_IOSCHED_DEFAULT_ADIOS=y" >> "$DEFCONFIG"
+
+      - name: Configure Re-Kernel
+        if: inputs.rekernel_enable
+        run: |
+          echo "Enabling Re-Kernel Support..."
+          cd kernel_workspace
+          echo "CONFIG_REKERNEL=y" >> "$DEFCONFIG"
+
+      - name: Configure Baseband Guard
+        if: inputs.baseband_guard
+        run: |
+          echo "Enabling Baseband Guard Support..."
+          cd kernel_workspace
+          echo "CONFIG_BBG=y" >> "$DEFCONFIG"
+          cd ./common
+          curl -sSL https://github.com/cctv18/Baseband-guard/raw/master/setup.sh | bash
+          sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' security/Kconfig
 
       - name: Build Project
         run: |
           git config --global user.email "bot@example.com"
           git config --global user.name "wannq"
-          export LOCALVERSION="${{ inputs.localversion || '-next-palaziks' }}"
+          export CCACHE_DIR=~/.ccache
+          ccache -M 5G
+          export LOCALVERSION="${{ inputs.localversion }}"
           chmod +x ./build.sh
-          ./build.sh all ${{ inputs.device_name || 'star' }} 2>&1 | tee /tmp/kbuild.log
+          # Tell the script to use ccache
+          ./build.sh all ${{ inputs.device_name }} CC="ccache clang" 2>&1 | tee /tmp/kbuild.log
 
           # Look for the Image in the 'out' directory or '../out' directory
           if [ ! -f out/arch/arm64/boot/Image ] && [ ! -f ../out/arch/arm64/boot/Image ]; then
@@ -150,6 +349,13 @@ jobs:
             grep -E "error:|FAILED" /tmp/kbuild.log | tail -50
             exit 1
           fi
+
+      - name: Save CCache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ inputs.device_name }}-${{ github.sha }}
 
       - name: Compress & Upload
         run: |
