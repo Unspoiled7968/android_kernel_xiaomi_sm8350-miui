@@ -93,7 +93,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.ccache
-          key: ccache-${{ inputs.device_name }}-${{ github.sha }}
+          key: ccache-${{ inputs.device_name }}-${{ github.run_id }}
           restore-keys: ccache-${{ inputs.device_name }}-
 
       - name: Install Dependencies
@@ -352,7 +352,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ~/.ccache
-          key: ccache-${{ inputs.device_name }}-${{ github.sha }}
+          key: ccache-${{ inputs.device_name }}-${{ github.run_id }}
 
       - name: Compress & Upload
         run: |
