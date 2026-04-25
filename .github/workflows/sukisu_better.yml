@@ -115,6 +115,17 @@ jobs:
       
           # ✅ fix pgtable after setup
           sed -i '/pgtable.h/c\#include <asm/pgtable.h>' drivers/kernelsu/feature/sucompat.c
+
+          # Keep this 5.4 fix just in case SukiSU needs it too!
+          if [ -f drivers/kernelsu/feature/sucompat.c ]; then
+            # Fix 1: Missing header
+            sed -i '/pgtable.h/c\#include <asm/pgtable.h>' drivers/kernelsu/feature/sucompat.c
+            
+            # Fix 2: Downgrade modern string copy to 5.4 standard
+            sed -i 's/strncpy_from_user_nofault/strncpy_from_user/g' drivers/kernelsu/feature/sucompat.c
+            
+            echo "✅ 5.4 Compatibility patches applied to sucompat.c"
+          fi
       
           echo "✅ SukiSU Ultra integrated + pgtable fixed"
 
