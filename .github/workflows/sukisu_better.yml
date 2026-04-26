@@ -153,11 +153,14 @@ jobs:
             echo "✅ patch_memory.c: copy_to_kernel_nofault -> probe_kernel_write"
           fi
 
-          # Fix file_wrapper.c: security_inode_init_security_anon -> security_inode_init_security for 5.4
+          # Fix file_wrapper.c: security_inode_init_security_anon not in 5.4
           FW="drivers/kernelsu/infra/file_wrapper.c"
-          if [ -f "$FW" ]; then
-            sed -i 's/security_inode_init_security_anon(inode, &qname, context_inode)/security_inode_init_security(inode, context_inode, \&qname, NULL, NULL, NULL)/g' "$FW"
-            echo "✅ file_wrapper.c: security_inode_init_security_anon fixed for 5.4"
+          if [ -f "$FW" ] && grep -q "security_inode_init_security_anon" "$FW"; then
+            echo "Found security_inode_init_security_anon, showing context:"
+            grep -n "security_inode_init_security_anon" "$FW"
+            # Remove the entire call — in 5.4 anon inodes don't need LSM security init
+            sed -i '/security_inode_init_security_anon/d' "$FW"
+            echo "✅ file_wrapper.c: removed security_inode_init_security_anon"
           fi
       
           echo "✅ SukiSU Ultra integrated + pgtable fixed"
