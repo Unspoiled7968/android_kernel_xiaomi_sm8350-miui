@@ -156,11 +156,8 @@ jobs:
           # Fix file_wrapper.c: security_inode_init_security_anon not in 5.4
           FW="drivers/kernelsu/infra/file_wrapper.c"
           if [ -f "$FW" ] && grep -q "security_inode_init_security_anon" "$FW"; then
-            echo "Found security_inode_init_security_anon, showing context:"
-            grep -n "security_inode_init_security_anon" "$FW"
-            # Remove the entire call — in 5.4 anon inodes don't need LSM security init
-            sed -i '/security_inode_init_security_anon/d' "$FW"
-            echo "✅ file_wrapper.c: removed security_inode_init_security_anon"
+            sed -i 's/security_inode_init_security_anon([^)]*)/0/g' "$FW"
+            echo "✅ file_wrapper.c: bypassed security_inode_init_security_anon"
           fi
       
           echo "✅ SukiSU Ultra integrated + pgtable fixed"
