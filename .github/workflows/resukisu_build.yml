@@ -197,6 +197,7 @@ jobs:
           
           # KSU base
           echo "CONFIG_KSU=y" >> "$DEFCONFIG"
+          echo "CONFIG_KSU_INLINE_HOOK=y" >> "$DEFCONFIG"
           echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG"
           echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG"
           
