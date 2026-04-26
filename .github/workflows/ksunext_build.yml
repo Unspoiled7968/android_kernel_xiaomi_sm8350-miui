@@ -104,12 +104,18 @@ jobs:
       - name: Create clang ccache wrappers
         run: |
           mkdir -p "$HOME/.ccache_wrappers"
-          printf '#!/bin/sh\nexec ccache /usr/bin/clang "$@"\n' \
-            > "$HOME/.ccache_wrappers/clang"
-          printf '#!/bin/sh\nexec ccache /usr/bin/clang++ "$@"\n' \
-            > "$HOME/.ccache_wrappers/clang++"
-          chmod +x "$HOME/.ccache_wrappers/clang" \
-                   "$HOME/.ccache_wrappers/clang++"
+          
+          cat << 'EOF' > "$HOME/.ccache_wrappers/clang"
+          #!/bin/sh
+          exec ccache "$HOME/clang/bin/clang" "$@"
+          EOF
+          
+          cat << 'EOF' > "$HOME/.ccache_wrappers/clang++"
+          #!/bin/sh
+          exec ccache "$HOME/clang/bin/clang++" "$@"
+          EOF
+          
+          chmod +x "$HOME/.ccache_wrappers/clang" "$HOME/.ccache_wrappers/clang++"
           echo "$HOME/.ccache_wrappers" >> "$GITHUB_PATH"
 
       - name: Cache Clang
