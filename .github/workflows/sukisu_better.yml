@@ -160,6 +160,18 @@ jobs:
             perl -i -pe 's/security_inode_init_security_anon\([^)]*\)/0/g' "$FW"
             echo "✅ file_wrapper.c: LSM fixed for 5.4"
           fi
+
+          # Fix seccomp_cache.c: SECCOMP_ARCH_NATIVE_NR not in 5.4
+          SC="drivers/kernelsu/infra/seccomp_cache.c"
+          if [ -f "$SC" ] && grep -q "SECCOMP_ARCH_NATIVE_NR" "$SC"; then
+            # Stub out the entire file — seccomp cache not needed on 5.4
+            cat > "$SC" << 'EOF'
+          #include "seccomp_cache.h"
+          void ksu_seccomp_allow_cache(struct seccomp_filter *filter, int nr) {}
+          void ksu_seccomp_cache_init(void) {}
+          EOF
+            echo "✅ seccomp_cache.c: stubbed for 5.4"
+          fi
       
           echo "✅ SukiSU Ultra integrated + pgtable fixed"
 
