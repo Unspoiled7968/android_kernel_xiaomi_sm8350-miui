@@ -12,7 +12,7 @@ on:
       localversion:
         description: 'Custom version suffix'
         required: true
-        default: '-next-palaziks'
+        default: '-palaziks-ShiftPorts'
       bbr_enable:
         description: "Enable TCP BBR/Brutal (false=off, true=add, default=set as default)"
         required: true
@@ -89,6 +89,12 @@ jobs:
         with:
           swap-size-gb: ${{ inputs.swap_size || '16' }}
 
+      - name: Install Dependencies
+        run: |
+          sudo apt-get install -y clang lld llvm git make gcc flex bison bc \
+            libssl-dev ccache libncurses5-dev libncursesw5-dev cmake \
+            python3 python-is-python3 cpio curl patch rsync
+
       - name: Configure CCache
         run: |
           echo "CCACHE_DIR=$HOME/.ccache_${{ inputs.device_name }}" >> $GITHUB_ENV
@@ -114,13 +120,6 @@ jobs:
           ccache -o compression=true
           echo "sloppiness = file_stat_matches,include_file_ctime,include_file_mtime,pch_defines,file_macro,time_macros" >> "$CCACHE_DIR/ccache.conf"
           ccache -s
-
-      - name: Install Dependencies
-        run: |
-          sudo apt update
-          sudo apt install -y clang lld llvm git make gcc flex bison bc \
-            libssl-dev ccache libncurses5-dev libncursesw5-dev cmake \
-            python3 python-is-python3 cpio curl patch rsync
 
       - name: "⚡ Setup SukiSU Ultra (builtin)"
         run: |
