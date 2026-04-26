@@ -1,4 +1,4 @@
-name: Build ReSukiSU + SuSFS (Tracepoint)
+name: Build ReSukiSU + SuSFS
 
 on:
   workflow_dispatch:
@@ -12,7 +12,65 @@ on:
       localversion:
         description: 'Custom version suffix'
         required: true
-        default: '-palaziks'
+        default: '-palaziks-ShiftPorts'
+      bbr_enable:
+        description: "Enable TCP BBR/Brutal (false=off, true=add, default=set as default)"
+        required: true
+        type: choice
+        default: 'true'
+        options:
+          - 'false'
+          - 'true'
+          - 'default'
+      huawei_lz4ko:
+        description: 'Huawei LZ4KO patch'
+        required: true
+        type: boolean
+        default: true
+      adios_enable:
+        description: 'Enable ADIOS IO Scheduler (Improves IO read/write performance)'
+        required: true
+        type: boolean
+        default: true
+      rekernel_enable:
+        description: 'Enable Re-Kernel Support (Enhances app freezing via NoActive/Freezer)'
+        required: true
+        type: boolean
+        default: false
+      baseband_guard:
+        description: 'Enable Baseband Guard (Anti-brick modem protection)'
+        required: true
+        type: boolean
+        default: true
+      lto_type:
+        description: 'LTO Optimization (none = fast compile, thin = default, full = slow)'
+        required: true
+        type: choice
+        default: 'thin'
+        options:
+          - 'none'
+          - 'thin'
+          - 'full'
+      unicode_fix:
+        description: 'Enable Unicode Bypass Fix (path traversal protection)'
+        required: true
+        type: boolean
+        default: true
+      wireguard:
+        description: 'Enable WireGuard VPN support'
+        required: true
+        type: boolean
+        default: false
+      netfilter_full:
+        description: 'Full Netfilter (conntrack, NAT, hashlimit)'
+        required: true
+        type: boolean
+        default: false
+      wakelock_blocker:
+        description: 'Enable Wakelock Blocker (better idle battery drain)'
+        required: true
+        type: boolean
+        default: true
       swap_size:
         description: 'Swap size in GB'
         required: true
@@ -20,7 +78,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout Repository
@@ -33,176 +91,362 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          sudo apt update
-          sudo apt install -y clang lld llvm git make gcc flex bison bc \
+          sudo apt-get install -y clang lld llvm git make gcc flex bison bc \
             libssl-dev ccache libncurses5-dev libncursesw5-dev cmake \
             python3 python-is-python3 cpio curl patch rsync
 
-      - name: Apply Specialized MIUI Patches (JackA1ltman)
+      - name: Configure CCache
+        run: |
+          echo "CCACHE_DIR=$HOME/.ccache_${{ inputs.device_name }}" >> $GITHUB_ENV
+
+      - name: Restore CCache
+        uses: actions/cache/restore@v4
+        with:
+          path: $HOME/.ccache_${{ inputs.device_name }}
+          key: ccache-${{ inputs.device_name }}-${{ inputs.lto_type }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ inputs.device_name }}-${{ inputs.lto_type }}-
+            ccache-${{ inputs.device_name }}-
+
+      - name: Init CCache
+        run: |
+          export CCACHE_DIR="$HOME/.ccache_${{ inputs.device_name }}"
+          export CCACHE_COMPILERCHECK="none"
+          export CCACHE_BASEDIR="${{ github.workspace }}"
+          export CCACHE_NOHASHDIR="true"
+          export CCACHE_HARDLINK="true"
+          mkdir -p "$CCACHE_DIR"
+          ccache -M 10G
+          ccache -o compression=true
+          echo "sloppiness = file_stat_matches,include_file_ctime,include_file_mtime,pch_defines,file_macro,time_macros" >> "$CCACHE_DIR/ccache.conf"
+          ccache -s
+
+      - name: "⚡ Setup ReSukiSU (main)"
         run: |
           set -e
-          echo "=== Cloning Specialized Patches for star ==="
-          git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Patches.git -b mi_kernel ../altman_patches
-          ALTMAN_DIR="$(pwd)/../altman_patches/mi11u_hyperos"
+          echo "=== Setting up ReSukiSU (main) ==="
+      
+          KERNEL_REPO="$(pwd)"
+          git clone --depth=1 -b main https://github.com/ReSukiSU/ReSukiSU.git ReSukiSU
+          # ✅ run setup.sh FROM kernel root
+          bash ReSukiSU/kernel/setup.sh "$KERNEL_REPO"
+      
+          # ✅ fix pgtable after setup
+          sed -i '/pgtable.h/c\#include <asm/pgtable.h>' drivers/kernelsu/feature/sucompat.c
+      
+          echo "✅ ReSukiSU integrated + pgtable fixed"
 
-          # Apply HyperOS system patches BEFORE everything else
-          echo "Applying HyperOS specialized patches..."
-          patch -p1 --forward --batch < "$ALTMAN_DIR/hyperos_a14_fixed.patch" || true
-          patch -p1 --forward --batch < "$ALTMAN_DIR/hyper_susfs_157_fixed.patch" || true
-          patch -p1 --forward --batch < "$ALTMAN_DIR/hyper_susfs_remove_all_sus_su.patch" || true
-
-      - name: Integrate ReSukiSU
+      - name: Setup SuSFS for ReSukiSU
         run: |
           set -e
-          echo "=== Setting up ReSukiSU ==="
-          curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s main
-          ln -sf "$(pwd)/KernelSU/kernel" drivers/kernelsu
-          
-          # Basic registration in the build system
-          grep -q "kernelsu" drivers/Makefile || echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
-          grep -q "kernelsu" drivers/Kconfig || sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          KERNEL_REPO="$(pwd)"
 
-      - name: ReSukiSU Compatibility & Tracepoint Bypass
+          git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git \
+            -b gki-android12-5.10 ../susfs4ksu
+          SUSFS_DIR="$KERNEL_REPO/../susfs4ksu"
+
+          cd "$KERNEL_REPO"
+
+          cp "$SUSFS_DIR/kernel_patches/fs/susfs.c" "$KERNEL_REPO/fs/"
+          cp "$SUSFS_DIR/kernel_patches/include/linux/susfs.h" "$KERNEL_REPO/include/linux/"
+          cp "$SUSFS_DIR/kernel_patches/include/linux/susfs_def.h" "$KERNEL_REPO/include/linux/"
+
+          grep -q "linux/cred.h" "$KERNEL_REPO/include/linux/susfs_def.h" || \
+            sed -i '1s/^/#include <linux\/cred.h>\n/' "$KERNEL_REPO/include/linux/susfs_def.h"
+
+          grep -q "susfs.o" fs/Makefile || echo 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' >> fs/Makefile
+
+          # Fix fsnotify for 5.4: rewrite 3-line 5.9+ signature to 5.4 handle_event prototype
+          perl -i -0pe 's/static int susfs_handle_sdcard_inode_event\(struct fsnotify_mark \*mark, u32 mask,\s*struct inode \*inode, struct inode \*dir,\s*const struct qstr \*file_name, u32 cookie\)/static int susfs_handle_sdcard_inode_event(struct fsnotify_group *group, struct inode *inode, u32 mask, const void *data, int data_type, const struct qstr *file_name, u32 cookie, struct fsnotify_iter_info *iter_info)/s' fs/susfs.c
+
+          # Rename ops field to match 5.4
+          sed -i 's/\.handle_inode_event = /.handle_event = /' fs/susfs.c
+
+          echo "✅ SuSFS copied + fsnotify fixed for 5.4"
+
+      - name: Apply SuSFS 5.4 Patch (JackA1ltman)
         run: |
           set -e
-          echo "=== Bypassing ReSukiSU TP hooks lock for GKI 1.0 ==="
-          if [ -f drivers/kernelsu/Kbuild ]; then
-            sed -i '/TP hooks are incompatible/d' drivers/kernelsu/Kbuild
-            sed -i 's/$(error.*TP hooks are incompatible.*)//g' drivers/kernelsu/Kbuild
+          git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git ../jacka_repo
+
+          PATCH_FILE="../jacka_repo/Patches/Patch/susfs_patch_to_5.4.patch"
+
+          if [ ! -f "$PATCH_FILE" ]; then
+            echo "❌ Patch not found, available:"
+            ls ../jacka_repo/Patches/Patch/ || true
+            exit 1
           fi
-          if [ -f drivers/kernelsu/Makefile ]; then
-            sed -i '/TP hooks are incompatible/d' drivers/kernelsu/Makefile
-            sed -i 's/$(error.*TP hooks are incompatible.*)//g' drivers/kernelsu/Makefile
-          fi
 
-          echo "=== Fix allowlist.c for Kernel 5.4 (put_task_struct) ==="
-          if [ -f drivers/kernelsu/allowlist.c ]; then
-            grep -q "linux/sched/task.h" drivers/kernelsu/allowlist.c || sed -i '1i #include <linux/sched/task.h>' drivers/kernelsu/allowlist.c
-            grep -q "linux/sched.h" drivers/kernelsu/allowlist.c || sed -i '1i #include <linux/sched.h>' drivers/kernelsu/allowlist.c
-          fi
+          patch -p1 --forward --batch < "$PATCH_FILE" || echo "⚠️ Patch partially applied"
+          echo "✅ JackA1ltman susfs 5.4 patch applied"
 
-          echo "=== Aggressive Cleanup for 5.4 Compatibility ==="
-          find drivers/kernelsu -type f -name "*.c" -exec sed -i '/filter_count/d' {} +
-          sed -i '/pkg_observer.o/d' drivers/kernelsu/Makefile
-          find drivers/kernelsu -type f -name "*.c" -exec sed -i 's/ksu_pkg_observer_init()/0/g' {} +
-          find drivers/kernelsu -type f -name "*.c" -exec sed -i 's/ksu_pkg_observer_exit()//g' {} +
-          find drivers/kernelsu -type f -name "*.c" -exec sed -i 's/module_exit(ksu_kernelsu_exit);/\/\/module_exit(ksu_kernelsu_exit);/g' {} +
+          # supercall.c — needs susfs.h for susfs functions
+          grep -q "susfs.h" drivers/kernelsu/supercall/supercall.c || \
+            sed -i '1s/^/#include <linux\/susfs.h>\n/' drivers/kernelsu/supercall/supercall.c
 
-      - name: Apply KSU Tracepoint Hooks (Python)
-        run: |
-          python3 << 'EOF'
-          import sys, re, os
+          # fs/open.c — needs susfs.h for open_redirect hooks
+          grep -q "susfs.h" fs/open.c || \
+            sed -i '/#include <linux\/fs.h>/a #include <linux\/susfs.h>' fs/open.c
 
-          def robust_patch(filepath, pattern, replacement):
-              if not os.path.exists(filepath): return
-              with open(filepath, 'r') as f: content = f.read()
-              if 'ksu_trace' in content:
-                  print(f'{filepath}: hook already present, skipping')
-                  return
-              new_content, n = re.subn(pattern, replacement, content, count=1)
-              if n > 0:
-                  with open(filepath, 'w') as f: f.write(new_content)
-                  print(f'{filepath}: hook applied successfully')
-              else:
-                  print(f'WARNING: Could not find anchor in {filepath}')
-
-          def add_include(filepath, include_path):
-              if not os.path.exists(filepath): return
-              with open(filepath, 'r') as f: content = f.read()
-              if include_path in content: return
-              new_content = re.sub(r'(#include <linux/.*?\.h>\n)', 
-                                   r'\1#if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n#include ' + include_path + '\n#endif\n', 
-                                   content, count=1)
-              with open(filepath, 'w') as f: f.write(new_content)
-
-          # fs/exec.c
-          add_include('fs/exec.c', '<../drivers/kernelsu/ksu_trace.h>')
-          robust_patch('fs/exec.c', r'(return do_execveat_common\(AT_FDCWD, filename, argv, envp, 0\);)', 
-                       r'#if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n\ttrace_ksu_trace_execveat_hook((int *)AT_FDCWD, &filename, &argv, &envp, 0);\n#endif\n\t\1')
-
-          # fs/open.c
-          add_include('fs/open.c', '<../drivers/kernelsu/ksu_trace.h>')
-          robust_patch('fs/open.c', r'(SYSCALL_DEFINE3\(faccessat, int, dfd, const char __user \*, filename, int, mode\)\n{)',
-                       r'\1\n#if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n\ttrace_ksu_trace_faccessat_hook(&dfd, &filename, &mode, NULL);\n#endif\n')
-
-          # fs/read_write.c
-          add_include('fs/read_write.c', '<../drivers/kernelsu/ksu_trace.h>')
-          robust_patch('fs/read_write.c', r'(SYSCALL_DEFINE3\(read, unsigned int, fd, char __user \*, buf, size_t, count\)\n{)',
-                       r'\1\n#if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n\ttrace_ksu_trace_sys_read_hook(fd, &buf, &count);\n#endif\n')
-
-          # fs/stat.c
-          add_include('fs/stat.c', '<../drivers/kernelsu/ksu_trace.h>')
-          robust_patch('fs/stat.c', r'(error = vfs_fstatat\(dfd, filename, &stat, flag\);)',
-                       r'#if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n\ttrace_ksu_trace_stat_hook(&dfd, &filename, &flag);\n#endif\n\t\1')
-
-          # drivers/input/input.c
-          add_include('drivers/input/input.c', '<../../drivers/kernelsu/ksu_trace.h>')
-          robust_patch('drivers/input/input.c', r'(void input_event\(struct input_dev \*dev,\n\t\t unsigned int type, unsigned int code, int value\)\n{\n\tunsigned long flags;\n)',
-                       r'\1\n#if defined(CONFIG_KSU) && defined(CONFIG_KSU_TRACEPOINT_HOOK)\n\ttrace_ksu_trace_input_hook(&type, &code, &value);\n#endif\n')
-          EOF
-
-      - name: Setup SuSFS Source Files
+      - name: Append Defconfig Flags
         run: |
           set -e
-          git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 ../susfs4ksu
-          SUSFS_DIR="$(pwd)/../susfs4ksu"
-          cp -v "$SUSFS_DIR/kernel_patches/fs/susfs.c"               fs/
-          cp -v "$SUSFS_DIR/kernel_patches/include/linux/susfs.h"     include/linux/
-          cp -v "$SUSFS_DIR/kernel_patches/include/linux/susfs_def.h" include/linux/
-          grep -q "susfs.o" fs/Makefile || echo "obj-y += susfs.o" >> fs/Makefile
 
-      - name: Final MIUI & Legacy API Fixes
-        run: |
-          set -e
-          echo "=== Fixing SuSFS Mount Structures ==="
-          grep -q "susfs_mnt_id_backup" include/linux/mount.h || sed -i '/int mnt_flags;/a \ \ \ \ u64 susfs_mnt_id_backup;' include/linux/mount.h
-          [ -f include/linux/susfs.h ] && grep -q "^struct kstat;" include/linux/susfs.h || sed -i '1s/^/struct kstat;\n/' include/linux/susfs.h || true
-          for f in fs/proc/task_mmu.c fs/proc/fd.c; do
-            [ -f $f ] && (grep -q "linux/susfs.h" $f || sed -i '1i #include <linux/susfs.h>' $f)
-          done
-          
-          echo "=== ABSOLUTE BULLETPROOF DOWNGRADE: Kernel Header Injection ==="
-          if ! grep -q "strncpy_from_user_nofault" include/linux/uaccess.h; then
-            cat << 'EOF' >> include/linux/uaccess.h
-          
-          /* ReSukiSU / KernelSU Legacy 5.4 Backports */
-          #define strncpy_from_user_nofault strncpy_from_user
-          #define copy_from_user_nofault copy_from_user
-          #define copy_to_user_nofault copy_to_user
-          EOF
-          fi
-          
-          echo "=== Standardizing legacy paths ==="
-          find drivers/kernelsu -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's|#include <linux/pgtable.h>|#include <asm/pgtable.h>|g' {} + || true
-          [ -f drivers/kernelsu/allowlist.c ] && sed -i 's/TWA_RESUME/true/g' drivers/kernelsu/allowlist.c || true
-
-      - name: Append Flags to Defconfig
-        run: |
-          set -e
           DEVICE="${{ inputs.device_name || 'star' }}"
           DEFCONFIG=$(find arch/arm64/configs -name "*${DEVICE}*defconfig" | head -n 1)
-          for FLAG in \
-            "CONFIG_KSU=y" "CONFIG_KSU_TRACEPOINT_HOOK=y" "CONFIG_KSU_DEBUG=n" \
-            "CONFIG_KSU_SUSFS=y" "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" "CONFIG_KSU_SUSFS_SUS_MOUNT=y" \
-            "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" "CONFIG_KSU_SUSFS_ENABLE_LOG=y" "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" \
-            "CONFIG_KPM=y" "CONFIG_KALLSYMS=y" "CONFIG_KALLSYMS_ALL=y"; do
-            KEY=$(echo "$FLAG" | cut -d= -f1)
-            grep -q "^${KEY}[=\ ]" "$DEFCONFIG" || echo "$FLAG" >> "$DEFCONFIG"
-          done
+
+          echo "DEFCONFIG=$DEFCONFIG" >> $GITHUB_ENV
+          
+          if [ -z "$DEFCONFIG" ] || [ ! -f "$DEFCONFIG" ]; then
+            echo "❌ Defconfig not found!"
+            exit 1
+          fi
+          
+          echo "✅ Using defconfig: $DEFCONFIG"
+          
+          # KSU base
+          echo "CONFIG_KSU=y" >> "$DEFCONFIG"
+          echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG"
+          echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG"
+          
+          # SuSFS v2.x features
+          echo "CONFIG_KSU_SUSFS=y" >> "$DEFCONFIG"
+          echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> "$DEFCONFIG"
+          echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> "$DEFCONFIG"
+          echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> "$DEFCONFIG"
+          echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> "$DEFCONFIG"
+          echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> "$DEFCONFIG"
+          echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> "$DEFCONFIG"
+          echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> "$DEFCONFIG"
+          echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> "$DEFCONFIG"
+          echo "CONFIG_KSU_SUSFS_SUS_MAP=y" >> "$DEFCONFIG"
+
+          # Optimization
+          echo "CONFIG_HZ_300=y" >> "$DEFCONFIG"
+          
+          # Enable Huawei LZ4KO Crypto Algorithm
+          if [ "${{ github.event.inputs.huawei_lz4ko }}" == "true" ]; then
+            echo "CONFIG_ZSMALLOC=y" >> "$DEFCONFIG"
+            echo "CONFIG_CRYPTO_LZ4=y" >> "$DEFCONFIG"
+            echo "CONFIG_CRYPTO_LZ4K=y" >> "$DEFCONFIG"
+          fi
+
+      - name: Apply Unicode Bypass Fix
+        if: inputs.unicode_fix
+        run: |
+          PATCH_URL="https://github.com/TheWildJames/kernel_patches/raw/main/common/unicode_bypass_fix_6.1-.patch"
+          wget -qO /tmp/ub_fix.patch "$PATCH_URL" 2>/dev/null && \
+            patch -p1 --forward < /tmp/ub_fix.patch || true
+          echo "Unicode fix applied"
+
+      - name: 🚀 Apply Huawei LZ4KO ZRAM Patch
+        if: inputs.huawei_lz4ko
+        run: |
+          curl -sSL "https://github.com/crdroidandroid/android_kernel_xiaomi_courbet/commit/94caa27.patch" -o lz4ko.patch
+          patch -p1 -F 3 < lz4ko.patch || echo "⚠️ Patch had minor conflicts"
+
+      - name: Enable WireGuard
+        if: inputs.wireguard
+        run: |
+          echo "Enabling WireGuard..."
+          cat >> "$DEFCONFIG" << 'EOF'
+          CONFIG_WIREGUARD=y
+          EOF
+
+      - name: Enable Full Netfilter
+        if: inputs.netfilter_full
+        run: |
+          echo "Enabling full Netfilter support..."
+          cat >> "$DEFCONFIG" << 'EOF'
+          CONFIG_NF_CONNTRACK=y
+          CONFIG_NF_CONNTRACK_MARK=y
+          CONFIG_NF_CONNTRACK_ZONES=y
+          CONFIG_NF_CONNTRACK_TIMESTAMP=y
+          CONFIG_NF_CONNTRACK_EVENTS=y
+          CONFIG_NF_CONNTRACK_TIMEOUT=y
+          CONFIG_NF_CONNTRACK_LABELS=y
+          CONFIG_NF_NAT=y
+          CONFIG_NF_NAT_MASQUERADE=y
+          CONFIG_NETFILTER_XT_MATCH_HASHLIMIT=y
+          CONFIG_NETFILTER_XT_MATCH_CONNTRACK=y
+          CONFIG_NETFILTER_XT_MATCH_CONNLIMIT=y
+          CONFIG_NETFILTER_XT_MATCH_STATE=y
+          CONFIG_NETFILTER_XT_TARGET_MASQUERADE=y
+          CONFIG_NETFILTER_XT_TARGET_REDIRECT=y
+          EOF
+
+      - name: Enable Wakelock Blocker
+        if: inputs.wakelock_blocker
+        run: |
+          echo "Enabling Wakelock Blocker..."
+          cat >> "$DEFCONFIG" << 'EOF'
+          CONFIG_PM_WAKELOCKS=y
+          CONFIG_PM_WAKELOCKS_GC=y
+          CONFIG_PM_WAKELOCKS_LIMIT=100
+          EOF
+          # Патч для принудительного блокирования известных wakelocks
+          WAKELOCK_C="kernel/power/wakelock.c"
+          if [ -f "$WAKELOCK_C" ]; then
+            # Добавляем список заблокированных wakelocks от cctv18/Epicmann24
+            cat >> "$WAKELOCK_C" << 'WLEOF'
+          /* palaziks: wakelock blocker list */
+          static const char * const blocked_wakelocks[] = {
+              "WLAN_pm_wlock",
+              "IPA_WS",
+              "qcom_rx_wakelock",
+              "event0",
+          };
+          WLEOF
+          fi
+
+      - name: Configure BBR & Brutal
+        run: |
+          if [[ "${{ github.event.inputs.bbr_enable }}" != "false" ]]; then
+            echo "Adding TCP Congestion Algorithms..."
+            echo "CONFIG_TCP_CONG_ADVANCED=y" >> "$DEFCONFIG"
+            echo "CONFIG_TCP_CONG_BBR=y" >> "$DEFCONFIG"
+            echo "CONFIG_TCP_CONG_CUBIC=y" >> "$DEFCONFIG"
+            echo "CONFIG_TCP_CONG_VEGAS=y" >> "$DEFCONFIG"
+            echo "CONFIG_TCP_CONG_NV=y" >> "$DEFCONFIG"
+            echo "CONFIG_TCP_CONG_WESTWOOD=y" >> "$DEFCONFIG"
+            echo "CONFIG_TCP_CONG_HTCP=y" >> "$DEFCONFIG"
+            echo "CONFIG_TCP_CONG_BRUTAL=y" >> "$DEFCONFIG"
+            if [[ "${{ github.event.inputs.bbr_enable }}" == "default" ]]; then
+              echo "Setting BBR as default algorithm..."
+              echo "CONFIG_DEFAULT_TCP_CONG=bbr" >> "$DEFCONFIG"
+            else
+              echo "CONFIG_DEFAULT_TCP_CONG=cubic" >> "$DEFCONFIG"
+            fi
+          fi
+
+      - name: Configure LTO
+        run: |
+          if [[ "${{ github.event.inputs.lto_type }}" == "none" ]]; then
+            echo "CONFIG_LTO_CLANG_NONE=y" >> "$DEFCONFIG"
+          elif [[ "${{ github.event.inputs.lto_type }}" == "full" ]]; then
+            echo "CONFIG_LTO_CLANG_FULL=y" >> "$DEFCONFIG"
+          else
+            echo "CONFIG_LTO_CLANG_THIN=y" >> "$DEFCONFIG"
+          fi
+
+      - name: Configure ADIOS IO
+        if: inputs.adios_enable
+        run: |
+          echo "Enabling ADIOS IO Scheduler..."
+          echo "CONFIG_MQ_IOSCHED_ADIOS=y" >> "$DEFCONFIG"
+          echo "CONFIG_MQ_IOSCHED_DEFAULT_ADIOS=y" >> "$DEFCONFIG"
+
+      - name: Configure Re-Kernel
+        if: inputs.rekernel_enable
+        run: |
+          echo "Enabling Re-Kernel Support..."
+          echo "CONFIG_REKERNEL=y" >> "$DEFCONFIG"
+
+      - name: Configure Baseband Guard
+        if: inputs.baseband_guard
+        run: |
+          echo "Enabling Baseband Guard Support..."
+          echo "CONFIG_BBG=y" >> "$DEFCONFIG"
+          curl -sSL https://github.com/cctv18/Baseband-guard/raw/master/setup.sh | bash
+          sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' security/Kconfig
 
       - name: Build Project
         run: |
           git config --global user.email "bot@example.com"
           git config --global user.name "wannq"
-          export LOCALVERSION="${{ inputs.localversion || '-palaziks' }}"
+          export CCACHE_DIR="$HOME/.ccache_${{ inputs.device_name }}"
+          export CCACHE_COMPILERCHECK="none"
+          export CCACHE_BASEDIR="${{ github.workspace }}"
+          export CCACHE_NOHASHDIR="true"
+          export CCACHE_HARDLINK="true"
+          export PATH="/usr/lib/ccache:$PATH"
+          export LOCALVERSION="${{ inputs.localversion }}"
           chmod +x ./build.sh
-          ./build.sh all ${{ inputs.device_name || 'star' }} 
+          # Tell the script to use ccache
+          ./build.sh all ${{ inputs.device_name }} 2>&1 | tee /tmp/kbuild.log
 
-      - name: Compress
-        run: tar -czvf build.tar.gz ../out/anykernel/*.zip
+          # Look for the Image in the 'out' directory or '../out' directory
+          if [ ! -f out/arch/arm64/boot/Image ] && [ ! -f ../out/arch/arm64/boot/Image ]; then
+            echo "BUILD FAILED"
+            grep -E "error:|FAILED" /tmp/kbuild.log | tail -50
+            exit 1
+          fi
 
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+      - name: Save CCache
+        if: always()
+        uses: actions/cache/save@v4
         with:
-          name: ${{ inputs.device_name || 'star' }}-ReSukiSU-palaziks
-          path: build.tar.gz
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ inputs.device_name }}-${{ inputs.lto_type }}-${{ github.run_id }}
+
+      - name: Compress & Upload
+        run: |
+          mkdir -p upload
+          # Copy from the correct output directories
+          cp out/arch/arm64/boot/Image upload/ || cp ../out/arch/arm64/boot/Image upload/ || true
+          find ../out out -name "*.zip" -exec cp {} upload/ \; || true
+          tar -czvf kernel-star-resukisu.tar.gz upload/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ReSukiSU-SuSFS-${{ inputs.device_name }}
+          path: kernel-star-resukisu.tar.gz
+
+      - name: Send Telegram Notification (Success)
+        if: success()
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ vars.CHAT_ID }}
+        run: |
+          DATE=$(date +"%Y-%m-%d %H:%M:%S %Z")
+          COMMIT_MSG=$(git log -1 --pretty=%B | head -n 1)
+          COMMIT_HASH=$(git rev-parse --short HEAD)
+          REPO_URL="https://github.com/${{ github.repository }}"
+          
+          CAPTION="✅ <b>Kernel Build Successful!</b>
+          
+          📅 <b>Date:</b> $DATE
+          📝 <b>Commit:</b> <code>$COMMIT_MSG</code>
+          🔢 <b>Hash:</b> <a href=\"$REPO_URL/commit/${{ github.sha }}\">$COMMIT_HASH</a>"
+          
+          # Send the exact .zip file generated earlier
+          curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendDocument" \
+            -F chat_id="$CHAT_ID" \
+            -F document="@Kernel-build-${{ github.sha }}.zip" \
+            -F caption="$CAPTION" \
+            -F parse_mode="HTML"
+
+      - name: Send Telegram Notification (Failure)
+        if: failure()
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ vars.CHAT_ID }}
+        run: |
+          DATE=$(date +"%Y-%m-%d %H:%M:%S %Z")
+          COMMIT_MSG=$(git log -1 --pretty=%B | head -n 1)
+          COMMIT_HASH=$(git rev-parse --short HEAD)
+          REPO_URL="https://github.com/${{ github.repository }}"
+          
+          CAPTION="❌ <b>Kernel Build Failed!</b>
+          
+          📅 <b>Date:</b> $DATE
+          📝 <b>Commit:</b> <code>$COMMIT_MSG</code>
+          🔢 <b>Hash:</b> <a href=\"$REPO_URL/commit/${{ github.sha }}\">$COMMIT_HASH</a>"
+          
+          # Check if build.log exists before sending
+          if [ -f build.log ]; then
+            curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendDocument" \
+              -F chat_id="$CHAT_ID" \
+              -F document="@build.log" \
+              -F caption="$CAPTION
+              
+          The error log is attached to this message." \
+              -F parse_mode="HTML"
+          else
+            curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
+              -d chat_id="$CHAT_ID" \
+              -d text="$CAPTION
+              
+          <i>The error log was not created (the error likely occurred before compilation).</i>" \
+              -d parse_mode="HTML"
+          fi
