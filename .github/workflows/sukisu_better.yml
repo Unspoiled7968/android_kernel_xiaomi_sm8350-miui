@@ -153,14 +153,18 @@ jobs:
             echo "✅ patch_memory.c: copy_to_kernel_nofault -> probe_kernel_write"
           fi
 
-          # Fix file_wrapper.c: wrong security_inode_init_security signature for 5.4
+          # 🚨 Fix LSM Hooks for 5.4 Compatibility
           FW="drivers/kernelsu/infra/file_wrapper.c"
           if [ -f "$FW" ]; then
-            # Replace 6-arg call with correct 5-arg 5.4 signature (last NULL removed)
+            echo "⚠️ Patching LSM hooks in file_wrapper.c for 5.4..."
+            
+            # 1. Downgrade 6-arg security_inode_init_security to 5-arg
             sed -i 's/security_inode_init_security(inode, context_inode, &qname, NULL, NULL, NULL)/security_inode_init_security(inode, context_inode, \&qname, NULL, NULL)/g' "$FW"
-            # Fallback: just zero out any remaining calls
+            
+            # 2. Bypass security_inode_init_security_anon completely (doesn't exist in 5.4)
             sed -i 's/security_inode_init_security_anon([^)]*)/0/g' "$FW"
-            echo "✅ file_wrapper.c: fixed security_inode_init_security signature for 5.4"
+            
+            echo "✅ file_wrapper.c: fixed LSM signatures for 5.4 compatibility"
           fi
       
           echo "✅ SukiSU Ultra integrated + pgtable fixed"
