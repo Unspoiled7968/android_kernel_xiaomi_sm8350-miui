@@ -407,6 +407,8 @@ jobs:
           export CCACHE_BASEDIR="${{ github.workspace }}"
           export CCACHE_NOHASHDIR="true"
           export CCACHE_HARDLINK="true"
+          export CC="ccache clang"
+          export CXX="ccache clang++"
           export PATH="/usr/lib/ccache:$PATH"
           export LOCALVERSION="${{ inputs.localversion }}"
           chmod +x ./build.sh
@@ -433,7 +435,7 @@ jobs:
           # Copy from the correct output directories
           cp out/arch/arm64/boot/Image upload/ || cp ../out/arch/arm64/boot/Image upload/ || true
           find ../out out -name "*.zip" -exec cp {} upload/ \; || true
-          tar -czvf kernel-star-ksunext.tar.gz upload/
+          tar -czvf kernel-star-sukisu.tar.gz upload/
 
       - uses: actions/upload-artifact@v4
         with:
@@ -460,7 +462,7 @@ jobs:
           # Send the exact .zip file generated earlier
           curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendDocument" \
             -F chat_id="$CHAT_ID" \
-            -F document="@Kernel-build-${{ github.sha }}.zip" \
+            -F document="@kernel-star-sukisu.tar.gz" \
             -F caption="$CAPTION" \
             -F parse_mode="HTML"
 
@@ -482,10 +484,10 @@ jobs:
           🔢 <b>Hash:</b> <a href=\"$REPO_URL/commit/${{ github.sha }}\">$COMMIT_HASH</a>"
           
           # Check if build.log exists before sending
-          if [ -f build.log ]; then
+          if [ -f /tmp/kbuild.log ]; then
             curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendDocument" \
               -F chat_id="$CHAT_ID" \
-              -F document="@build.log" \
+              -F document="@/tmp/kbuild.log" \
               -F caption="$CAPTION
               
           The error log is attached to this message." \
