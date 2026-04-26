@@ -95,31 +95,22 @@ jobs:
             libssl-dev ccache libncurses5-dev libncursesw5-dev cmake \
             python3 python-is-python3 cpio curl patch rsync
 
-      - name: Configure CCache
-        run: |
-          echo "CCACHE_DIR=$HOME/.ccache_${{ inputs.device_name }}" >> $GITHUB_ENV
-
-      - name: Restore CCache
-        uses: actions/cache/restore@v4
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
         with:
-          path: $HOME/.ccache_${{ inputs.device_name }}
-          key: ccache-${{ inputs.device_name }}-${{ inputs.lto_type }}-${{ github.run_id }}
-          restore-keys: |
-            ccache-${{ inputs.device_name }}-${{ inputs.lto_type }}-
-            ccache-${{ inputs.device_name }}-
+          max-size: 5G
+          key: kernel-${{ inputs.device_name }}-${{ inputs.lto_type }}
 
-      - name: Init CCache
+      - name: Create clang ccache wrappers
         run: |
-          export CCACHE_DIR="$HOME/.ccache_${{ inputs.device_name }}"
-          export CCACHE_COMPILERCHECK="none"
-          export CCACHE_BASEDIR="${{ github.workspace }}"
-          export CCACHE_NOHASHDIR="true"
-          export CCACHE_HARDLINK="true"
-          mkdir -p "$CCACHE_DIR"
-          ccache -M 10G
-          ccache -o compression=true
-          echo "sloppiness = file_stat_matches,include_file_ctime,include_file_mtime,pch_defines,file_macro,time_macros" >> "$CCACHE_DIR/ccache.conf"
-          ccache -s
+          mkdir -p "$HOME/.ccache_wrappers"
+          printf '#!/bin/sh\nexec ccache /usr/bin/clang "$@"\n' \
+            > "$HOME/.ccache_wrappers/clang"
+          printf '#!/bin/sh\nexec ccache /usr/bin/clang++ "$@"\n' \
+            > "$HOME/.ccache_wrappers/clang++"
+          chmod +x "$HOME/.ccache_wrappers/clang" \
+                   "$HOME/.ccache_wrappers/clang++"
+          echo "$HOME/.ccache_wrappers" >> "$GITHUB_PATH"
 
       - name: "⚡ Setup ReSukiSU (main)"
         run: |
@@ -342,6 +333,24 @@ jobs:
           echo "Enabling Re-Kernel Support..."
           echo "CONFIG_REKERNEL=y" >> "$DEFCONFIG"
 
+      - name: Fix DT2W
+        run: |
+          set -e
+          DEVICE="${{ inputs.device_name || 'star' }}"
+          XIAOMI_CFG="arch/arm64/configs/vendor/xiaomi_QGKI.config"
+          DEVICE_CFG="arch/arm64/configs/vendor/${DEVICE}_QGKI.config"
+
+          set_flag() {
+            local file="$1" key="$2" val="$3"
+            sed -i "/^${key}[= ]/d" "$file"
+            sed -i "/^# ${key} is not set/d" "$file"
+            echo "${key}=${val}" >> "$file"
+          }
+
+          set_flag "$XIAOMI_CFG" "CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_GESTURE" "y"
+          set_flag "$DEVICE_CFG" "CONFIG_TOUCHSCREEN_ST_FTS_DOUBLETAP_WAKE"       "y"
+          set_flag "$XIAOMI_CFG" "CONFIG_PM_WAKELOCKS"                              "y"
+
       - name: Configure Baseband Guard
         if: inputs.baseband_guard
         run: |
@@ -353,16 +362,10 @@ jobs:
       - name: Build Project
         run: |
           git config --global user.email "bot@example.com"
-          git config --global user.name "wannq"
-          export CCACHE_DIR="$HOME/.ccache_${{ inputs.device_name }}"
-          export CCACHE_COMPILERCHECK="none"
-          export CCACHE_BASEDIR="${{ github.workspace }}"
-          export CCACHE_NOHASHDIR="true"
-          export CCACHE_HARDLINK="true"
-          export CC="ccache clang"
-          export CXX="ccache clang++"
-          export PATH="/usr/lib/ccache:$PATH"
+          git config --global user.name "palazik"
           export LOCALVERSION="${{ inputs.localversion }}"
+          echo "clang -> $(which clang)"
+          ccache --zero-stats > /dev/null 2>&1 || true
           chmod +x ./build.sh
           # Tell the script to use ccache
           ./build.sh all ${{ inputs.device_name }} 2>&1 | tee /tmp/kbuild.log
@@ -373,13 +376,6 @@ jobs:
             grep -E "error:|FAILED" /tmp/kbuild.log | tail -50
             exit 1
           fi
-
-      - name: Save CCache
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ env.CCACHE_DIR }}
-          key: ccache-${{ inputs.device_name }}-${{ inputs.lto_type }}-${{ github.run_id }}
 
       - name: Compress & Upload
         run: |
