@@ -153,11 +153,14 @@ jobs:
             echo "✅ patch_memory.c: copy_to_kernel_nofault -> probe_kernel_write"
           fi
 
-          # Fix file_wrapper.c: security_inode_init_security_anon not in 5.4
+          # Fix file_wrapper.c: wrong security_inode_init_security signature for 5.4
           FW="drivers/kernelsu/infra/file_wrapper.c"
-          if [ -f "$FW" ] && grep -q "security_inode_init_security_anon" "$FW"; then
+          if [ -f "$FW" ]; then
+            # Replace 6-arg call with correct 5-arg 5.4 signature (last NULL removed)
+            sed -i 's/security_inode_init_security(inode, context_inode, &qname, NULL, NULL, NULL)/security_inode_init_security(inode, context_inode, \&qname, NULL, NULL)/g' "$FW"
+            # Fallback: just zero out any remaining calls
             sed -i 's/security_inode_init_security_anon([^)]*)/0/g' "$FW"
-            echo "✅ file_wrapper.c: bypassed security_inode_init_security_anon"
+            echo "✅ file_wrapper.c: fixed security_inode_init_security signature for 5.4"
           fi
       
           echo "✅ SukiSU Ultra integrated + pgtable fixed"
