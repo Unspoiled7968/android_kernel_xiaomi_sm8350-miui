@@ -156,15 +156,9 @@ jobs:
           # 🚨 Fix LSM Hooks for 5.4 Compatibility
           FW="drivers/kernelsu/infra/file_wrapper.c"
           if [ -f "$FW" ]; then
-            echo "⚠️ Patching LSM hooks in file_wrapper.c for 5.4..."
-            
-            # 1. Downgrade 6-arg security_inode_init_security to 5-arg
-            sed -i 's/security_inode_init_security(inode, context_inode, &qname, NULL, NULL, NULL)/security_inode_init_security(inode, context_inode, \&qname, NULL, NULL)/g' "$FW"
-            
-            # 2. Bypass security_inode_init_security_anon completely (doesn't exist in 5.4)
-            sed -i 's/security_inode_init_security_anon([^)]*)/0/g' "$FW"
-            
-            echo "✅ file_wrapper.c: fixed LSM signatures for 5.4 compatibility"
+            sed -i 's/&qname, NULL, NULL, NULL)/\&qname, NULL, NULL)/g' "$FW"
+            perl -i -pe 's/security_inode_init_security_anon\([^)]*\)/0/g' "$FW"
+            echo "✅ file_wrapper.c: LSM fixed for 5.4"
           fi
       
           echo "✅ SukiSU Ultra integrated + pgtable fixed"
