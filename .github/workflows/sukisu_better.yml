@@ -126,6 +126,14 @@ jobs:
             
             echo "✅ 5.4 Compatibility patches applied to sucompat.c"
           fi
+
+          # Fix patch_memory.c: copy_to_kernel_nofault -> probe_kernel_write for 5.4
+          PATCH_MEM="drivers/kernelsu/hook/arm64/patch_memory.c"
+          if [ -f "$PATCH_MEM" ]; then
+            grep -q "probe_kernel_write\|copy_to_kernel_nofault" "$PATCH_MEM" && \
+              sed -i 's/copy_to_kernel_nofault(/probe_kernel_write(/g' "$PATCH_MEM"
+            echo "✅ patch_memory.c: copy_to_kernel_nofault -> probe_kernel_write"
+          fi
       
           echo "✅ SukiSU Ultra integrated + pgtable fixed"
 
