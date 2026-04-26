@@ -359,6 +359,8 @@ jobs:
           export CCACHE_BASEDIR="${{ github.workspace }}"
           export CCACHE_NOHASHDIR="true"
           export CCACHE_HARDLINK="true"
+          export CC="ccache clang"
+          export CXX="ccache clang++"
           export PATH="/usr/lib/ccache:$PATH"
           export LOCALVERSION="${{ inputs.localversion }}"
           chmod +x ./build.sh
@@ -412,7 +414,7 @@ jobs:
           # Send the exact .zip file generated earlier
           curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendDocument" \
             -F chat_id="$CHAT_ID" \
-            -F document="@Kernel-build-${{ github.sha }}.zip" \
+            -F document="@kernel-star-resukisu.tar.gz" \
             -F caption="$CAPTION" \
             -F parse_mode="HTML"
 
@@ -434,10 +436,10 @@ jobs:
           🔢 <b>Hash:</b> <a href=\"$REPO_URL/commit/${{ github.sha }}\">$COMMIT_HASH</a>"
           
           # Check if build.log exists before sending
-          if [ -f build.log ]; then
+          if [ -f /tmp/kbuild.log ]; then
             curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendDocument" \
               -F chat_id="$CHAT_ID" \
-              -F document="@build.log" \
+              -F document="@/tmp/kbuild.log" \
               -F caption="$CAPTION
               
           The error log is attached to this message." \
