@@ -78,7 +78,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout Repository
@@ -89,12 +89,31 @@ jobs:
         with:
           swap-size-gb: ${{ inputs.swap_size || '16' }}
 
+      - name: Configure CCache
+        run: |
+          echo "CCACHE_DIR=$HOME/.ccache_${{ inputs.device_name }}" >> $GITHUB_ENV
+
       - name: Restore CCache
         uses: actions/cache/restore@v4
         with:
-          path: ~/.ccache
-          key: ccache-${{ inputs.device_name }}-${{ github.run_id }}
-          restore-keys: ccache-${{ inputs.device_name }}-
+          path: $HOME/.ccache_${{ inputs.device_name }}
+          key: ccache-${{ inputs.device_name }}-${{ inputs.lto_type }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ inputs.device_name }}-${{ inputs.lto_type }}-
+            ccache-${{ inputs.device_name }}-
+
+      - name: Init CCache
+        run: |
+          export CCACHE_DIR="$HOME/.ccache_${{ inputs.device_name }}"
+          export CCACHE_COMPILERCHECK="none"
+          export CCACHE_BASEDIR="${{ github.workspace }}"
+          export CCACHE_NOHASHDIR="true"
+          export CCACHE_HARDLINK="true"
+          mkdir -p "$CCACHE_DIR"
+          ccache -M 10G
+          ccache -o compression=true
+          echo "sloppiness = file_stat_matches,include_file_ctime,include_file_mtime,pch_defines,file_macro,time_macros" >> "$CCACHE_DIR/ccache.conf"
+          ccache -s
 
       - name: Install Dependencies
         run: |
@@ -221,6 +240,9 @@ jobs:
           echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> "$DEFCONFIG"
           echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> "$DEFCONFIG"
           echo "CONFIG_KSU_SUSFS_SUS_MAP=y" >> "$DEFCONFIG"
+
+          # Optimization
+          echo "CONFIG_HZ_300=y" >> "$DEFCONFIG"
           
           # Enable Huawei LZ4KO Crypto Algorithm
           if [ "${{ github.event.inputs.huawei_lz4ko }}" == "true" ]; then
@@ -352,12 +374,16 @@ jobs:
         run: |
           git config --global user.email "bot@example.com"
           git config --global user.name "wannq"
-          export CCACHE_DIR=~/.ccache
-          ccache -M 5G
+          export CCACHE_DIR="$HOME/.ccache_${{ inputs.device_name }}"
+          export CCACHE_COMPILERCHECK="none"
+          export CCACHE_BASEDIR="${{ github.workspace }}"
+          export CCACHE_NOHASHDIR="true"
+          export CCACHE_HARDLINK="true"
+          export PATH="/usr/lib/ccache:$PATH"
           export LOCALVERSION="${{ inputs.localversion }}"
           chmod +x ./build.sh
           # Tell the script to use ccache
-          ./build.sh all ${{ inputs.device_name }} CC="ccache clang" 2>&1 | tee /tmp/kbuild.log
+          ./build.sh all ${{ inputs.device_name }} 2>&1 | tee /tmp/kbuild.log
 
           # Look for the Image in the 'out' directory or '../out' directory
           if [ ! -f out/arch/arm64/boot/Image ] && [ ! -f ../out/arch/arm64/boot/Image ]; then
@@ -370,8 +396,8 @@ jobs:
         if: always()
         uses: actions/cache/save@v4
         with:
-          path: ~/.ccache
-          key: ccache-${{ inputs.device_name }}-${{ github.run_id }}
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ inputs.device_name }}-${{ inputs.lto_type }}-${{ github.run_id }}
 
       - name: Compress & Upload
         run: |
