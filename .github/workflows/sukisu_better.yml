@@ -172,6 +172,15 @@ jobs:
           EOF
             echo "✅ seccomp_cache.c: stubbed for 5.4"
           fi
+
+          # Fix pkg_observer.c: handle_inode_event -> handle_event for 5.4
+          PKG="drivers/kernelsu/manager/pkg_observer.c"
+          if [ -f "$PKG" ]; then
+            sed -i 's/\.handle_inode_event = /.handle_event = /' "$PKG"
+            # Fix function signature: rewrite ksu_handle_inode_event to match 5.4 prototype
+            perl -i -0pe 's/static int ksu_handle_inode_event\s*\(\s*struct fsnotify_mark\s*\*mark,\s*u32\s*mask,\s*struct inode\s*\*inode,\s*struct inode\s*\*dir,\s*const struct qstr\s*\*file_name,\s*u32\s*cookie\s*\)/static int ksu_handle_inode_event(struct fsnotify_group *group, struct inode *inode, u32 mask, const void *data, int data_type, const struct qstr *file_name, u32 cookie, struct fsnotify_iter_info *iter_info)/s' "$PKG"
+            echo "✅ pkg_observer.c: fsnotify fixed for 5.4"
+          fi
       
           echo "✅ SukiSU Ultra integrated + pgtable fixed"
 
