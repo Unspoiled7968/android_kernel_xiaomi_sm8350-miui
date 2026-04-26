@@ -153,6 +153,13 @@ jobs:
               sed -i 's/copy_to_kernel_nofault(/probe_kernel_write(/g' "$PATCH_MEM"
             echo "✅ patch_memory.c: copy_to_kernel_nofault -> probe_kernel_write"
           fi
+
+          # Fix file_wrapper.c: security_inode_init_security_anon -> security_inode_init_security for 5.4
+          FW="drivers/kernelsu/infra/file_wrapper.c"
+          if [ -f "$FW" ]; then
+            sed -i 's/security_inode_init_security_anon(inode, &qname, context_inode)/security_inode_init_security(inode, context_inode, \&qname, NULL, NULL, NULL)/g' "$FW"
+            echo "✅ file_wrapper.c: security_inode_init_security_anon fixed for 5.4"
+          fi
       
           echo "✅ SukiSU Ultra integrated + pgtable fixed"
 
