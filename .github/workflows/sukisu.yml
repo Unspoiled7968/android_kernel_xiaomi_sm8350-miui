@@ -127,19 +127,16 @@ jobs:
           grep -q ksu_handle_execveat fs/exec.c || { echo "HOOKS FAILED"; exit 1; }
 
           # --- SukiSU builtin bugfixes for kernel < 5.10 (5.4 here) ---
-          # Bug: selinux_hide definitions are guarded #if >=5.10 (ksu.c) but the
-          # CALL SITES in runtime/ksud.c are NOT guarded -> implicit declaration on 5.4.
-          # Guard the 3 call sites to match.
+          # Bug: selinux_hide definitions are guarded #if >=5.10 in ksu.c, but the CALL
+          # SITES in runtime/ksud.c are NOT guarded -> implicit declaration on 5.4.
           KSUD=drivers/kernelsu/runtime/ksud.c
           sed -i 's|^\(\s*\)ksu_selinux_hide_handle_post_fs_data();|\1#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)\n\1ksu_selinux_hide_handle_post_fs_data();\n\1#endif|' "$KSUD"
           sed -i 's|^\(\s*\)ksu_selinux_hide_handle_second_stage();|\1#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)\n\1ksu_selinux_hide_handle_second_stage();\n\1#endif|' "$KSUD"
-
-          # Bug: sulog/event.c line ~145 calls raw strncpy_from_user_nofault (absent on 5.4)
-          # instead of the ksu_ compat wrapper used elsewhere in the same file. Fix it.
-          sed -i 's|^\(\s*\)strncpy_from_user_nofault(arg,|\1ksu_strncpy_from_user_nofault(arg,|' drivers/kernelsu/sulog/event.c
-
-          # sanity
           grep -q "KERNEL_VERSION(5, 10, 0)" "$KSUD" || { echo "selinux_hide guard failed"; exit 1; }
+
+          # Bug: sulog/event.c calls raw strncpy_from_user_nofault (absent on 5.4) instead
+          # of the ksu_ compat wrapper used elsewhere in the same file.
+          sed -i 's|^\(\s*\)strncpy_from_user_nofault(arg,|\1ksu_strncpy_from_user_nofault(arg,|' drivers/kernelsu/sulog/event.c
 
       - name: Setup SuSFS (v2.2.0) for 5.4
         run: |
@@ -149,6 +146,14 @@ jobs:
           # Do NOT add susfs.o to fs/Makefile - the patch does it.
           patch -p1 --forward < ../jacka/Patches/Patch/susfs_patch_to_5.4.patch
           grep -q "SUSFS_VERSION" include/linux/susfs.h || { echo "SUSFS FAILED"; exit 1; }
+
+          # Bug: the 5.4 susfs patch uses SUSFS_IS_INODE_OPEN_REDIRECT_WITHOUT_UID_CHECK()
+          # in fs/open.c but only adds the <linux/susfs_def.h> include to fs/proc/*.c,
+          # not to open.c -> implicit declaration on this tree. Add the include.
+          if ! grep -q "susfs_def.h" fs/open.c; then
+            sed -i '/^#include <linux\/falloc.h>/a #if defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)\n#include <linux/susfs_def.h>\n#endif' fs/open.c
+          fi
+          grep -q "susfs_def.h" fs/open.c || { echo "open.c susfs_def include failed"; exit 1; }
           # fail on any susfs-relevant reject (ignore pre-existing touchscreen fuzz)
           REJ=$(find . -name "*.rej" | grep -v touchscreen || true)
           if [ -n "$REJ" ]; then
@@ -298,6 +303,9 @@ jobs:
           echo "Enabling Baseband Guard Support..."
           echo "CONFIG_BBG=y" >> "$DEFCONFIG"
           curl -sSL https://github.com/cctv18/Baseband-guard/raw/master/setup.sh | bash
+          # Insert baseband_guard into the CONFIG_LSM default chain in security/Kconfig.
+          # (No explicit CONFIG_LSM= in the defconfig, so the kernel uses this Kconfig
+          # default - the build-time BBG check confirms it lands correctly.)
           sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' security/Kconfig
 
       - name: Build Project
