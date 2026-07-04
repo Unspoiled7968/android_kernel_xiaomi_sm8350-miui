@@ -138,6 +138,15 @@ jobs:
           # of the ksu_ compat wrapper used elsewhere in the same file.
           sed -i 's|^\(\s*\)strncpy_from_user_nofault(arg,|\1ksu_strncpy_from_user_nofault(arg,|' drivers/kernelsu/sulog/event.c
 
+          # Bug: syscall_hook_patches.sh greps drivers/kernelsu for "ksu_init_rc_hook" and
+          # finds a false positive (it only appears in a pr_info string, not as a variable),
+          # so it patches fs/read_write.c with `extern bool ksu_init_rc_hook` -> undefined
+          # symbol at link time. The real read-hook gate variable is ksu_vfs_read_hook.
+          if grep -q "ksu_init_rc_hook" fs/read_write.c; then
+            sed -i 's/ksu_init_rc_hook/ksu_vfs_read_hook/g' fs/read_write.c
+          fi
+          ! grep -q "ksu_init_rc_hook" fs/read_write.c || { echo "read_write hook symbol fix failed"; exit 1; }
+
       - name: Setup SuSFS (v2.2.0) for 5.4
         run: |
           set -e
