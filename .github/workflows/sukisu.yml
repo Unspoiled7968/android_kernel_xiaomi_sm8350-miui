@@ -126,6 +126,21 @@ jobs:
           # sanity: fail early if hooks didn't land
           grep -q ksu_handle_execveat fs/exec.c || { echo "HOOKS FAILED"; exit 1; }
 
+          # --- SukiSU builtin bugfixes for kernel < 5.10 (5.4 here) ---
+          # Bug: selinux_hide definitions are guarded #if >=5.10 (ksu.c) but the
+          # CALL SITES in runtime/ksud.c are NOT guarded -> implicit declaration on 5.4.
+          # Guard the 3 call sites to match.
+          KSUD=drivers/kernelsu/runtime/ksud.c
+          sed -i 's|^\(\s*\)ksu_selinux_hide_handle_post_fs_data();|\1#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)\n\1ksu_selinux_hide_handle_post_fs_data();\n\1#endif|' "$KSUD"
+          sed -i 's|^\(\s*\)ksu_selinux_hide_handle_second_stage();|\1#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)\n\1ksu_selinux_hide_handle_second_stage();\n\1#endif|' "$KSUD"
+
+          # Bug: sulog/event.c line ~145 calls raw strncpy_from_user_nofault (absent on 5.4)
+          # instead of the ksu_ compat wrapper used elsewhere in the same file. Fix it.
+          sed -i 's|^\(\s*\)strncpy_from_user_nofault(arg,|\1ksu_strncpy_from_user_nofault(arg,|' drivers/kernelsu/sulog/event.c
+
+          # sanity
+          grep -q "KERNEL_VERSION(5, 10, 0)" "$KSUD" || { echo "selinux_hide guard failed"; exit 1; }
+
       - name: Setup SuSFS (v2.2.0) for 5.4
         run: |
           set -e
