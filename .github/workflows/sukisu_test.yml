@@ -1,4 +1,4 @@
-name: Build SukiSU Ultra + SuSFS
+name: test
 
 on:
   workflow_dispatch:
