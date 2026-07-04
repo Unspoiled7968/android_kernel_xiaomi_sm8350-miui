@@ -353,8 +353,10 @@ jobs:
           DEVICE="${{ inputs.device_name || 'star' }}"
           NEW="$(dirname "$AK3")/${DEVICE}-5.4_sukisu-palaziks.zip"
           mv "$AK3" "$NEW"
-          echo "AK3_ZIP=$NEW" >> $GITHUB_ENV
-          echo "✅ Flashable: $NEW"
+          # upload-artifact@v4 rejects '../' paths - copy into the workspace ($GITHUB_WORKSPACE)
+          cp "$NEW" "$GITHUB_WORKSPACE/${DEVICE}-5.4_sukisu-palaziks.zip"
+          echo "AK3_ZIP=$GITHUB_WORKSPACE/${DEVICE}-5.4_sukisu-palaziks.zip" >> $GITHUB_ENV
+          echo "✅ Flashable: $GITHUB_WORKSPACE/${DEVICE}-5.4_sukisu-palaziks.zip"
 
       - uses: actions/upload-artifact@v4
         with:
