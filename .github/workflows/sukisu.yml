@@ -138,14 +138,23 @@ jobs:
           # of the ksu_ compat wrapper used elsewhere in the same file.
           sed -i 's|^\(\s*\)strncpy_from_user_nofault(arg,|\1ksu_strncpy_from_user_nofault(arg,|' drivers/kernelsu/sulog/event.c
 
-          # Bug: syscall_hook_patches.sh greps drivers/kernelsu for "ksu_init_rc_hook" and
-          # finds a false positive (it only appears in a pr_info string, not as a variable),
-          # so it patches fs/read_write.c with `extern bool ksu_init_rc_hook` -> undefined
-          # symbol at link time. The real read-hook gate variable is ksu_vfs_read_hook.
-          if grep -q "ksu_init_rc_hook" fs/read_write.c; then
-            sed -i 's/ksu_init_rc_hook/ksu_vfs_read_hook/g' fs/read_write.c
+          # Bug: under CONFIG_KSU_SUSFS + modern static-key interface (always on >=4.3),
+          # builtin gates the read/input hooks with STATIC KEYS and does NOT define the
+          # ksu_vfs_read_hook / ksu_input_hook bools. But syscall_hook_patches.sh writes
+          # bool gates `if (ksu_vfs_read_hook)` / `if (ksu_input_hook)` into fs/read_write.c
+          # and drivers/input/input.c -> undefined symbols at link. (The read_write case
+          # also mis-picks ksu_init_rc_hook via a pr_info false positive.) Builtin itself
+          # calls these hooks unconditionally under SUSFS, so drop the bool extern + gate
+          # and keep the hook call.
+          for HF in fs/read_write.c drivers/input/input.c; do
+            sed -i '/extern bool ksu_init_rc_hook __read_mostly;/d;/extern bool ksu_vfs_read_hook __read_mostly;/d;/extern bool ksu_input_hook __read_mostly;/d' "$HF"
+            sed -i 's/if (unlikely(ksu_init_rc_hook))[[:space:]]*$//;s/if (unlikely(ksu_vfs_read_hook))[[:space:]]*$//;s/if (unlikely(ksu_input_hook))[[:space:]]*$//' "$HF"
+          done
+          if grep -qE "ksu_init_rc_hook|ksu_vfs_read_hook|ksu_input_hook" fs/read_write.c drivers/input/input.c; then
+            echo "hook gate not fully removed"; grep -n "ksu_.*_hook" fs/read_write.c drivers/input/input.c; exit 1
           fi
-          ! grep -q "ksu_init_rc_hook" fs/read_write.c || { echo "read_write hook symbol fix failed"; exit 1; }
+          grep -q "ksu_handle_sys_read" fs/read_write.c || { echo "read hook call missing"; exit 1; }
+          grep -q "ksu_handle_input_handle_event" drivers/input/input.c || { echo "input hook call missing"; exit 1; }
 
       - name: Setup SuSFS (v2.2.0) for 5.4
         run: |
