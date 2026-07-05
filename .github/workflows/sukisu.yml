@@ -138,6 +138,23 @@ jobs:
           # of the ksu_ compat wrapper used elsewhere in the same file.
           sed -i 's|^\(\s*\)strncpy_from_user_nofault(arg,|\1ksu_strncpy_from_user_nofault(arg,|' drivers/kernelsu/sulog/event.c
 
+          # Bug (THE manager-detection fix): builtin excludes the task_fix_setuid LSM hook
+          # when CONFIG_KSU_SUSFS is on (#ifndef CONFIG_KSU_SUSFS around the LSM_HOOK_INIT).
+          # It instead expects ksu_handle_setresuid to be called from a MANUAL setuid hook in
+          # kernel/sys.c - but the hook script skips that on 5.4. Result: the manager fd is
+          # never installed -> "not installed" even though su works. Fix like ReSukiSU does:
+          # register task_fix_setuid via LSM even under SUSFS, via a wrapper that calls
+          # ksu_handle_setresuid. (This is the core KageSU non-GKI manager-detection fix.)
+          LSMH=drivers/kernelsu/hook/lsm_hook.c
+          if ! grep -q "ksu_task_fix_setuid_susfs" "$LSMH"; then
+            # insert the wrapper just before the ksu_hooks[] array
+            perl -0pi -e 's/(static struct security_hook_list ksu_hooks\[\] = \{)/#ifdef CONFIG_KSU_SUSFS\nstatic int ksu_task_fix_setuid_susfs(struct cred *new, const struct cred *old, int flags)\n{\n    if (likely(new))\n        ksu_handle_setresuid(new->uid.val, new->euid.val, new->suid.val);\n    return 0;\n}\n#endif\n\n$1/' "$LSMH"
+            # register it under SUSFS (add #else branch to the existing guard)
+            perl -0pi -e 's/(#ifndef CONFIG_KSU_SUSFS\n    LSM_HOOK_INIT\(task_fix_setuid, ksu_task_fix_setuid\),\n)#endif/$1#else\n    LSM_HOOK_INIT(task_fix_setuid, ksu_task_fix_setuid_susfs),\n#endif/' "$LSMH"
+          fi
+          grep -q "ksu_task_fix_setuid_susfs" "$LSMH" || { echo "manager-detection setuid fix failed (wrapper)"; exit 1; }
+          grep -q "LSM_HOOK_INIT(task_fix_setuid, ksu_task_fix_setuid_susfs)" "$LSMH" || { echo "manager-detection setuid fix failed (register)"; exit 1; }
+
           # Bug: under CONFIG_KSU_SUSFS + modern static-key interface (always on >=4.3),
           # builtin gates the read/input hooks with STATIC KEYS and does NOT define the
           # ksu_vfs_read_hook / ksu_input_hook bools. But syscall_hook_patches.sh writes
@@ -155,6 +172,19 @@ jobs:
           fi
           grep -q "ksu_handle_sys_read" fs/read_write.c || { echo "read hook call missing"; exit 1; }
           grep -q "ksu_handle_input_handle_event" drivers/input/input.c || { echo "input hook call missing"; exit 1; }
+
+          # Bug: syscall_hook_patches.sh only applies the SELinux su-domain transition
+          # (u:r:su:s0 rule in security/selinux/hooks.c) when kernel major < 5. On 5.4 it
+          # prints "Kernel needn't selinux fix, Skipped" and omits it -> SELinux blocks the
+          # su context switch -> manager reports "not installed" despite KSU being loaded.
+          # Force-apply it (anchors verified present on this tree).
+          HK=security/selinux/hooks.c
+          if ! grep -q "ksu_sid" "$HK"; then
+            sed -i '/int nnp = (bprm->unsafe & LSM_UNSAFE_NO_NEW_PRIVS);/i\#ifdef CONFIG_KSU\n    static u32 ksu_sid;\n    char *secdata;\n#endif' "$HK"
+            sed -i '/if (!nnp && !nosuid)/i\#ifdef CONFIG_KSU\n    int error;\n    u32 seclen;\n#endif' "$HK"
+            sed -i '/return 0; \/\* No change in credentials \*\//a\\n#ifdef CONFIG_KSU\n    if (!ksu_sid)\n        security_secctx_to_secid("u:r:su:s0", strlen("u:r:su:s0"), \&ksu_sid);\n\n    error = security_secid_to_secctx(old_tsec->sid, \&secdata, \&seclen);\n    if (!error) {\n        rc = strcmp("u:r:init:s0", secdata);\n        security_release_secctx(secdata, seclen);\n        if (rc == 0 \&\& new_tsec->sid == ksu_sid)\n            return 0;\n    }\n#endif' "$HK"
+          fi
+          grep -q "ksu_sid" "$HK" || { echo "selinux su-domain fix failed"; exit 1; }
 
       - name: Setup SuSFS (v2.2.0) for 5.4
         run: |
