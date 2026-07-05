@@ -155,6 +155,20 @@ jobs:
           grep -q "ksu_task_fix_setuid_susfs" "$LSMH" || { echo "manager-detection setuid fix failed (wrapper)"; exit 1; }
           grep -q "LSM_HOOK_INIT(task_fix_setuid, ksu_task_fix_setuid_susfs)" "$LSMH" || { echo "manager-detection setuid fix failed (register)"; exit 1; }
 
+          # Bug (THE actual manager-detection root cause): susfs_set_batch_sid() - which
+          # resolves susfs_zygote_sid from "u:r:zygote:s0" - is only called in the >=5.10
+          # SELinux policy path in selinux/rules.c. On 5.4 (the #else legacy branch) it is
+          # NEVER called, so susfs_zygote_sid stays 0. Then ksu_handle_setresuid()'s early
+          # guard `if (!susfs_is_sid_equal(current, susfs_zygote_sid)) return 0;` fails for
+          # EVERY process (comparing against 0) -> the manager-fd branch is never reached ->
+          # "not installed" while su still works. Fix: call susfs_set_batch_sid() in the 5.4
+          # legacy branch too, after the policy is applied. (Core KageSU non-GKI fix.)
+          RULES=drivers/kernelsu/selinux/rules.c
+          if [ "$(grep -c susfs_set_batch_sid "$RULES")" -lt 2 ]; then
+            perl -0pi -e 's/(out_flush:\n    smp_mb\(\);\n    reset_avc_cache\(\);\n)(#endif\n\})/$1#ifdef CONFIG_KSU_SUSFS\n    susfs_set_batch_sid();\n#endif\n$2/' "$RULES"
+          fi
+          [ "$(grep -c susfs_set_batch_sid "$RULES")" -ge 2 ] || { echo "susfs_zygote_sid 5.4 fix failed"; exit 1; }
+
           # Bug: under CONFIG_KSU_SUSFS + modern static-key interface (always on >=4.3),
           # builtin gates the read/input hooks with STATIC KEYS and does NOT define the
           # ksu_vfs_read_hook / ksu_input_hook bools. But syscall_hook_patches.sh writes
