@@ -1,4 +1,4 @@
-name: Build KageSU (susfs-nongki) + SuSFS
+name: Build KageSU + SuSFS
 
 on:
   workflow_dispatch:
@@ -116,9 +116,6 @@ jobs:
         run: |
           set -e
           git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git ../jacka
-          # Use KageSU susfs-nongki: SukiSU builtin + minor changes + the two non-GKI
-          # manager-detection fixes (lsm_hook task_fix_setuid + rules.c susfs_set_batch_sid)
-          # already baked into source, so those two patch blocks are no longer needed here.
           git clone --depth=1 -b susfs-nongki https://github.com/KageKSU/KageSU.git KageSU
           bash KageSU/kernel/setup.sh susfs-nongki
 
@@ -126,13 +123,6 @@ jobs:
           bash syscall_hook_patches.sh
           # sanity: fail early if hooks didn't land
           grep -q ksu_handle_execveat fs/exec.c || { echo "HOOKS FAILED"; exit 1; }
-
-          # NOTE: KageSU susfs-nongki source already includes:
-          #  - the two manager-detection fixes (lsm_hook task_fix_setuid + rules.c batch_sid)
-          #  - the selinux_hide <5.10 call-site guards (runtime/ksud.c)
-          #  - the strncpy_from_user_nofault -> ksu_ wrapper (sulog/event.c)
-          # so none of those are patched here. The blocks below only fix the DEVICE KERNEL
-          # tree (fs/, drivers/input, security/), which KageSU source cannot carry.
 
           # Bug: under CONFIG_KSU_SUSFS + modern static-key interface (always on >=4.3),
           # builtin gates the read/input hooks with STATIC KEYS and does NOT define the
@@ -360,12 +350,12 @@ jobs:
           fi
           # rename to a clean name (device from input)
           DEVICE="${{ inputs.device_name || 'star' }}"
-          NEW="$(dirname "$AK3")/${DEVICE}-5.4_sukisu-palaziks.zip"
+          NEW="$(dirname "$AK3")/${DEVICE}-5.4_KageSU-palaziks.zip"
           mv "$AK3" "$NEW"
           # upload-artifact@v4 rejects '../' paths - copy into the workspace ($GITHUB_WORKSPACE)
-          cp "$NEW" "$GITHUB_WORKSPACE/${DEVICE}-5.4_sukisu-palaziks.zip"
-          echo "AK3_ZIP=$GITHUB_WORKSPACE/${DEVICE}-5.4_sukisu-palaziks.zip" >> $GITHUB_ENV
-          echo "✅ Flashable: $GITHUB_WORKSPACE/${DEVICE}-5.4_sukisu-palaziks.zip"
+          cp "$NEW" "$GITHUB_WORKSPACE/${DEVICE}-5.4_KageSU-palaziks.zip"
+          echo "AK3_ZIP=$GITHUB_WORKSPACE/${DEVICE}-5.4_KageSU-palaziks.zip" >> $GITHUB_ENV
+          echo "✅ Flashable: $GITHUB_WORKSPACE/${DEVICE}-5.4_KageSU-palaziks.zip"
 
       - uses: actions/upload-artifact@v4
         with:
