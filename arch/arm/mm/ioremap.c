@@ -94,8 +94,7 @@ void __init add_static_vm_early(struct static_vm *svm)
 	void *vaddr;
 
 	vm = &svm->vm;
-	if (!vm_area_check_early(vm))
-		vm_area_add_early(vm);
+	vm_area_add_early(vm);
 	vaddr = vm->addr;
 
 	list_for_each_entry(curr_svm, &static_vmlist, list) {
@@ -121,17 +120,10 @@ void __check_vmalloc_seq(struct mm_struct *mm)
 
 	do {
 		seq = init_mm.context.vmalloc_seq;
-#ifdef CONFIG_ENABLE_VMALLOC_SAVING
-		memcpy(pgd_offset(mm, PAGE_OFFSET),
-				pgd_offset_k(PAGE_OFFSET),
-				sizeof(pgd_t) * (pgd_index(VMALLOC_END) -
-					pgd_index(PAGE_OFFSET)));
-#else
 		memcpy(pgd_offset(mm, VMALLOC_START),
 		       pgd_offset_k(VMALLOC_START),
 		       sizeof(pgd_t) * (pgd_index(VMALLOC_END) -
 					pgd_index(VMALLOC_START)));
-#endif
 		mm->context.vmalloc_seq = seq;
 	} while (seq != init_mm.context.vmalloc_seq);
 }
@@ -150,14 +142,8 @@ void __check_vmalloc_seq(struct mm_struct *mm)
 static void unmap_area_sections(unsigned long virt, unsigned long size)
 {
 	unsigned long addr = virt, end = virt + (size & ~(SZ_1M - 1));
-	pgd_t *pgd;
-	pud_t *pud;
-	pmd_t *pmdp;
+	pmd_t *pmdp = pmd_off_k(addr);
 
-	flush_cache_vunmap(addr, end);
-	pgd = pgd_offset_k(addr);
-	pud = pud_offset(pgd, addr);
-	pmdp = pmd_offset(pud, addr);
 	do {
 		pmd_t pmd = *pmdp;
 
@@ -198,9 +184,7 @@ remap_area_sections(unsigned long virt, unsigned long pfn,
 		    size_t size, const struct mem_type *type)
 {
 	unsigned long addr = virt, end = virt + size;
-	pgd_t *pgd;
-	pud_t *pud;
-	pmd_t *pmd;
+	pmd_t *pmd = pmd_off_k(addr);
 
 	/*
 	 * Remove and free any PTE-based mapping, and
@@ -208,9 +192,6 @@ remap_area_sections(unsigned long virt, unsigned long pfn,
 	 */
 	unmap_area_sections(virt, size);
 
-	pgd = pgd_offset_k(addr);
-	pud = pud_offset(pgd, addr);
-	pmd = pmd_offset(pud, addr);
 	do {
 		pmd[0] = __pmd(__pfn_to_phys(pfn) | type->prot_sect);
 		pfn += SZ_1M >> PAGE_SHIFT;
@@ -230,19 +211,13 @@ remap_area_supersections(unsigned long virt, unsigned long pfn,
 			 size_t size, const struct mem_type *type)
 {
 	unsigned long addr = virt, end = virt + size;
-	pgd_t *pgd;
-	pud_t *pud;
-	pmd_t *pmd;
+	pmd_t *pmd = pmd_off_k(addr);
 
 	/*
 	 * Remove and free any PTE-based mapping, and
 	 * sync the current kernel mapping.
 	 */
 	unmap_area_sections(virt, size);
-
-	pgd = pgd_offset_k(virt);
-	pud = pud_offset(pgd, addr);
-	pmd = pmd_offset(pud, addr);
 	do {
 		unsigned long super_pmd_val, i;
 
@@ -392,15 +367,11 @@ void __iomem *ioremap(resource_size_t res_cookie, size_t size)
 EXPORT_SYMBOL(ioremap);
 
 void __iomem *ioremap_cache(resource_size_t res_cookie, size_t size)
-	__alias(ioremap_cached);
-
-void __iomem *ioremap_cached(resource_size_t res_cookie, size_t size)
 {
 	return arch_ioremap_caller(res_cookie, size, MT_DEVICE_CACHED,
 				   __builtin_return_address(0));
 }
 EXPORT_SYMBOL(ioremap_cache);
-EXPORT_SYMBOL(ioremap_cached);
 
 void __iomem *ioremap_wc(resource_size_t res_cookie, size_t size)
 {
@@ -512,7 +483,5 @@ void __init early_ioremap_init(void)
 bool arch_memremap_can_ram_remap(resource_size_t offset, size_t size,
 				 unsigned long flags)
 {
-	unsigned long pfn = PHYS_PFN(offset);
-
-	return memblock_is_map_memory(pfn);
+	return memblock_is_map_memory(offset);
 }

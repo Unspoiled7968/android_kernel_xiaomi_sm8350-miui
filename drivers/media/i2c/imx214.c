@@ -4,7 +4,7 @@
  *
  * Copyright 2018 Qtechnology A/S
  *
- * Ricardo Ribalda <ricardo.ribalda@gmail.com>
+ * Ricardo Ribalda <ribalda@kernel.org>
  */
 #include <linux/clk.h>
 #include <linux/delay.h>
@@ -20,7 +20,9 @@
 #include <media/v4l2-subdev.h>
 
 #define IMX214_DEFAULT_CLK_FREQ	24000000
-#define IMX214_DEFAULT_LINK_FREQ 480000000
+#define IMX214_DEFAULT_LINK_FREQ	600000000
+/* Keep wrong link frequency for backward compatibility */
+#define IMX214_DEFAULT_LINK_FREQ_LEGACY	480000000
 #define IMX214_DEFAULT_PIXEL_RATE ((IMX214_DEFAULT_LINK_FREQ * 8LL) / 10)
 #define IMX214_FPS 30
 #define IMX214_MBUS_CODE MEDIA_BUS_FMT_SRGGB10_1X10
@@ -47,6 +49,7 @@ struct imx214 {
 	struct v4l2_ctrl *pixel_rate;
 	struct v4l2_ctrl *link_freq;
 	struct v4l2_ctrl *exposure;
+	struct v4l2_ctrl *unit_size;
 
 	struct regulator_bulk_data	supplies[IMX214_NUM_SUPPLIES];
 
@@ -802,7 +805,6 @@ err_rpm_put:
 static int imx214_g_frame_interval(struct v4l2_subdev *subdev,
 				   struct v4l2_subdev_frame_interval *fival)
 {
-	fival->pad = 0;
 	fival->interval.numerator = 1;
 	fival->interval.denominator = IMX214_FPS;
 
@@ -891,16 +893,25 @@ static int imx214_parse_fwnode(struct device *dev)
 		goto done;
 	}
 
-	for (i = 0; i < bus_cfg.nr_of_link_frequencies; i++)
+	if (bus_cfg.nr_of_link_frequencies != 1)
+		dev_warn(dev, "Only one link-frequency supported, please review your DT. Continuing anyway\n");
+
+	for (i = 0; i < bus_cfg.nr_of_link_frequencies; i++) {
 		if (bus_cfg.link_frequencies[i] == IMX214_DEFAULT_LINK_FREQ)
 			break;
-
-	if (i == bus_cfg.nr_of_link_frequencies) {
-		dev_err(dev, "link-frequencies %d not supported, Please review your DT\n",
-			IMX214_DEFAULT_LINK_FREQ);
-		ret = -EINVAL;
-		goto done;
+		if (bus_cfg.link_frequencies[i] ==
+		    IMX214_DEFAULT_LINK_FREQ_LEGACY) {
+			dev_warn(dev,
+				 "link-frequencies %d not supported, please review your DT. Continuing anyway\n",
+				 IMX214_DEFAULT_LINK_FREQ);
+			break;
+		}
 	}
+
+	if (i == bus_cfg.nr_of_link_frequencies)
+		ret = dev_err_probe(dev, -EINVAL,
+				    "link-frequencies %d not supported, please review your DT\n",
+				    IMX214_DEFAULT_LINK_FREQ);
 
 done:
 	v4l2_fwnode_endpoint_free(&bus_cfg);
@@ -947,6 +958,10 @@ static int imx214_probe(struct i2c_client *client)
 	struct imx214 *imx214;
 	static const s64 link_freq[] = {
 		IMX214_DEFAULT_LINK_FREQ,
+	};
+	static const struct v4l2_area unit_size = {
+		.width = 1120,
+		.height = 1120,
 	};
 	int ret;
 
@@ -1029,6 +1044,10 @@ static int imx214_probe(struct i2c_client *client)
 					     V4L2_CID_EXPOSURE,
 					     0, 3184, 1, 0x0c70);
 
+	imx214->unit_size = v4l2_ctrl_new_std_compound(&imx214->ctrls,
+				NULL,
+				V4L2_CID_UNIT_CELL_SIZE,
+				v4l2_ctrl_ptr_create((void *)&unit_size));
 	ret = imx214->ctrls.error;
 	if (ret) {
 		dev_err(&client->dev, "%s control init failed (%d)\n",
@@ -1112,5 +1131,5 @@ static struct i2c_driver imx214_i2c_driver = {
 module_i2c_driver(imx214_i2c_driver);
 
 MODULE_DESCRIPTION("Sony IMX214 Camera driver");
-MODULE_AUTHOR("Ricardo Ribalda <ricardo.ribalda@gmail.com>");
+MODULE_AUTHOR("Ricardo Ribalda <ribalda@kernel.org>");
 MODULE_LICENSE("GPL v2");

@@ -318,9 +318,9 @@ void ssusb_set_force_mode(struct ssusb_mtk *ssusb,
 	mtu3_writel(ssusb->ippc_base, SSUSB_U2_CTRL(0), value);
 }
 
-static int ssusb_role_sw_set(struct device *dev, enum usb_role role)
+static int ssusb_role_sw_set(struct usb_role_switch *sw, enum usb_role role)
 {
-	struct ssusb_mtk *ssusb = dev_get_drvdata(dev);
+	struct ssusb_mtk *ssusb = usb_role_switch_get_drvdata(sw);
 	bool to_host = false;
 
 	if (role == USB_ROLE_HOST)
@@ -332,9 +332,9 @@ static int ssusb_role_sw_set(struct device *dev, enum usb_role role)
 	return 0;
 }
 
-static enum usb_role ssusb_role_sw_get(struct device *dev)
+static enum usb_role ssusb_role_sw_get(struct usb_role_switch *sw)
 {
-	struct ssusb_mtk *ssusb = dev_get_drvdata(dev);
+	struct ssusb_mtk *ssusb = usb_role_switch_get_drvdata(sw);
 	enum usb_role role;
 
 	role = ssusb->is_host ? USB_ROLE_HOST : USB_ROLE_DEVICE;
@@ -354,6 +354,7 @@ static int ssusb_role_sw_register(struct otg_switch_mtk *otg_sx)
 	role_sx_desc.set = ssusb_role_sw_set;
 	role_sx_desc.get = ssusb_role_sw_get;
 	role_sx_desc.fwnode = dev_fwnode(ssusb->dev);
+	role_sx_desc.driver_data = ssusb;
 	otg_sx->role_sw = usb_role_switch_register(ssusb->dev, &role_sx_desc);
 
 	return PTR_ERR_OR_ZERO(otg_sx->role_sw);

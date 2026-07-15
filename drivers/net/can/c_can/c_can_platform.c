@@ -40,10 +40,11 @@
 
 #include "c_can.h"
 
-#define DCAN_RAM_INIT_BIT		(1 << 3)
+#define DCAN_RAM_INIT_BIT BIT(3)
+
 static DEFINE_SPINLOCK(raminit_lock);
-/*
- * 16-bit c_can registers can be arranged differently in the memory
+
+/* 16-bit c_can registers can be arranged differently in the memory
  * architecture of different implementations. For example: 16-bit
  * registers can be aligned to a 16-bit boundary or 32-bit boundary etc.
  * Handle the same by providing a common read/write interface.
@@ -55,7 +56,7 @@ static u16 c_can_plat_read_reg_aligned_to_16bit(const struct c_can_priv *priv,
 }
 
 static void c_can_plat_write_reg_aligned_to_16bit(const struct c_can_priv *priv,
-						enum reg index, u16 val)
+						  enum reg index, u16 val)
 {
 	writew(val, priv->base + priv->regs[index]);
 }
@@ -67,7 +68,7 @@ static u16 c_can_plat_read_reg_aligned_to_32bit(const struct c_can_priv *priv,
 }
 
 static void c_can_plat_write_reg_aligned_to_32bit(const struct c_can_priv *priv,
-						enum reg index, u16 val)
+						  enum reg index, u16 val)
 {
 	writew(val, priv->base + 2 * priv->regs[index]);
 }
@@ -145,13 +146,13 @@ static u32 c_can_plat_read_reg32(const struct c_can_priv *priv, enum reg index)
 	u32 val;
 
 	val = priv->read_reg(priv, index);
-	val |= ((u32) priv->read_reg(priv, index + 1)) << 16;
+	val |= ((u32)priv->read_reg(priv, index + 1)) << 16;
 
 	return val;
 }
 
-static void c_can_plat_write_reg32(const struct c_can_priv *priv, enum reg index,
-		u32 val)
+static void c_can_plat_write_reg32(const struct c_can_priv *priv,
+				   enum reg index, u32 val)
 {
 	priv->write_reg(priv, index + 1, val >> 16);
 	priv->write_reg(priv, index, val);
@@ -162,8 +163,8 @@ static u32 d_can_plat_read_reg32(const struct c_can_priv *priv, enum reg index)
 	return readl(priv->base + priv->regs[index]);
 }
 
-static void d_can_plat_write_reg32(const struct c_can_priv *priv, enum reg index,
-		u32 val)
+static void d_can_plat_write_reg32(const struct c_can_priv *priv,
+				   enum reg index, u32 val)
 {
 	writel(val, priv->base + priv->regs[index]);
 }
@@ -329,7 +330,7 @@ static int c_can_plat_probe(struct platform_device *pdev)
 		/* Check if we need custom RAMINIT via syscon. Mostly for TI
 		 * platforms. Only supported with DT boot.
 		 */
-		if (np && of_property_read_bool(np, "syscon-raminit")) {
+		if (np && of_property_present(np, "syscon-raminit")) {
 			u32 id;
 			struct c_can_raminit *raminit = &priv->raminit_sys;
 
@@ -391,15 +392,16 @@ static int c_can_plat_probe(struct platform_device *pdev)
 	if (ret) {
 		dev_err(&pdev->dev, "registering %s failed (err=%d)\n",
 			KBUILD_MODNAME, ret);
-		goto exit_free_device;
+		goto exit_pm_runtime;
 	}
 
 	dev_info(&pdev->dev, "%s device registered (regs=%p, irq=%d)\n",
 		 KBUILD_MODNAME, priv->base, dev->irq);
 	return 0;
 
-exit_free_device:
+exit_pm_runtime:
 	pm_runtime_disable(priv->device);
+exit_free_device:
 	free_c_can_dev(dev);
 exit:
 	dev_err(&pdev->dev, "probe failed\n");

@@ -162,12 +162,12 @@ int drm_atomic_set_mode_prop_for_crtc(struct drm_crtc_state *state,
 EXPORT_SYMBOL(drm_atomic_set_mode_prop_for_crtc);
 
 /**
- * drm_atomic_set_crtc_for_plane - set crtc for plane
+ * drm_atomic_set_crtc_for_plane - set CRTC for plane
  * @plane_state: the plane whose incoming state to update
- * @crtc: crtc to use for the plane
+ * @crtc: CRTC to use for the plane
  *
- * Changing the assigned crtc for a plane requires us to grab the lock and state
- * for the new crtc, as needed. This function takes care of all these details
+ * Changing the assigned CRTC for a plane requires us to grab the lock and state
+ * for the new CRTC, as needed. This function takes care of all these details
  * besides updating the pointer in the state object itself.
  *
  * Returns:
@@ -281,12 +281,12 @@ drm_atomic_set_fence_for_plane(struct drm_plane_state *plane_state,
 EXPORT_SYMBOL(drm_atomic_set_fence_for_plane);
 
 /**
- * drm_atomic_set_crtc_for_connector - set crtc for connector
+ * drm_atomic_set_crtc_for_connector - set CRTC for connector
  * @conn_state: atomic state object for the connector
- * @crtc: crtc to use for the connector
+ * @crtc: CRTC to use for the connector
  *
- * Changing the assigned crtc for a connector requires us to grab the lock and
- * state for the new crtc, as needed. This function takes care of all these
+ * Changing the assigned CRTC for a connector requires us to grab the lock and
+ * state for the new CRTC, as needed. This function takes care of all these
  * details besides updating the pointer in the state object itself.
  *
  * Returns:
@@ -524,6 +524,7 @@ static int drm_atomic_plane_set_property(struct drm_plane *plane,
 
 	if (property == config->prop_fb_id) {
 		struct drm_framebuffer *fb;
+
 		fb = drm_framebuffer_lookup(dev, file_priv, val);
 		drm_atomic_set_fb_for_plane(state, fb);
 		if (fb)
@@ -541,6 +542,7 @@ static int drm_atomic_plane_set_property(struct drm_plane *plane,
 
 	} else if (property == config->prop_crtc_id) {
 		struct drm_crtc *crtc = drm_crtc_find(dev, file_priv, val);
+
 		if (val && !crtc)
 			return -EACCES;
 		return drm_atomic_set_crtc_for_plane(state, crtc);
@@ -582,7 +584,7 @@ static int drm_atomic_plane_set_property(struct drm_plane *plane,
 					&state->fb_damage_clips,
 					val,
 					-1,
-					sizeof(struct drm_rect),
+					sizeof(struct drm_mode_rect),
 					&replaced);
 		return ret;
 	} else if (plane->funcs->atomic_set_property) {
@@ -683,6 +685,7 @@ static int drm_atomic_connector_set_property(struct drm_connector *connector,
 
 	if (property == config->prop_crtc_id) {
 		struct drm_crtc *crtc = drm_crtc_find(dev, file_priv, val);
+
 		if (val && !crtc)
 			return -EACCES;
 		return drm_atomic_set_crtc_for_connector(state, crtc);
@@ -756,6 +759,7 @@ static int drm_atomic_connector_set_property(struct drm_connector *connector,
 	} else if (property == config->writeback_fb_id_property) {
 		struct drm_framebuffer *fb;
 		int ret;
+
 		fb = drm_framebuffer_lookup(dev, file_priv, val);
 		ret = drm_atomic_set_writeback_fb_for_connector(state, fb);
 		if (fb)
@@ -863,6 +867,7 @@ int drm_atomic_get_property(struct drm_mode_object *obj,
 	switch (obj->type) {
 	case DRM_MODE_OBJECT_CONNECTOR: {
 		struct drm_connector *connector = obj_to_connector(obj);
+
 		WARN_ON(!drm_modeset_is_locked(&dev->mode_config.connection_mutex));
 		ret = drm_atomic_connector_get_property(connector,
 				connector->state, property, val);
@@ -870,6 +875,7 @@ int drm_atomic_get_property(struct drm_mode_object *obj,
 	}
 	case DRM_MODE_OBJECT_CRTC: {
 		struct drm_crtc *crtc = obj_to_crtc(obj);
+
 		WARN_ON(!drm_modeset_is_locked(&crtc->mutex));
 		ret = drm_atomic_crtc_get_property(crtc,
 				crtc->state, property, val);
@@ -877,6 +883,7 @@ int drm_atomic_get_property(struct drm_mode_object *obj,
 	}
 	case DRM_MODE_OBJECT_PLANE: {
 		struct drm_plane *plane = obj_to_plane(obj);
+
 		WARN_ON(!drm_modeset_is_locked(&plane->mutex));
 		ret = drm_atomic_plane_get_property(plane,
 				plane->state, property, val);
@@ -929,6 +936,10 @@ int drm_atomic_connector_commit_dpms(struct drm_atomic_state *state,
 
 	if (mode != DRM_MODE_DPMS_ON)
 		mode = DRM_MODE_DPMS_OFF;
+
+	if (connector->dpms == mode)
+		goto out;
+
 	connector->dpms = mode;
 
 	crtc = connector->state->crtc;
@@ -1407,7 +1418,7 @@ retry:
 	} else if (arg->flags & DRM_MODE_ATOMIC_NONBLOCK) {
 		ret = drm_atomic_nonblocking_commit(state);
 	} else {
-		if (unlikely(drm_debug & DRM_UT_STATE))
+		if (drm_debug_enabled(DRM_UT_STATE))
 			drm_atomic_print_state(state);
 
 		ret = drm_atomic_commit(state);

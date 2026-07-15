@@ -2,6 +2,7 @@
 #ifndef _LINUX_ELF_H
 #define _LINUX_ELF_H
 
+#include <linux/types.h>
 #include <asm/elf.h>
 #include <uapi/linux/elf.h>
 
@@ -21,6 +22,9 @@
 	SET_PERSONALITY(ex)
 #endif
 
+#define ELF32_GNU_PROPERTY_ALIGN	4
+#define ELF64_GNU_PROPERTY_ALIGN	8
+
 #if ELF_CLASS == ELFCLASS32
 
 extern Elf32_Dyn _DYNAMIC [];
@@ -31,6 +35,7 @@ extern Elf32_Dyn _DYNAMIC [];
 #define elf_addr_t	Elf32_Off
 #define Elf_Half	Elf32_Half
 #define Elf_Word	Elf32_Word
+#define ELF_GNU_PROPERTY_ALIGN	ELF32_GNU_PROPERTY_ALIGN
 
 #else
 
@@ -42,41 +47,9 @@ extern Elf64_Dyn _DYNAMIC [];
 #define elf_addr_t	Elf64_Off
 #define Elf_Half	Elf64_Half
 #define Elf_Word	Elf64_Word
+#define ELF_GNU_PROPERTY_ALIGN	ELF64_GNU_PROPERTY_ALIGN
 
 #endif
-
-/* Generic helpers for ELF use */
-/* Return first section header */
-static inline struct elf_shdr *elf_sheader(struct elfhdr *hdr)
-{
-	return (struct elf_shdr *)((size_t)hdr + (size_t)hdr->e_shoff);
-}
-
-/* Return idx section header */
-static inline struct elf_shdr *elf_section(struct elfhdr *hdr, int idx)
-{
-	return &elf_sheader(hdr)[idx];
-}
-
-/* Return first program header */
-static inline struct elf_phdr *elf_pheader(struct elfhdr *hdr)
-{
-	return (struct elf_phdr *)((size_t)hdr + (size_t)hdr->e_phoff);
-}
-
-/* Return idx program header */
-static inline struct elf_phdr *elf_program(struct elfhdr *hdr, int idx)
-{
-	return &elf_pheader(hdr)[idx];
-}
-
-/* Retunr section's string table header */
-static inline char *elf_str_table(struct elfhdr *hdr)
-{
-	if (hdr->e_shstrndx == SHN_UNDEF)
-		return NULL;
-	return (char *)hdr + elf_section(hdr, hdr->e_shstrndx)->sh_offset;
-}
 
 /* Optional callbacks to write extra ELF notes. */
 struct file;
@@ -89,4 +62,41 @@ static inline int elf_coredump_extra_notes_write(struct coredump_params *cprm) {
 extern int elf_coredump_extra_notes_size(void);
 extern int elf_coredump_extra_notes_write(struct coredump_params *cprm);
 #endif
+
+/*
+ * NT_GNU_PROPERTY_TYPE_0 header:
+ * Keep this internal until/unless there is an agreed UAPI definition.
+ * pr_type values (GNU_PROPERTY_*) are public and defined in the UAPI header.
+ */
+struct gnu_property {
+	u32 pr_type;
+	u32 pr_datasz;
+};
+
+struct arch_elf_state;
+
+#ifndef CONFIG_ARCH_USE_GNU_PROPERTY
+static inline int arch_parse_elf_property(u32 type, const void *data,
+					  size_t datasz, bool compat,
+					  struct arch_elf_state *arch)
+{
+	return 0;
+}
+#else
+extern int arch_parse_elf_property(u32 type, const void *data, size_t datasz,
+				   bool compat, struct arch_elf_state *arch);
+#endif
+
+#ifdef CONFIG_ARCH_HAVE_ELF_PROT
+int arch_elf_adjust_prot(int prot, const struct arch_elf_state *state,
+			 bool has_interp, bool is_interp);
+#else
+static inline int arch_elf_adjust_prot(int prot,
+				       const struct arch_elf_state *state,
+				       bool has_interp, bool is_interp)
+{
+	return prot;
+}
+#endif
+
 #endif /* _LINUX_ELF_H */

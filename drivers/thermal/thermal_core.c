@@ -5,14 +5,13 @@
  *  Copyright (C) 2008 Intel Corp
  *  Copyright (C) 2008 Zhang Rui <rui.zhang@intel.com>
  *  Copyright (C) 2008 Sujith Thomas <sujith.thomas@intel.com>
- *  Copyright (c) 2019, The Linux Foundation. All rights reserved.
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
-#include <linux/module.h>
 #include <linux/device.h>
 #include <linux/err.h>
+#include <linux/export.h>
 #include <linux/slab.h>
 #include <linux/kdev_t.h>
 #include <linux/idr.h>
@@ -20,23 +19,15 @@
 #include <linux/reboot.h>
 #include <linux/string.h>
 #include <linux/of.h>
-#include <net/netlink.h>
-#include <net/genetlink.h>
 #include <linux/suspend.h>
-#include <linux/cpu_cooling.h>
-#include <drm/mi_disp_notifier.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/thermal.h>
+#undef CREATE_TRACE_POINTS
+#include <trace/hooks/thermal.h>
 
 #include "thermal_core.h"
 #include "thermal_hwmon.h"
-
-MODULE_AUTHOR("Zhang Rui");
-MODULE_DESCRIPTION("Generic thermal management sysfs support");
-MODULE_LICENSE("GPL v2");
-
-#define CPU_LIMITS_PARAM_NUM	2
 
 static DEFINE_IDA(thermal_tz_ida);
 static DEFINE_IDA(thermal_cdev_ida);
@@ -53,24 +44,6 @@ static atomic_t in_suspend;
 static bool power_off_triggered;
 
 static struct thermal_governor *def_governor;
-
-#ifdef CONFIG_QTI_THERMAL
-struct device thermal_message_dev;
-EXPORT_SYMBOL_GPL(thermal_message_dev);
-static atomic_t switch_mode = ATOMIC_INIT(10);
-static atomic_t balance_mode = ATOMIC_INIT(0);
-static atomic_t temp_state = ATOMIC_INIT(0);
-static atomic_t charger_mode = ATOMIC_INIT(-1);
-static atomic_t modem_limit = ATOMIC_INIT(0);
-static atomic_t market_download_limit = ATOMIC_INIT(0);
-static atomic_t flash_state = ATOMIC_INIT(0);
-static atomic_t wifi_limit = ATOMIC_INIT(0);
-static atomic_t poor_modem_limit = ATOMIC_INIT(0);
-static char boost_buf[128];
-const char *board_sensor;
-static char board_sensor_temp[128];
-static char board_sensor_second_temp[128];
-#endif
 
 /*
  * Governor section: set of functions to handle thermal governors
@@ -244,6 +217,8 @@ exit:
 	mutex_unlock(&tz->lock);
 	mutex_unlock(&thermal_governor_lock);
 
+	thermal_notify_tz_gov_change(tz->id, policy);
+
 	return ret;
 }
 
@@ -314,92 +289,6 @@ static int __init thermal_register_governors(void)
  * - Hot trips will produce a notification to userspace;
  * - Critical trip point will cause a system shutdown.
  */
-#ifdef CONFIG_QTI_THERMAL
-#define THERMAL_MAX_ACTIVE	16
-
-static struct workqueue_struct *thermal_passive_wq;
-static void thermal_zone_device_set_polling(struct workqueue_struct *queue,
-					    struct thermal_zone_device *tz,
-					    int delay)
-{
-	if (delay > 1000)
-		mod_delayed_work(queue, &tz->poll_queue,
-				 round_jiffies(msecs_to_jiffies(delay)));
-	else if (delay)
-		mod_delayed_work(queue, &tz->poll_queue,
-				 msecs_to_jiffies(delay));
-	else
-		cancel_delayed_work(&tz->poll_queue);
-}
-
-static void monitor_thermal_zone(struct thermal_zone_device *tz)
-{
-	mutex_lock(&tz->lock);
-
-	if (tz->passive)
-		thermal_zone_device_set_polling(thermal_passive_wq,
-						tz, tz->passive_delay);
-	else if (tz->polling_delay)
-		thermal_zone_device_set_polling(
-				system_freezable_power_efficient_wq,
-				tz, tz->polling_delay);
-	else
-		thermal_zone_device_set_polling(NULL, tz, 0);
-
-	mutex_unlock(&tz->lock);
-}
-static void store_temperature(struct thermal_zone_device *tz, int temp)
-{
-	mutex_lock(&tz->lock);
-	tz->last_temperature = tz->temperature;
-	tz->temperature = temp;
-	mutex_unlock(&tz->lock);
-
-	trace_thermal_temperature(tz);
-	if (tz->last_temperature == THERMAL_TEMP_INVALID)
-		dev_dbg(&tz->device, "last_temperature N/A, current_temperature=%d\n",
-			tz->temperature);
-	else
-		dev_dbg(&tz->device, "last_temperature=%d, current_temperature=%d\n",
-			tz->last_temperature, tz->temperature);
-}
-
-static void update_temperature(struct thermal_zone_device *tz)
-{
-	int temp, ret;
-
-	ret = thermal_zone_get_temp(tz, &temp);
-	if (ret) {
-		if (ret != -EAGAIN)
-			dev_warn(&tz->device,
-				 "failed to read out thermal zone (%d)\n",
-				 ret);
-		return;
-	}
-	store_temperature(tz, temp);
-}
-
-static void handle_thermal_trip(struct thermal_zone_device *tz, int trip);
-
-void thermal_zone_device_update_temp(struct thermal_zone_device *tz,
-				enum thermal_notify_event event, int temp)
-{
-	int count;
-
-	if (atomic_read(&in_suspend) && tz->polling_delay)
-		return;
-	trace_thermal_device_update(tz, event);
-	store_temperature(tz, temp);
-
-	thermal_zone_set_trips(tz);
-
-	tz->notify_event = event;
-
-	for (count = 0; count < tz->trips; count++)
-		handle_thermal_trip(tz, count);
-}
-EXPORT_SYMBOL(thermal_zone_device_update_temp);
-#else
 static void thermal_zone_device_set_polling(struct thermal_zone_device *tz,
 					    int delay)
 {
@@ -415,46 +304,28 @@ static void thermal_zone_device_set_polling(struct thermal_zone_device *tz,
 		cancel_delayed_work(&tz->poll_queue);
 }
 
+static inline bool should_stop_polling(struct thermal_zone_device *tz)
+{
+	return !thermal_zone_device_is_enabled(tz);
+}
+
 static void monitor_thermal_zone(struct thermal_zone_device *tz)
 {
+	bool stop;
+
+	stop = should_stop_polling(tz);
+
 	mutex_lock(&tz->lock);
 
-	if (tz->passive)
+	if (!stop && tz->passive)
 		thermal_zone_device_set_polling(tz, tz->passive_delay);
-	else if (tz->polling_delay)
+	else if (!stop && tz->polling_delay)
 		thermal_zone_device_set_polling(tz, tz->polling_delay);
 	else
 		thermal_zone_device_set_polling(tz, 0);
 
 	mutex_unlock(&tz->lock);
 }
-static void update_temperature(struct thermal_zone_device *tz)
-{
-	int temp, ret;
-
-	ret = thermal_zone_get_temp(tz, &temp);
-	if (ret) {
-		if (ret != -EAGAIN)
-			dev_warn(&tz->device,
-				 "failed to read out thermal zone (%d)\n",
-				 ret);
-		return;
-	}
-
-	mutex_lock(&tz->lock);
-	tz->last_temperature = tz->temperature;
-	tz->temperature = temp;
-	mutex_unlock(&tz->lock);
-
-	trace_thermal_temperature(tz);
-	if (tz->last_temperature == THERMAL_TEMP_INVALID)
-		dev_dbg(&tz->device, "last_temperature N/A, current_temperature=%d\n",
-			tz->temperature);
-	else
-		dev_dbg(&tz->device, "last_temperature=%d, current_temperature=%d\n",
-			tz->last_temperature, tz->temperature);
-}
-#endif
 
 static void handle_non_critical_trips(struct thermal_zone_device *tz, int trip)
 {
@@ -521,9 +392,7 @@ static void handle_critical_trips(struct thermal_zone_device *tz,
 	if (trip_temp <= 0 || tz->temperature < trip_temp)
 		return;
 
-#ifdef CONFIG_QTI_THERMAL
-	trace_thermal_zone_trip(tz, trip, trip_type, true);
-#endif
+	trace_thermal_zone_trip(tz, trip, trip_type);
 
 	if (tz->ops->notify)
 		tz->ops->notify(tz, trip, trip_type);
@@ -549,12 +418,25 @@ static void handle_critical_trips(struct thermal_zone_device *tz,
 static void handle_thermal_trip(struct thermal_zone_device *tz, int trip)
 {
 	enum thermal_trip_type type;
+	int trip_temp, hyst = 0;
 
 	/* Ignore disabled trip points */
 	if (test_bit(trip, &tz->trips_disabled))
 		return;
 
+	tz->ops->get_trip_temp(tz, trip, &trip_temp);
 	tz->ops->get_trip_type(tz, trip, &type);
+	if (tz->ops->get_trip_hyst)
+		tz->ops->get_trip_hyst(tz, trip, &hyst);
+
+	if (tz->last_temperature != THERMAL_TEMP_INVALID) {
+		if (tz->last_temperature < trip_temp &&
+		    tz->temperature >= trip_temp)
+			thermal_notify_tz_trip_up(tz->id, trip);
+		if (tz->last_temperature >= trip_temp &&
+		    tz->temperature < (trip_temp - hyst))
+			thermal_notify_tz_trip_down(tz->id, trip);
+	}
 
 	if (type == THERMAL_TRIP_CRITICAL || type == THERMAL_TRIP_HOT)
 		handle_critical_trips(tz, trip, type);
@@ -565,9 +447,29 @@ static void handle_thermal_trip(struct thermal_zone_device *tz, int trip)
 	 * So, start monitoring again.
 	 */
 	monitor_thermal_zone(tz);
-#ifdef CONFIG_QTI_THERMAL
-	trace_thermal_handle_trip(tz, trip);
-#endif
+}
+
+static void update_temperature(struct thermal_zone_device *tz)
+{
+	int temp, ret;
+
+	ret = thermal_zone_get_temp(tz, &temp);
+	if (ret) {
+		if (ret != -EAGAIN)
+			dev_warn(&tz->device,
+				 "failed to read out thermal zone (%d)\n",
+				 ret);
+		return;
+	}
+
+	mutex_lock(&tz->lock);
+	tz->last_temperature = tz->temperature;
+	tz->temperature = temp;
+	mutex_unlock(&tz->lock);
+
+	trace_thermal_temperature(tz);
+
+	thermal_genl_sampling_temp(tz->id, temp);
 }
 
 static void thermal_zone_device_init(struct thermal_zone_device *tz)
@@ -586,21 +488,77 @@ static void thermal_zone_device_reset(struct thermal_zone_device *tz)
 	thermal_zone_device_init(tz);
 }
 
+static int thermal_zone_device_set_mode(struct thermal_zone_device *tz,
+					enum thermal_device_mode mode)
+{
+	int ret = 0;
+
+	mutex_lock(&tz->lock);
+
+	/* do nothing if mode isn't changing */
+	if (mode == tz->mode) {
+		mutex_unlock(&tz->lock);
+
+		return ret;
+	}
+
+	if (tz->ops->change_mode)
+		ret = tz->ops->change_mode(tz, mode);
+
+	if (!ret)
+		tz->mode = mode;
+
+	mutex_unlock(&tz->lock);
+
+	thermal_zone_device_update(tz, THERMAL_EVENT_UNSPECIFIED);
+
+	if (mode == THERMAL_DEVICE_ENABLED)
+		thermal_notify_tz_enable(tz->id);
+	else
+		thermal_notify_tz_disable(tz->id);
+
+	return ret;
+}
+
+int thermal_zone_device_enable(struct thermal_zone_device *tz)
+{
+	return thermal_zone_device_set_mode(tz, THERMAL_DEVICE_ENABLED);
+}
+EXPORT_SYMBOL_GPL(thermal_zone_device_enable);
+
+int thermal_zone_device_disable(struct thermal_zone_device *tz)
+{
+	return thermal_zone_device_set_mode(tz, THERMAL_DEVICE_DISABLED);
+}
+EXPORT_SYMBOL_GPL(thermal_zone_device_disable);
+
+int thermal_zone_device_is_enabled(struct thermal_zone_device *tz)
+{
+	enum thermal_device_mode mode;
+
+	mutex_lock(&tz->lock);
+
+	mode = tz->mode;
+
+	mutex_unlock(&tz->lock);
+
+	return mode == THERMAL_DEVICE_ENABLED;
+}
+EXPORT_SYMBOL_GPL(thermal_zone_device_is_enabled);
+
 void thermal_zone_device_update(struct thermal_zone_device *tz,
 				enum thermal_notify_event event)
 {
 	int count;
 
-	if (!tz->ops->get_temp)
+	if (should_stop_polling(tz))
 		return;
-#ifdef CONFIG_QTI_THERMAL
-	if (atomic_read(&in_suspend) && tz->polling_delay)
-		return;
-	trace_thermal_device_update(tz, event);
-#else
+
 	if (atomic_read(&in_suspend))
 		return;
-#endif
+
+	if (!tz->ops->get_temp)
+		return;
 
 	update_temperature(tz);
 
@@ -649,7 +607,6 @@ static void thermal_zone_device_check(struct work_struct *work)
 /**
  * power_actor_get_max_power() - get the maximum power that a cdev can consume
  * @cdev:	pointer to &thermal_cooling_device
- * @tz:		a valid thermal zone device pointer
  * @max_power:	pointer in which to store the maximum power
  *
  * Calculate the maximum power consumption in milliwats that the
@@ -659,18 +616,17 @@ static void thermal_zone_device_check(struct work_struct *work)
  * power_actor API or -E* on other error.
  */
 int power_actor_get_max_power(struct thermal_cooling_device *cdev,
-			      struct thermal_zone_device *tz, u32 *max_power)
+			      u32 *max_power)
 {
 	if (!cdev_is_power_actor(cdev))
 		return -EINVAL;
 
-	return cdev->ops->state2power(cdev, tz, 0, max_power);
+	return cdev->ops->state2power(cdev, 0, max_power);
 }
 
 /**
  * power_actor_get_min_power() - get the mainimum power that a cdev can consume
  * @cdev:	pointer to &thermal_cooling_device
- * @tz:		a valid thermal zone device pointer
  * @min_power:	pointer in which to store the minimum power
  *
  * Calculate the minimum power consumption in milliwatts that the
@@ -680,7 +636,7 @@ int power_actor_get_max_power(struct thermal_cooling_device *cdev,
  * power_actor API or -E* on other error.
  */
 int power_actor_get_min_power(struct thermal_cooling_device *cdev,
-			      struct thermal_zone_device *tz, u32 *min_power)
+			      u32 *min_power)
 {
 	unsigned long max_state;
 	int ret;
@@ -692,7 +648,7 @@ int power_actor_get_min_power(struct thermal_cooling_device *cdev,
 	if (ret)
 		return ret;
 
-	return cdev->ops->state2power(cdev, tz, max_state, min_power);
+	return cdev->ops->state2power(cdev, max_state, min_power);
 }
 
 /**
@@ -716,7 +672,7 @@ int power_actor_set_power(struct thermal_cooling_device *cdev,
 	if (!cdev_is_power_actor(cdev))
 		return -EINVAL;
 
-	ret = cdev->ops->power2state(cdev, instance->tz, power, &state);
+	ret = cdev->ops->power2state(cdev, power, &state);
 	if (ret)
 		return ret;
 
@@ -747,6 +703,73 @@ void thermal_zone_device_rebind_exception(struct thermal_zone_device *tz,
 						 THERMAL_WEIGHT_DEFAULT);
 	}
 	mutex_unlock(&thermal_list_lock);
+}
+
+int for_each_thermal_governor(int (*cb)(struct thermal_governor *, void *),
+			      void *data)
+{
+	struct thermal_governor *gov;
+	int ret = 0;
+
+	mutex_lock(&thermal_governor_lock);
+	list_for_each_entry(gov, &thermal_governor_list, governor_list) {
+		ret = cb(gov, data);
+		if (ret)
+			break;
+	}
+	mutex_unlock(&thermal_governor_lock);
+
+	return ret;
+}
+
+int for_each_thermal_cooling_device(int (*cb)(struct thermal_cooling_device *,
+					      void *), void *data)
+{
+	struct thermal_cooling_device *cdev;
+	int ret = 0;
+
+	mutex_lock(&thermal_list_lock);
+	list_for_each_entry(cdev, &thermal_cdev_list, node) {
+		ret = cb(cdev, data);
+		if (ret)
+			break;
+	}
+	mutex_unlock(&thermal_list_lock);
+
+	return ret;
+}
+
+int for_each_thermal_zone(int (*cb)(struct thermal_zone_device *, void *),
+			  void *data)
+{
+	struct thermal_zone_device *tz;
+	int ret = 0;
+
+	mutex_lock(&thermal_list_lock);
+	list_for_each_entry(tz, &thermal_tz_list, node) {
+		ret = cb(tz, data);
+		if (ret)
+			break;
+	}
+	mutex_unlock(&thermal_list_lock);
+
+	return ret;
+}
+
+struct thermal_zone_device *thermal_zone_get_by_id(int id)
+{
+	struct thermal_zone_device *tz, *match = NULL;
+
+	mutex_lock(&thermal_list_lock);
+	list_for_each_entry(tz, &thermal_tz_list, node) {
+		if (tz->id == id) {
+			match = tz;
+			break;
+		}
+	}
+	mutex_unlock(&thermal_list_lock);
+
+	return match;
 }
 
 void thermal_zone_device_unbind_exception(struct thermal_zone_device *tz,
@@ -830,32 +853,9 @@ int thermal_zone_bind_cooling_device(struct thermal_zone_device *tz,
 	if (ret)
 		return ret;
 
-#ifdef CONFIG_QTI_THERMAL
-	/*
-	 * If upper or lower has a MACRO to define the mitigation state,
-	 * based on the MACRO determine the default state to use or the
-	 * offset from the max_state.
-	 */
-	if (upper >= (THERMAL_MAX_LIMIT - max_state)) {
-		/* upper default max_state */
-		if (upper == THERMAL_NO_LIMIT)
-			upper = max_state;
-		else
-			upper = max_state - (THERMAL_MAX_LIMIT - upper);
-	}
-
-	if (lower >= (THERMAL_MAX_LIMIT - max_state)) {
-		/* lower default 0 */
-		if (lower == THERMAL_NO_LIMIT)
-			lower = 0;
-		else
-			lower =  max_state - (THERMAL_MAX_LIMIT - lower);
-	}
-#else
 	/* lower default 0, upper default max_state */
 	lower = lower == THERMAL_NO_LIMIT ? 0 : lower;
 	upper = upper == THERMAL_NO_LIMIT ? max_state : upper;
-#endif
 
 	if (lower > upper || upper > max_state)
 		return -EINVAL;
@@ -980,31 +980,6 @@ unbind:
 }
 EXPORT_SYMBOL_GPL(thermal_zone_unbind_cooling_device);
 
-#ifdef CONFIG_QTI_THERMAL
-static void thermal_release(struct device *dev)
-{
-	struct thermal_zone_device *tz;
-	struct thermal_cooling_device *cdev;
-	struct thermal_instance *instance;
-
-	if (!strncmp(dev_name(dev), "thermal_zone",
-		     sizeof("thermal_zone") - 1)) {
-		tz = to_thermal_zone(dev);
-		thermal_zone_destroy_device_groups(tz);
-		kfree(tz);
-	} else if (!strncmp(dev_name(dev), "cooling_device",
-			    sizeof("cooling_device") - 1)) {
-		cdev = to_cooling_device(dev);
-		if (list_is_singular(&cdev->thermal_instances)) {
-			instance = list_first_entry(&cdev->thermal_instances,
-					typeof(*instance), cdev_node);
-			list_del(&instance->cdev_node);
-			kfree(instance);
-		}
-		kfree(cdev);
-	}
-}
-#else
 static void thermal_release(struct device *dev)
 {
 	struct thermal_zone_device *tz;
@@ -1021,13 +996,11 @@ static void thermal_release(struct device *dev)
 		kfree(cdev);
 	}
 }
-#endif
 
-struct class thermal_class = {
+static struct class thermal_class = {
 	.name = "thermal",
 	.dev_release = thermal_release,
 };
-EXPORT_SYMBOL_GPL(thermal_class);
 
 static inline
 void print_bind_err_msg(struct thermal_zone_device *tz,
@@ -1125,9 +1098,6 @@ __thermal_cooling_device_register(struct device_node *np,
 	struct thermal_cooling_device *cdev;
 	struct thermal_zone_device *pos = NULL;
 	int result;
-#ifdef CONFIG_QTI_THERMAL
-	struct thermal_instance *instance;
-#endif
 
 	if (type && strlen(type) >= THERMAL_NAME_LENGTH)
 		return ERR_PTR(-EINVAL);
@@ -1140,20 +1110,9 @@ __thermal_cooling_device_register(struct device_node *np,
 	if (!cdev)
 		return ERR_PTR(-ENOMEM);
 
-#ifdef CONFIG_QTI_THERMAL
-	instance = kzalloc(sizeof(*instance), GFP_KERNEL);
-	if (!instance) {
-		kfree(cdev);
-		return ERR_PTR(-ENOMEM);
-	}
-#endif
-
 	result = ida_simple_get(&thermal_cdev_ida, 0, 0, GFP_KERNEL);
 	if (result < 0) {
 		kfree(cdev);
-#ifdef CONFIG_QTI_THERMAL
-		kfree(instance);
-#endif
 		return ERR_PTR(result);
 	}
 
@@ -1161,10 +1120,6 @@ __thermal_cooling_device_register(struct device_node *np,
 	strlcpy(cdev->type, type ? : "", sizeof(cdev->type));
 	mutex_init(&cdev->lock);
 	INIT_LIST_HEAD(&cdev->thermal_instances);
-#ifdef CONFIG_QTI_THERMAL
-	instance->target = THERMAL_NO_TARGET;
-	list_add_tail(&instance->cdev_node, &cdev->thermal_instances);
-#endif
 	cdev->np = np;
 	cdev->ops = ops;
 	cdev->updated = false;
@@ -1535,16 +1490,14 @@ thermal_zone_device_register(const char *type, int trips, int mask,
 	/* Bind cooling devices for this zone */
 	bind_tz(tz);
 
-#ifdef CONFIG_QTI_THERMAL
-	INIT_DEFERRABLE_WORK(&(tz->poll_queue), thermal_zone_device_check);
-#else
 	INIT_DELAYED_WORK(&tz->poll_queue, thermal_zone_device_check);
-#endif
 
 	thermal_zone_device_reset(tz);
 	/* Update the new thermal zone and mark it as already updated. */
 	if (atomic_cmpxchg(&tz->need_update, 1, 0))
 		thermal_zone_device_update(tz, THERMAL_EVENT_UNSPECIFIED);
+
+	thermal_notify_tz_create(tz->id, tz->type);
 
 	return tz;
 
@@ -1567,7 +1520,7 @@ EXPORT_SYMBOL_GPL(thermal_zone_device_register);
  */
 void thermal_zone_device_unregister(struct thermal_zone_device *tz)
 {
-	int i;
+	int i, tz_id;
 	const struct thermal_zone_params *tzp;
 	struct thermal_cooling_device *cdev;
 	struct thermal_zone_device *pos = NULL;
@@ -1576,6 +1529,7 @@ void thermal_zone_device_unregister(struct thermal_zone_device *tz)
 		return;
 
 	tzp = tz->tzp;
+	tz_id = tz->id;
 
 	mutex_lock(&thermal_list_lock);
 	list_for_each_entry(pos, &thermal_tz_list, node)
@@ -1617,6 +1571,8 @@ void thermal_zone_device_unregister(struct thermal_zone_device *tz)
 	ida_destroy(&tz->ida);
 	mutex_destroy(&tz->lock);
 	device_unregister(&tz->device);
+
+	thermal_notify_tz_delete(tz_id);
 }
 EXPORT_SYMBOL_GPL(thermal_zone_device_unregister);
 
@@ -1658,102 +1614,11 @@ exit:
 }
 EXPORT_SYMBOL_GPL(thermal_zone_get_zone_by_name);
 
-#ifdef CONFIG_NET
-static const struct genl_multicast_group thermal_event_mcgrps[] = {
-	{ .name = THERMAL_GENL_MCAST_GROUP_NAME, },
-};
-
-static struct genl_family thermal_event_genl_family __ro_after_init = {
-	.module = THIS_MODULE,
-	.name = THERMAL_GENL_FAMILY_NAME,
-	.version = THERMAL_GENL_VERSION,
-	.maxattr = THERMAL_GENL_ATTR_MAX,
-	.mcgrps = thermal_event_mcgrps,
-	.n_mcgrps = ARRAY_SIZE(thermal_event_mcgrps),
-};
-
-int thermal_generate_netlink_event(struct thermal_zone_device *tz,
-				   enum events event)
-{
-	struct sk_buff *skb;
-	struct nlattr *attr;
-	struct thermal_genl_event *thermal_event;
-	void *msg_header;
-	int size;
-	int result;
-	static unsigned int thermal_event_seqnum;
-
-	if (!tz)
-		return -EINVAL;
-
-	/* allocate memory */
-	size = nla_total_size(sizeof(struct thermal_genl_event)) +
-	       nla_total_size(0);
-
-	skb = genlmsg_new(size, GFP_ATOMIC);
-	if (!skb)
-		return -ENOMEM;
-
-	/* add the genetlink message header */
-	msg_header = genlmsg_put(skb, 0, thermal_event_seqnum++,
-				 &thermal_event_genl_family, 0,
-				 THERMAL_GENL_CMD_EVENT);
-	if (!msg_header) {
-		nlmsg_free(skb);
-		return -ENOMEM;
-	}
-
-	/* fill the data */
-	attr = nla_reserve(skb, THERMAL_GENL_ATTR_EVENT,
-			   sizeof(struct thermal_genl_event));
-
-	if (!attr) {
-		nlmsg_free(skb);
-		return -EINVAL;
-	}
-
-	thermal_event = nla_data(attr);
-	if (!thermal_event) {
-		nlmsg_free(skb);
-		return -EINVAL;
-	}
-
-	memset(thermal_event, 0, sizeof(struct thermal_genl_event));
-
-	thermal_event->orig = tz->id;
-	thermal_event->event = event;
-
-	/* send multicast genetlink message */
-	genlmsg_end(skb, msg_header);
-
-	result = genlmsg_multicast(&thermal_event_genl_family, skb, 0,
-				   0, GFP_ATOMIC);
-	if (result)
-		dev_err(&tz->device, "Failed to send netlink event:%d", result);
-
-	return result;
-}
-EXPORT_SYMBOL_GPL(thermal_generate_netlink_event);
-
-static int __init genetlink_init(void)
-{
-	return genl_register_family(&thermal_event_genl_family);
-}
-
-static void genetlink_exit(void)
-{
-	genl_unregister_family(&thermal_event_genl_family);
-}
-#else /* !CONFIG_NET */
-static inline int genetlink_init(void) { return 0; }
-static inline void genetlink_exit(void) {}
-#endif /* !CONFIG_NET */
-
 static int thermal_pm_notify(struct notifier_block *nb,
 			     unsigned long mode, void *_unused)
 {
 	struct thermal_zone_device *tz;
-	enum thermal_device_mode tz_mode;
+	int irq_wakeable = 0;
 
 	switch (mode) {
 	case PM_HIBERNATION_PREPARE:
@@ -1766,18 +1631,12 @@ static int thermal_pm_notify(struct notifier_block *nb,
 	case PM_POST_SUSPEND:
 		atomic_set(&in_suspend, 0);
 		list_for_each_entry(tz, &thermal_tz_list, node) {
-			tz_mode = THERMAL_DEVICE_ENABLED;
-			if (tz->ops->get_mode)
-				tz->ops->get_mode(tz, &tz_mode);
+			if (!thermal_zone_device_is_enabled(tz))
+				continue;
 
-#ifdef CONFIG_QTI_THERMAL
-			if (tz_mode == THERMAL_DEVICE_DISABLED ||
-				tz->polling_delay == 0)
+			trace_android_vh_thermal_pm_notify_suspend(tz, &irq_wakeable);
+			if (irq_wakeable)
 				continue;
-#else
-			if (tz_mode == THERMAL_DEVICE_DISABLED)
-				continue;
-#endif
 
 			thermal_zone_device_init(tz);
 			thermal_zone_device_update(tz,
@@ -1794,418 +1653,17 @@ static struct notifier_block thermal_pm_nb = {
 	.notifier_call = thermal_pm_notify,
 };
 
-#ifdef CONFIG_QTI_THERMAL
-static int of_parse_thermal_message(void)
-{
-	struct device_node *np;
-
-	np = of_find_node_by_name(NULL, "thermal-message");
-	if (!np)
-		return -EINVAL;
-
-	if (of_property_read_string(np, "board-sensor", &board_sensor))
-		return -EINVAL;
-
-	pr_info("%s board sensor: %s\n", __func__, board_sensor);
-
-	return 0;
-}
-
-static ssize_t
-thermal_sconfig_show(struct device *dev,
-				      struct device_attribute *attr, char *buf)
-{
-	return snprintf(buf, PAGE_SIZE, "%d\n", atomic_read(&switch_mode));
-}
-
-static ssize_t
-thermal_sconfig_store(struct device *dev,
-				      struct device_attribute *attr, const char *buf, size_t len)
-{
-	int ret, val = -1;
-
-	ret = kstrtoint(buf, 10, &val);
-
-	atomic_set(&switch_mode, val);
-
-	if (ret)
-		return ret;
-
-	return len;
-}
-
-static DEVICE_ATTR(sconfig, 0664,
-		   thermal_sconfig_show, thermal_sconfig_store);
-
-static ssize_t
-thermal_charger_temp_show(struct device *dev,
-				      struct device_attribute *attr, char *buf)
-{
-	return snprintf(buf, PAGE_SIZE, "%d\n", atomic_read(&charger_mode));
-}
-
-static ssize_t
-thermal_charger_temp_store(struct device *dev,
-				      struct device_attribute *attr, const char *buf, size_t len)
-{
-	int val = -1;
-
-	val = simple_strtol(buf, NULL, 10);
-
-	atomic_set(&charger_mode, val);
-
-	return len;
-}
-
-static DEVICE_ATTR(charger_temp, 0664,
-		   thermal_charger_temp_show, thermal_charger_temp_store);
-
-static ssize_t
-thermal_balance_mode_show(struct device *dev,
-				      struct device_attribute *attr, char *buf)
-{
-	return snprintf(buf, PAGE_SIZE, "%d\n", atomic_read(&balance_mode));
-}
-
-static ssize_t
-thermal_balance_mode_store(struct device *dev,
-				      struct device_attribute *attr, const char *buf, size_t len)
-{
-	int val = -1;
-
-	val = simple_strtol(buf, NULL, 10);
-
-	atomic_set(&balance_mode, val);
-
-	return len;
-}
-
-static DEVICE_ATTR(balance_mode, 0664,
-		   thermal_balance_mode_show, thermal_balance_mode_store);
-
-static ssize_t
-thermal_boost_show(struct device *dev,
-				      struct device_attribute *attr, char *buf)
-{
-	return snprintf(buf, PAGE_SIZE, boost_buf);
-}
-
-static ssize_t
-thermal_boost_store(struct device *dev,
-				      struct device_attribute *attr, const char *buf, size_t len)
-{
-	int ret;
-	ret = snprintf(boost_buf, sizeof(boost_buf), "%s", buf);
-	return len;
-}
-
-static DEVICE_ATTR(boost, 0644,
-		   thermal_boost_show, thermal_boost_store);
-
-static ssize_t
-thermal_temp_state_show(struct device *dev,
-				      struct device_attribute *attr, char *buf)
-{
-	return snprintf(buf, PAGE_SIZE, "%d\n", atomic_read(&temp_state));
-}
-
-static ssize_t
-thermal_temp_state_store(struct device *dev,
-				      struct device_attribute *attr, const char *buf, size_t len)
-{
-	int ret, val = -1;
-
-	ret = kstrtoint(buf, 10, &val);
-
-	atomic_set(&temp_state, val);
-
-	if (ret)
-		return ret;
-		
-	return len;
-}
-
-static DEVICE_ATTR(temp_state, 0664,
-		   thermal_temp_state_show, thermal_temp_state_store);
-
-static ssize_t
-cpu_limits_show(struct device *dev,
-				      struct device_attribute *attr, char *buf)
-{
-	return 0;
-}
-
-static ssize_t
-cpu_limits_store(struct device *dev,
-				      struct device_attribute *attr, const char *buf, size_t len)
-{
-	unsigned int cpu;
-	unsigned int max;
-
-	if (sscanf(buf, "cpu%u %u", &cpu, &max) != CPU_LIMITS_PARAM_NUM) {
-		pr_err("input param error, can not prase param\n");
-		return -EINVAL;
-	}
-
-	cpu_limits_set_level(cpu, max);
-
-	return len;
-}
-
-static DEVICE_ATTR(cpu_limits, 0664,
-		   cpu_limits_show, cpu_limits_store);
-
-static ssize_t
-thermal_board_sensor_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
-{
-	if (!board_sensor)
-		board_sensor = "invalid";
-
-	return snprintf(buf, PAGE_SIZE, "%s", board_sensor);
-}
-
-static DEVICE_ATTR(board_sensor, 0664,
-		thermal_board_sensor_show, NULL);
-
-static ssize_t
-thermal_board_sensor_temp_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
-{
-	return snprintf(buf, PAGE_SIZE, board_sensor_temp);
-}
-
-static ssize_t
-thermal_board_sensor_temp_store(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t len)
-{
-	snprintf(board_sensor_temp, PAGE_SIZE, buf);
-
-	return len;
-}
-
-static DEVICE_ATTR(board_sensor_temp, 0664,
-		thermal_board_sensor_temp_show, thermal_board_sensor_temp_store);
-
-static ssize_t
-thermal_board_sensor_second_temp_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
-{
-	return snprintf(buf, PAGE_SIZE, board_sensor_second_temp);
-}
-
-static ssize_t
-thermal_board_sensor_second_temp_store(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t len)
-{
-	snprintf(board_sensor_second_temp, PAGE_SIZE, buf);
-
-	return len;
-}
-
-static DEVICE_ATTR(board_sensor_second_temp, 0664,
-		thermal_board_sensor_second_temp_show, thermal_board_sensor_second_temp_store);
-
-static ssize_t
-thermal_modem_limit_show(struct device *dev,
-				      struct device_attribute *attr, char *buf)
-{
-	return snprintf(buf, PAGE_SIZE, "%d\n", atomic_read(&modem_limit));
-}
-static ssize_t
-thermal_modem_limit_store(struct device *dev,
-				      struct device_attribute *attr, const char *buf, size_t len)
-{
-	int val = -1;
-
-	val = simple_strtol(buf, NULL, 10);
-
-	atomic_set(&modem_limit, val);
-	return len;
-}
-
-static DEVICE_ATTR(modem_limit, 0664,
-	   thermal_modem_limit_show, thermal_modem_limit_store);
-
-
-static ssize_t
-thermal_market_download_limit_show(struct device *dev,
-				      struct device_attribute *attr, char *buf)
-{
-	return snprintf(buf, PAGE_SIZE, "%d\n", atomic_read(&market_download_limit));
-}
-static ssize_t
-thermal_market_download_limit_store(struct device *dev,
-				      struct device_attribute *attr, const char *buf, size_t len)
-{
-	int val = -1;
-
-	val = simple_strtol(buf, NULL, 10);
-
-	atomic_set(&market_download_limit, val);
-	return len;
-}
-
-static DEVICE_ATTR(market_download_limit, 0664,
-	   thermal_market_download_limit_show, thermal_market_download_limit_store);
-
-static ssize_t
-thermal_flash_state_show(struct device *dev,
-				      struct device_attribute *attr, char *buf)
-{
-	return snprintf(buf, PAGE_SIZE, "%d\n", atomic_read(&flash_state));
-}
-static ssize_t
-thermal_flash_state_store(struct device *dev,
-				      struct device_attribute *attr, const char *buf, size_t len)
-{
-	int val = -1;
-	val = simple_strtol(buf, NULL, 10);
-	atomic_set(&flash_state, val);
-	return len;
-}
-
-static DEVICE_ATTR(flash_state, 0664,
-           thermal_flash_state_show, thermal_flash_state_store);
-
-static ssize_t
-thermal_wifi_limit_show(struct device *dev,
-                                      struct device_attribute *attr, char *buf)
-{
-        return snprintf(buf, PAGE_SIZE, "%d\n", atomic_read(&wifi_limit));
-}
-static ssize_t
-thermal_wifi_limit_store(struct device *dev,
-                                      struct device_attribute *attr, const char *buf, size_t len)
-{
-        int val = -1;
-        val = simple_strtol(buf, NULL, 10);
-        atomic_set(&wifi_limit, val);
-        return len;
-}
-
-static DEVICE_ATTR(wifi_limit, 0664,
-	   thermal_wifi_limit_show, thermal_wifi_limit_store);
-
-static ssize_t
-thermal_poor_modem_limit_show(struct device *dev,
-                                      struct device_attribute *attr, char *buf)
-{
-        return snprintf(buf, PAGE_SIZE, "%d\n", atomic_read(&poor_modem_limit));
-}
-static ssize_t
-thermal_poor_modem_limit_store(struct device *dev,
-                                      struct device_attribute *attr, const char *buf, size_t len)
-{
-        int val = -1;
-        val = simple_strtol(buf, NULL, 10);
-        atomic_set(&poor_modem_limit, val);
-        return len;
-}
-
-static DEVICE_ATTR(poor_modem_limit, 0664,
-           thermal_poor_modem_limit_show, thermal_poor_modem_limit_store);
-
-int create_thermal_message_node(void)
-{
-	int ret = 0;
-
-	thermal_message_dev.class = &thermal_class;
-
-	dev_set_name(&thermal_message_dev, "thermal_message");
-	ret = device_register(&thermal_message_dev);
-	if (!ret) {
-		ret = sysfs_create_file(&thermal_message_dev.kobj, &dev_attr_sconfig.attr);
-		if (ret < 0)
-			pr_warn("Thermal: create sconfig node failed\n");
-
-		ret = sysfs_create_file(&thermal_message_dev.kobj, &dev_attr_balance_mode.attr);
-		if (ret < 0)
-			pr_warn("Thermal: create balance mode node failed\n");
-
-		ret = sysfs_create_file(&thermal_message_dev.kobj, &dev_attr_boost.attr);
-		if (ret < 0)
-			pr_warn("Thermal: create boost node failed\n");
-
-		ret = sysfs_create_file(&thermal_message_dev.kobj, &dev_attr_temp_state.attr);
-		if (ret < 0)
-			pr_warn("Thermal: create temp state node failed\n");
-
-		ret = sysfs_create_file(&thermal_message_dev.kobj, &dev_attr_cpu_limits.attr);
-		if (ret < 0)
-			pr_warn("Thermal: create cpu limits node failed\n");
-
-		ret = sysfs_create_file(&thermal_message_dev.kobj, &dev_attr_board_sensor.attr);
-		if (ret < 0)
-			pr_warn("Thermal: create board sensor node failed\n");
-
-		ret = sysfs_create_file(&thermal_message_dev.kobj, &dev_attr_board_sensor_temp.attr);
-		if (ret < 0)
-			pr_warn("Thermal: create board sensor temp node failed\n");
-
-		ret = sysfs_create_file(&thermal_message_dev.kobj, &dev_attr_board_sensor_second_temp.attr);
-		if (ret < 0)
-			pr_warn("Thermal: create board sensor second temp node failed\n");
-
-		ret = sysfs_create_file(&thermal_message_dev.kobj, &dev_attr_charger_temp.attr);
-		if (ret < 0)
-			pr_warn("Thermal: create charger temp node failed\n");
-		ret = sysfs_create_file(&thermal_message_dev.kobj, &dev_attr_modem_limit.attr);
-		if (ret < 0)
-			pr_warn("Thermal: create modem limit node failed\n");
-		ret = sysfs_create_file(&thermal_message_dev.kobj, &dev_attr_market_download_limit.attr);
-		if (ret < 0)
-			pr_warn("Thermal: create market download limit node failed\n");
-		ret = sysfs_create_file(&thermal_message_dev.kobj, &dev_attr_flash_state.attr);
-		if (ret < 0)
-                        pr_warn("Thermal: create flash state node failed\n");
-		ret = sysfs_create_file(&thermal_message_dev.kobj, &dev_attr_wifi_limit.attr);
-		if (ret < 0)
-                        pr_warn("Thermal: create wifi limit node failed\n");
-		ret = sysfs_create_file(&thermal_message_dev.kobj, &dev_attr_poor_modem_limit.attr);
-                if (ret < 0)
-                        pr_warn("Thermal: create poor modem limit node failed\n");
-	}
-	return ret;
-}
-
-static void destroy_thermal_message_node(void)
-{
-	sysfs_remove_file(&thermal_message_dev.kobj, &dev_attr_poor_modem_limit.attr);
-	sysfs_remove_file(&thermal_message_dev.kobj, &dev_attr_wifi_limit.attr);
-	sysfs_remove_file(&thermal_message_dev.kobj, &dev_attr_flash_state.attr);
-	sysfs_remove_file(&thermal_message_dev.kobj, &dev_attr_market_download_limit.attr);
-	sysfs_remove_file(&thermal_message_dev.kobj, &dev_attr_charger_temp.attr);
-	sysfs_remove_file(&thermal_message_dev.kobj, &dev_attr_modem_limit.attr);
-	sysfs_remove_file(&thermal_message_dev.kobj, &dev_attr_board_sensor_temp.attr);
-	sysfs_remove_file(&thermal_message_dev.kobj, &dev_attr_board_sensor_second_temp.attr);
-	sysfs_remove_file(&thermal_message_dev.kobj, &dev_attr_board_sensor.attr);
-	sysfs_remove_file(&thermal_message_dev.kobj, &dev_attr_cpu_limits.attr);
-	sysfs_remove_file(&thermal_message_dev.kobj, &dev_attr_temp_state.attr);
-	sysfs_remove_file(&thermal_message_dev.kobj, &dev_attr_boost.attr);
-	sysfs_remove_file(&thermal_message_dev.kobj, &dev_attr_sconfig.attr);
-	sysfs_remove_file(&thermal_message_dev.kobj, &dev_attr_balance_mode.attr);
-	device_unregister(&thermal_message_dev);
-}
-#endif
-
-#ifdef CONFIG_QTI_THERMAL
 static int __init thermal_init(void)
 {
 	int result;
 
-	mutex_init(&poweroff_lock);
-	thermal_passive_wq = alloc_workqueue("thermal_passive_wq",
-						WQ_UNBOUND | WQ_FREEZABLE,
-						THERMAL_MAX_ACTIVE);
-	if (!thermal_passive_wq) {
-		result = -ENOMEM;
+	result = thermal_netlink_init();
+	if (result)
 		goto error;
-	}
 
 	result = thermal_register_governors();
 	if (result)
-		goto destroy_wq;
+		goto error;
 
 	result = class_register(&thermal_class);
 	if (result)
@@ -2219,98 +1677,9 @@ static int __init thermal_init(void)
 	if (result)
 		pr_warn("Thermal: Can not register suspend notifier, return %d\n",
 			result);
-	thermal_debug_init();
-
-
-	result = of_parse_thermal_message();
-	if (result)
-		pr_warn("Thermal: Can not parse thermal message node, return %d\n",
-			result);
-
-	result = create_thermal_message_node();
-	if (result)
-		pr_warn("Thermal: create thermal message node failed, return %d\n",
-			result);
 
 	return 0;
 
-unregister_class:
-	class_unregister(&thermal_class);
-unregister_governors:
-	thermal_unregister_governors();
-destroy_wq:
-	destroy_workqueue(thermal_passive_wq);
-error:
-	ida_destroy(&thermal_tz_ida);
-	ida_destroy(&thermal_cdev_ida);
-	mutex_destroy(&thermal_list_lock);
-	mutex_destroy(&thermal_governor_lock);
-	mutex_destroy(&poweroff_lock);
-	return result;
-}
-
-static void thermal_exit(void)
-{
-	unregister_pm_notifier(&thermal_pm_nb);
-	of_thermal_destroy_zones();
-	destroy_workqueue(thermal_passive_wq);
-	genetlink_exit();
-	destroy_thermal_message_node();
-	class_unregister(&thermal_class);
-	thermal_debug_exit();
-	thermal_unregister_governors();
-	ida_destroy(&thermal_tz_ida);
-	ida_destroy(&thermal_cdev_ida);
-	mutex_destroy(&thermal_list_lock);
-	mutex_destroy(&thermal_governor_lock);
-}
-
-static int __init thermal_netlink_init(void)
-{
-	int ret = 0;
-
-	ret = genetlink_init();
-	if (!ret)
-		goto exit_netlink;
-
-	thermal_exit();
-exit_netlink:
-	return ret;
-}
-
-subsys_initcall(thermal_init);
-fs_initcall(thermal_netlink_init);
-#else
-static int __init thermal_init(void)
-{
-	int result;
-
-	mutex_init(&poweroff_lock);
-	result = thermal_register_governors();
-	if (result)
-		goto error;
-
-	result = class_register(&thermal_class);
-	if (result)
-		goto unregister_governors;
-
-	result = genetlink_init();
-	if (result)
-		goto unregister_class;
-
-	result = of_parse_thermal_zones();
-	if (result)
-		goto exit_netlink;
-
-	result = register_pm_notifier(&thermal_pm_nb);
-	if (result)
-		pr_warn("Thermal: Can not register suspend notifier, return %d\n",
-			result);
-
-	return 0;
-
-exit_netlink:
-	genetlink_exit();
 unregister_class:
 	class_unregister(&thermal_class);
 unregister_governors:
@@ -2323,5 +1692,4 @@ error:
 	mutex_destroy(&poweroff_lock);
 	return result;
 }
-fs_initcall(thermal_init);
-#endif
+postcore_initcall(thermal_init);

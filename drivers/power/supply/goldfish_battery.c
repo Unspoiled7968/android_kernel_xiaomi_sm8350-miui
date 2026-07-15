@@ -226,12 +226,6 @@ static int goldfish_battery_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	ret = devm_request_irq(&pdev->dev, data->irq,
-			       goldfish_battery_interrupt,
-			       IRQF_SHARED, pdev->name, data);
-	if (ret)
-		return ret;
-
 	psy_cfg.drv_data = data;
 
 	data->ac = power_supply_register(&pdev->dev, &ac_desc, &psy_cfg);
@@ -246,6 +240,12 @@ static int goldfish_battery_probe(struct platform_device *pdev)
 	}
 
 	platform_set_drvdata(pdev, data);
+
+	ret = devm_request_irq(&pdev->dev, data->irq,
+			       goldfish_battery_interrupt,
+			       IRQF_SHARED, pdev->name, data);
+	if (ret)
+		return ret;
 
 	GOLDFISH_BATTERY_WRITE(data, BATTERY_INT_ENABLE, BATTERY_INT_MASK);
 	return 0;
@@ -266,11 +266,13 @@ static const struct of_device_id goldfish_battery_of_match[] = {
 };
 MODULE_DEVICE_TABLE(of, goldfish_battery_of_match);
 
+#ifdef CONFIG_ACPI
 static const struct acpi_device_id goldfish_battery_acpi_match[] = {
 	{ "GFSH0001", 0 },
 	{ },
 };
 MODULE_DEVICE_TABLE(acpi, goldfish_battery_acpi_match);
+#endif
 
 static struct platform_driver goldfish_battery_device = {
 	.probe		= goldfish_battery_probe,

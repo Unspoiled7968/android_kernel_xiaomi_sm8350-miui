@@ -18,8 +18,8 @@
 #include "queue.h"
 #include "block.h"
 #include "core.h"
-#include "crypto.h"
 #include "card.h"
+#include "crypto.h"
 #include "host.h"
 
 #define MMC_DMA_MAP_MERGE_SEGMENTS	512
@@ -71,6 +71,7 @@ enum mmc_issue_type mmc_issue_type(struct mmc_queue *mq, struct request *req)
 
 	return MMC_ISSUE_SYNC;
 }
+EXPORT_SYMBOL_GPL(mmc_issue_type);
 
 static void __mmc_cqe_recovery_notifier(struct mmc_queue *mq)
 {
@@ -103,12 +104,6 @@ static enum blk_eh_timer_return mmc_cqe_timed_out(struct request *req)
 	enum mmc_issue_type issue_type = mmc_issue_type(mq, req);
 	bool recovery_needed = false;
 
-#if defined(CONFIG_SDC_QTI)
-	host->err_stats[MMC_ERR_CMDQ_REQ_TIMEOUT]++;
-#endif
-	mmc_log_string(host,
-		"Request timed out! Active reqs: %d Req: %p Tag: %d\n",
-		mmc_cqe_qcnt(mq), req, req->tag);
 	switch (issue_type) {
 	case MMC_ISSUE_ASYNC:
 	case MMC_ISSUE_DCMD:
@@ -117,9 +112,6 @@ static enum blk_eh_timer_return mmc_cqe_timed_out(struct request *req)
 				mmc_cqe_recovery_notifier(mrq);
 			return BLK_EH_RESET_TIMER;
 		}
-		mmc_log_string(host,
-			"Timeout even before req reaching LDD,completing the req. Active reqs: %d Req: %p Tag: %d\n",
-			mmc_cqe_qcnt(mq), req, req->tag);
 		/* The request has gone already */
 		return BLK_EH_DONE;
 	default:
@@ -139,7 +131,6 @@ static enum blk_eh_timer_return mmc_mq_timed_out(struct request *req,
 	bool ignore_tout;
 
 	spin_lock_irqsave(&mq->lock, flags);
-
 	ignore_tout = mq->recovery_needed || !mq->use_cqe || host->hsq_enabled;
 	spin_unlock_irqrestore(&mq->lock, flags);
 
@@ -214,7 +205,7 @@ static unsigned int mmc_get_max_segments(struct mmc_host *host)
 
 /**
  * mmc_init_request() - initialize the MMC-specific per-request data
- * @q: the request queue
+ * @mq: the request queue
  * @req: the request
  * @gfp: memory allocation policy
  */
@@ -315,9 +306,6 @@ static blk_status_t mmc_mq_queue_rq(struct blk_mq_hw_ctx *hctx,
 	mq->busy = true;
 
 	mq->in_flight[issue_type] += 1;
-#if defined(CONFIG_SDC_QTI)
-	atomic_inc(&host->active_reqs);
-#endif
 	get_card = (mmc_tot_in_flight(mq) == 1);
 	cqe_retune_ok = (mmc_cqe_qcnt(mq) == 1);
 
@@ -357,9 +345,6 @@ static blk_status_t mmc_mq_queue_rq(struct blk_mq_hw_ctx *hctx,
 
 		spin_lock_irq(&mq->lock);
 		mq->in_flight[issue_type] -= 1;
-#if defined(CONFIG_SDC_QTI)
-		atomic_dec(&host->active_reqs);
-#endif
 		if (mmc_tot_in_flight(mq) == 0)
 			put_card = true;
 		mq->busy = false;
@@ -425,10 +410,7 @@ static void mmc_setup_queue(struct mmc_queue *mq, struct mmc_card *card)
 
 	init_waitqueue_head(&mq->wait);
 
-#if defined(CONFIG_SDC_QTI) && defined(CONFIG_MMC_CQHCI_CRYPTO)
-	if (host->cqe_ops && host->cqe_ops->cqe_crypto_update_queue)
-		host->cqe_ops->cqe_crypto_update_queue(host, mq->queue);
-#endif
+	mmc_crypto_setup_queue(mq->queue, host);
 }
 
 static inline bool mmc_merge_capable(struct mmc_host *host)
@@ -496,14 +478,12 @@ int mmc_init_queue(struct mmc_queue *mq, struct mmc_card *card)
 	}
 
 	if (mmc_host_is_spi(host) && host->use_spi_crc)
-		mq->queue->backing_dev_info->capabilities |=
-			BDI_CAP_STABLE_WRITES;
+		blk_queue_flag_set(QUEUE_FLAG_STABLE_WRITES, mq->queue);
 
 	mq->queue->queuedata = mq;
 	blk_queue_rq_timeout(mq->queue, 60 * HZ);
 
 	mmc_setup_queue(mq, card);
-	mmc_crypto_setup_queue(host, mq->queue);
 	return 0;
 
 free_tag_set:

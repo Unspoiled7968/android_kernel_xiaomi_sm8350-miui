@@ -7,9 +7,6 @@ menuconfig NVMEM
 	  This framework is designed to provide a generic interface to NVMEM
 	  from both the Linux Kernel and the userspace.
 
-	  This driver can also be built as a module. If so, the module
-	  will be called nvmem_core.
-
 	  If unsure, say no.
 
 if NVMEM
@@ -50,9 +47,22 @@ config NVMEM_IMX_OCOTP
 config NVMEM_IMX_OCOTP_SCU
 	tristate "i.MX8 SCU On-Chip OTP Controller support"
 	depends on IMX_SCU
+	depends on HAVE_ARM_SMCCC
 	help
 	  This is a driver for the SCU On-Chip OTP Controller (OCOTP)
 	  available on i.MX8 SoCs.
+
+config JZ4780_EFUSE
+	tristate "JZ4780 EFUSE Memory Support"
+	depends on MACH_INGENIC || COMPILE_TEST
+	depends on HAS_IOMEM
+	depends on OF
+	select REGMAP_MMIO
+	help
+	  Say Y here to include support for JZ4780 efuse memory found on
+	  all JZ4780 SoC based devices.
+	  To compile this driver as a module, choose M here: the module
+	  will be called nvmem_jz4780_efuse.
 
 config NVMEM_LPC18XX_EEPROM
 	tristate "NXP LPC18XX EEPROM Memory Support"
@@ -97,13 +107,6 @@ config MTK_EFUSE
 	  This driver can also be built as a module. If so, the module
 	  will be called efuse-mtk.
 
-config QCOM_QFPROM_SYSFS
-	tristate "QCOM QFPROM SYSFS"
-	depends on QCOM_QFPROM
-	help
-	  Say y here to enable QFPROM SYSFS support. The QFPROM SYSFS
-	  create each child node of QFPROM as sysfs entries as well.
-
 config QCOM_QFPROM
 	tristate "QCOM QFPROM Support"
 	depends on ARCH_QCOM || COMPILE_TEST
@@ -133,6 +136,17 @@ config ROCKCHIP_EFUSE
 
 	  This driver can also be built as a module. If so, the module
 	  will be called nvmem_rockchip_efuse.
+
+config ROCKCHIP_OTP
+	tristate "Rockchip OTP controller support"
+	depends on ARCH_ROCKCHIP || COMPILE_TEST
+	depends on HAS_IOMEM
+	help
+	  This is a simple drive to dump specified values of Rockchip SoC
+	  from otp, such as cpu-leakage.
+
+	  This driver can also be built as a module. If so, the module
+	  will be called nvmem_rockchip_otp.
 
 config NVMEM_BCM_OCOTP
 	tristate "Broadcom On-Chip OTP Controller support"

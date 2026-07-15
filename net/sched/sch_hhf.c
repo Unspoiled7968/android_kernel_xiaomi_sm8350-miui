@@ -563,7 +563,7 @@ static int hhf_change(struct Qdisc *sch, struct nlattr *opt,
 	qlen = sch->q.qlen;
 	prev_backlog = sch->qstats.backlog;
 	while (sch->q.qlen > sch->limit) {
-		struct sk_buff *skb = hhf_dequeue(sch);
+		struct sk_buff *skb = qdisc_dequeue_internal(sch, false);
 
 		rtnl_kfree_skbs(skb, skb);
 	}
@@ -721,3 +721,4 @@ module_exit(hhf_module_exit)
 MODULE_AUTHOR("Terry Lam");
 MODULE_AUTHOR("Nandita Dukkipati");
 MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("Heavy-Hitter Filter (HHF)");

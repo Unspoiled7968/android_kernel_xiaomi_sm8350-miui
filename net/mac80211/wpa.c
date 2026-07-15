@@ -1002,8 +1002,6 @@ ieee80211_crypto_aes_cmac_256_encrypt(struct ieee80211_tx_data *tx)
 		return TX_DROP;
 
 	skb = skb_peek(&tx->skbs);
-	if (!skb)
-		return TX_DROP;
 
 	info = IEEE80211_SKB_CB(skb);
 
@@ -1149,8 +1147,6 @@ ieee80211_crypto_aes_gmac_encrypt(struct ieee80211_tx_data *tx)
 		return TX_DROP;
 
 	skb = skb_peek(&tx->skbs);
-	if (!skb)
-		return TX_DROP;
 
 	info = IEEE80211_SKB_CB(skb);
 

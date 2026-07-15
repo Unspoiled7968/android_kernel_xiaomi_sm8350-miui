@@ -20,8 +20,8 @@
 #include <linux/dma-mapping.h>
 #include <linux/fs.h>
 #include <linux/dma-fence.h>
-#include <linux/dma-buf-ref.h>
 #include <linux/wait.h>
+#include <linux/android_kabi.h>
 
 struct device;
 struct dma_buf;
@@ -83,13 +83,42 @@ struct dma_buf_ops {
 	void (*detach)(struct dma_buf *, struct dma_buf_attachment *);
 
 	/**
+	 * @pin:
+	 *
+	 * This is called by dma_buf_pin and lets the exporter know that the
+	 * DMA-buf can't be moved any more.
+	 *
+	 * This is called with the dmabuf->resv object locked and is mutual
+	 * exclusive with @cache_sgt_mapping.
+	 *
+	 * This callback is optional and should only be used in limited use
+	 * cases like scanout and not for temporary pin operations.
+	 *
+	 * Returns:
+	 *
+	 * 0 on success, negative error code on failure.
+	 */
+	int (*pin)(struct dma_buf_attachment *attach);
+
+	/**
+	 * @unpin:
+	 *
+	 * This is called by dma_buf_unpin and lets the exporter know that the
+	 * DMA-buf can be moved again.
+	 *
+	 * This is called with the dmabuf->resv object locked and is mutual
+	 * exclusive with @cache_sgt_mapping.
+	 *
+	 * This callback is optional.
+	 */
+	void (*unpin)(struct dma_buf_attachment *attach);
+
+	/**
 	 * @map_dma_buf:
 	 *
 	 * This is called by dma_buf_map_attachment() and is used to map a
 	 * shared &dma_buf into device address space, and it is mandatory. It
-	 * can only be called if @attach has been called successfully. This
-	 * essentially pins the DMA buffer into place, and it cannot be moved
-	 * any more
+	 * can only be called if @attach has been called successfully.
 	 *
 	 * This call may sleep, e.g. when the backing storage first needs to be
 	 * allocated, or moved to a location suitable for all currently attached
@@ -110,6 +139,9 @@ struct dma_buf_ops {
 	 * any other kind of sharing that the exporter might wish to make
 	 * available to buffer-users.
 	 *
+	 * This is always called with the dmabuf->resv object locked when
+	 * the dynamic_mapping flag is true.
+	 *
 	 * Returns:
 	 *
 	 * A &sg_table scatter list of or the backing storage of the DMA buffer,
@@ -127,9 +159,8 @@ struct dma_buf_ops {
 	 *
 	 * This is called by dma_buf_unmap_attachment() and should unmap and
 	 * release the &sg_table allocated in @map_dma_buf, and it is mandatory.
-	 * It should also unpin the backing storage if this is the last mapping
-	 * of the DMA buffer, it the exporter supports backing storage
-	 * migration.
+	 * For static dma_buf handling this might also unpins the backing
+	 * storage if this is the last mapping of the DMA buffer.
 	 */
 	void (*unmap_dma_buf)(struct dma_buf_attachment *,
 			      struct sg_table *,
@@ -292,31 +323,6 @@ struct dma_buf_ops {
 	 */
 	int (*mmap)(struct dma_buf *, struct vm_area_struct *vma);
 
-	/**
-	 * @map:
-	 *
-	 * Maps a page from the buffer into kernel address space. The page is
-	 * specified by offset into the buffer in PAGE_SIZE units.
-	 *
-	 * This callback is optional.
-	 *
-	 * Returns:
-	 *
-	 * Virtual address pointer where requested page can be accessed. NULL
-	 * on error or when this function is unimplemented by the exporter.
-	 */
-	void *(*map)(struct dma_buf *, unsigned long);
-
-	/**
-	 * @unmap:
-	 *
-	 * Unmaps a page from the buffer. Page offset and address pointer should
-	 * be the same as the one passed to and returned by matching call to map.
-	 *
-	 * This callback is optional.
-	 */
-	void (*unmap)(struct dma_buf *, unsigned long, void *);
-
 	void *(*vmap)(struct dma_buf *);
 	void (*vunmap)(struct dma_buf *, void *vaddr);
 
@@ -348,32 +354,26 @@ struct dma_buf_ops {
 	 * will be populated with the buffer's flags.
 	 */
 	int (*get_flags)(struct dma_buf *dmabuf, unsigned long *flags);
-};
 
-/**
- * dma_buf_destructor - dma-buf destructor function
- * @dmabuf:	[in]	pointer to dma-buf
- * @dtor_data:	[in]	destructor data associated with this buffer
- *
- * The dma-buf destructor which is called when the dma-buf is freed.
- *
- * If the destructor returns an error the dma-buf's exporter release function
- * won't be called.
- */
-typedef int (*dma_buf_destructor)(struct dma_buf *dmabuf, void *dtor_data);
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
+};
 
 /**
  * struct dma_buf - shared buffer object
  * @size: size of the buffer
  * @file: file pointer used for sharing buffers across, and for refcounting.
- * @attachments: list of dma_buf_attachment that denotes all devices attached.
+ * @attachments: list of dma_buf_attachment that denotes all devices attached,
+ *               protected by dma_resv lock.
  * @ops: dma_buf_ops associated with this buffer object.
  * @lock: used internally to serialize list manipulation, attach/detach and
- *        vmap/unmap, and accesses to name
+ *        vmap/unmap
  * @vmapping_counter: used internally to refcnt the vmaps
  * @vmap_ptr: the current vmap ptr if vmapping_counter > 0
  * @exp_name: name of the exporter; useful for debugging.
- * @name: userspace-provided name; useful for accounting and debugging.
+ * @name: userspace-provided name; useful for accounting and debugging,
+ *        protected by @resv.
+ * @name_lock: spinlock to protect name access
  * @owner: pointer to exporter module; used for refcounting when exporter is a
  *         kernel module.
  * @list_node: node for dma_buf accounting and debugging.
@@ -382,6 +382,7 @@ typedef int (*dma_buf_destructor)(struct dma_buf *dmabuf, void *dtor_data);
  * @poll: for userspace poll support
  * @cb_excl: for userspace poll support
  * @cb_shared: for userspace poll support
+ * @sysfs_entry: for exposing information about this buffer in sysfs.
  *
  * This represents a shared buffer, created by calling dma_buf_export(). The
  * userspace representation is a normal file descriptor, which can be created by
@@ -402,15 +403,11 @@ struct dma_buf {
 	void *vmap_ptr;
 	const char *exp_name;
 	const char *name;
-	spinlock_t name_lock; /* spinlock to protect name access */
+	spinlock_t name_lock;
 	struct module *owner;
 	struct list_head list_node;
 	void *priv;
 	struct dma_resv *resv;
-#ifdef CONFIG_DMABUF_DESTRUCTOR_SUPPORT
-	dma_buf_destructor dtor;
-	void *dtor_data;
-#endif
 
 	/* poll support */
 	wait_queue_head_t poll;
@@ -421,29 +418,65 @@ struct dma_buf {
 
 		__poll_t active;
 	} cb_excl, cb_shared;
+#ifdef CONFIG_DMABUF_SYSFS_STATS
+	/* for sysfs stats */
+	struct dma_buf_sysfs_entry {
+		struct kobject kobj;
+		struct dma_buf *dmabuf;
+	} *sysfs_entry;
+#endif
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
 };
 
 /**
- * struct msm_dma_buf - Holds the meta data associated with a shared buffer
- * object, as well as the buffer object.
- * @refs: list entry for dma-buf reference tracking
- * @i_ino: inode number
- * @dma_buf: the shared buffer object
+ * struct dma_buf_attach_ops - importer operations for an attachment
+ *
+ * Attachment operations implemented by the importer.
  */
-struct msm_dma_buf {
-	struct list_head refs;
-	unsigned long i_ino;
-	struct dma_buf dma_buf;
+struct dma_buf_attach_ops {
+	/**
+	 * @allow_peer2peer:
+	 *
+	 * If this is set to true the importer must be able to handle peer
+	 * resources without struct pages.
+	 */
+	bool allow_peer2peer;
+
+	/**
+	 * @move_notify: [optional] notification that the DMA-buf is moving
+	 *
+	 * If this callback is provided the framework can avoid pinning the
+	 * backing store while mappings exists.
+	 *
+	 * This callback is called with the lock of the reservation object
+	 * associated with the dma_buf held and the mapping function must be
+	 * called with this lock held as well. This makes sure that no mapping
+	 * is created concurrently with an ongoing move operation.
+	 *
+	 * Mappings stay valid and are not directly affected by this callback.
+	 * But the DMA-buf can now be in a different physical location, so all
+	 * mappings should be destroyed and re-created as soon as possible.
+	 *
+	 * New mappings can be created after this callback returns, and will
+	 * point to the new location of the DMA-buf.
+	 */
+	void (*move_notify)(struct dma_buf_attachment *attach);
 };
 
 /**
  * struct dma_buf_attachment - holds device-buffer attachment data
  * @dmabuf: buffer for this attachment.
  * @dev: device attached to the buffer.
- * @node: list of dma_buf_attachment.
+ * @node: list of dma_buf_attachment, protected by dma_resv lock of the dmabuf.
  * @sgt: cached mapping.
  * @dir: direction of cached mapping.
+ * @peer2peer: true if the importer can handle peer resources without pages.
  * @priv: exporter specific attachment data.
+ * @importer_ops: importer operations for this attachment, if provided
+ * dma_buf_map/unmap_attachment() must be called with the dma_resv lock held.
+ * @importer_priv: importer specific attachment data.
  * @dma_map_attrs: DMA attributes to be used when the exporter maps the buffer
  * through dma_buf_map_attachment.
  *
@@ -462,8 +495,14 @@ struct dma_buf_attachment {
 	struct list_head node;
 	struct sg_table *sgt;
 	enum dma_data_direction dir;
+	bool peer2peer;
+	const struct dma_buf_attach_ops *importer_ops;
+	void *importer_priv;
 	void *priv;
 	unsigned long dma_map_attrs;
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
 };
 
 /**
@@ -487,6 +526,9 @@ struct dma_buf_export_info {
 	int flags;
 	struct dma_resv *resv;
 	void *priv;
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
 };
 
 /**
@@ -501,12 +543,6 @@ struct dma_buf_export_info {
 					 .owner = THIS_MODULE }
 
 /**
- * to_msm_dma_buf - helper macro for deriving an msm_dma_buf from a dma_buf.
- */
-#define to_msm_dma_buf(_dma_buf) \
-	container_of(_dma_buf, struct msm_dma_buf, dma_buf)
-
-/**
  * get_dma_buf - convenience wrapper for get_file.
  * @dmabuf:	[in]	pointer to dma_buf
  *
@@ -518,25 +554,60 @@ struct dma_buf_export_info {
 static inline void get_dma_buf(struct dma_buf *dmabuf)
 {
 	get_file(dmabuf->file);
-	dma_buf_ref_mod(to_msm_dma_buf(dmabuf), 1);
 }
 
+/**
+ * dma_buf_is_dynamic - check if a DMA-buf uses dynamic mappings.
+ * @dmabuf: the DMA-buf to check
+ *
+ * Returns true if a DMA-buf exporter wants to be called with the dma_resv
+ * locked for the map/unmap callbacks, false if it doesn't wants to be called
+ * with the lock held.
+ */
+static inline bool dma_buf_is_dynamic(struct dma_buf *dmabuf)
+{
+	return !!dmabuf->ops->pin;
+}
+
+/**
+ * dma_buf_attachment_is_dynamic - check if a DMA-buf attachment uses dynamic
+ * mappinsg
+ * @attach: the DMA-buf attachment to check
+ *
+ * Returns true if a DMA-buf importer wants to call the map/unmap functions with
+ * the dma_resv lock held.
+ */
+static inline bool
+dma_buf_attachment_is_dynamic(struct dma_buf_attachment *attach)
+{
+	return !!attach->importer_ops;
+}
+
+int get_each_dmabuf(int (*callback)(const struct dma_buf *dmabuf,
+		    void *private), void *private);
+int is_dma_buf_file(struct file *file);
 struct dma_buf_attachment *dma_buf_attach(struct dma_buf *dmabuf,
-							struct device *dev);
+					  struct device *dev);
+struct dma_buf_attachment *
+dma_buf_dynamic_attach(struct dma_buf *dmabuf, struct device *dev,
+		       const struct dma_buf_attach_ops *importer_ops,
+		       void *importer_priv);
 void dma_buf_detach(struct dma_buf *dmabuf,
-				struct dma_buf_attachment *dmabuf_attach);
+		    struct dma_buf_attachment *attach);
+int dma_buf_pin(struct dma_buf_attachment *attach);
+void dma_buf_unpin(struct dma_buf_attachment *attach);
 
 struct dma_buf *dma_buf_export(const struct dma_buf_export_info *exp_info);
 
 int dma_buf_fd(struct dma_buf *dmabuf, int flags);
 struct dma_buf *dma_buf_get(int fd);
 void dma_buf_put(struct dma_buf *dmabuf);
-void dma_buf_put_sync(struct dma_buf *dmabuf);
 
 struct sg_table *dma_buf_map_attachment(struct dma_buf_attachment *,
 					enum dma_data_direction);
 void dma_buf_unmap_attachment(struct dma_buf_attachment *, struct sg_table *,
 				enum dma_data_direction);
+void dma_buf_move_notify(struct dma_buf *dma_buf);
 int dma_buf_begin_cpu_access(struct dma_buf *dma_buf,
 			     enum dma_data_direction dir);
 int dma_buf_begin_cpu_access_partial(struct dma_buf *dma_buf,
@@ -547,37 +618,13 @@ int dma_buf_end_cpu_access(struct dma_buf *dma_buf,
 int dma_buf_end_cpu_access_partial(struct dma_buf *dma_buf,
 				     enum dma_data_direction dir,
 				     unsigned int offset, unsigned int len);
-void *dma_buf_kmap(struct dma_buf *, unsigned long);
-void dma_buf_kunmap(struct dma_buf *, unsigned long, void *);
 
 int dma_buf_mmap(struct dma_buf *, struct vm_area_struct *,
 		 unsigned long);
 void *dma_buf_vmap(struct dma_buf *);
 void dma_buf_vunmap(struct dma_buf *, void *vaddr);
+long dma_buf_set_name(struct dma_buf *dmabuf, const char *name);
 int dma_buf_get_flags(struct dma_buf *dmabuf, unsigned long *flags);
 int dma_buf_get_uuid(struct dma_buf *dmabuf, uuid_t *uuid);
 
-#ifdef CONFIG_DMABUF_DESTRUCTOR_SUPPORT
-/**
- * dma_buf_set_destructor - set the dma-buf's destructor
- * @dmabuf:		[in]	pointer to dma-buf
- * @dma_buf_destructor	[in]	the destructor function
- * @dtor_data:		[in]	destructor data associated with this buffer
- */
-static inline int dma_buf_set_destructor(struct dma_buf *dmabuf,
-					 dma_buf_destructor dtor,
-					 void *dtor_data)
-{
-	dmabuf->dtor = dtor;
-	dmabuf->dtor_data = dtor_data;
-	return 0;
-}
-#else
-static inline int dma_buf_set_destructor(struct dma_buf *dmabuf,
-					 dma_buf_destructor dtor,
-					 void *dtor_data)
-{
-	return -ENOTSUPP;
-}
-#endif
 #endif /* __DMA_BUF_H__ */

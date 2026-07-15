@@ -393,7 +393,7 @@ static void sdhci_sprd_request_done(struct sdhci_host *host,
 	if (mmc_hsq_finalize_request(host->mmc, mrq))
 		return;
 
-	 mmc_request_done(host->mmc, mrq);
+	mmc_request_done(host->mmc, mrq);
 }
 
 static struct sdhci_ops sdhci_sprd_ops = {
@@ -440,7 +440,7 @@ static void sdhci_sprd_request(struct mmc_host *mmc, struct mmc_request *mrq)
 }
 
 static int sdhci_sprd_request_atomic(struct mmc_host *mmc,
-				      struct mmc_request *mrq)
+				     struct mmc_request *mrq)
 {
 	sdhci_sprd_check_auto_cmd23(mmc, mrq);
 
@@ -455,7 +455,7 @@ static int sdhci_sprd_voltage_switch(struct mmc_host *mmc, struct mmc_ios *ios)
 
 	if (!IS_ERR(mmc->supply.vqmmc)) {
 		ret = mmc_regulator_set_vqmmc(mmc, ios);
-		if (ret) {
+		if (ret < 0) {
 			pr_err("%s: Switching signalling voltage failed\n",
 			       mmc_hostname(mmc));
 			return ret;
@@ -477,7 +477,7 @@ static int sdhci_sprd_voltage_switch(struct mmc_host *mmc, struct mmc_ios *ios)
 		break;
 
 	default:
-		/* fall-through */
+		fallthrough;
 	case MMC_SIGNAL_VOLTAGE_330:
 		ret = pinctrl_select_state(sprd_host->pinctrl,
 					   sprd_host->pins_default);
@@ -796,6 +796,7 @@ static struct platform_driver sdhci_sprd_driver = {
 	.remove = sdhci_sprd_remove,
 	.driver = {
 		.name = "sdhci_sprd_r11",
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 		.of_match_table = of_match_ptr(sdhci_sprd_of_match),
 		.pm = &sdhci_sprd_pm_ops,
 	},

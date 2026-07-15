@@ -13,8 +13,9 @@
 #include <linux/dmaengine.h>
 #include <linux/err.h>
 #include <linux/interrupt.h>
+#include <linux/irq.h>
 #include <linux/dma/edma.h>
-#include <linux/pci.h>
+#include <linux/dma-mapping.h>
 
 #include "dw-edma-core.h"
 #include "dw-edma-v0-core.h"
@@ -327,7 +328,7 @@ static struct dma_async_tx_descriptor *
 dw_edma_device_transfer(struct dw_edma_transfer *xfer)
 {
 	struct dw_edma_chan *chan = dchan2dw_edma_chan(xfer->dchan);
-	enum dma_transfer_direction direction = xfer->direction;
+	enum dma_transfer_direction dir = xfer->direction;
 	phys_addr_t src_addr, dst_addr;
 	struct scatterlist *sg = NULL;
 	struct dw_edma_chunk *chunk;
@@ -336,9 +337,25 @@ dw_edma_device_transfer(struct dw_edma_transfer *xfer)
 	u32 cnt;
 	int i;
 
-	if ((direction == DMA_MEM_TO_DEV && chan->dir == EDMA_DIR_WRITE) ||
-	    (direction == DMA_DEV_TO_MEM && chan->dir == EDMA_DIR_READ))
+	if (!chan->configured)
 		return NULL;
+
+	switch (chan->config.direction) {
+	case DMA_DEV_TO_MEM: /* local dma */
+		if (dir == DMA_DEV_TO_MEM && chan->dir == EDMA_DIR_READ)
+			break;
+		return NULL;
+	case DMA_MEM_TO_DEV: /* local dma */
+		if (dir == DMA_MEM_TO_DEV && chan->dir == EDMA_DIR_WRITE)
+			break;
+		return NULL;
+	default: /* remote dma */
+		if (dir == DMA_MEM_TO_DEV && chan->dir == EDMA_DIR_READ)
+			break;
+		if (dir == DMA_DEV_TO_MEM && chan->dir == EDMA_DIR_WRITE)
+			break;
+		return NULL;
+	}
 
 	if (xfer->cyclic) {
 		if (!xfer->xfer.cyclic.len || !xfer->xfer.cyclic.cnt)
@@ -347,9 +364,6 @@ dw_edma_device_transfer(struct dw_edma_transfer *xfer)
 		if (xfer->xfer.sg.len < 1)
 			return NULL;
 	}
-
-	if (!chan->configured)
-		return NULL;
 
 	desc = dw_edma_alloc_desc(chan);
 	if (unlikely(!desc))
@@ -391,7 +405,7 @@ dw_edma_device_transfer(struct dw_edma_transfer *xfer)
 		chunk->ll_region.sz += burst->sz;
 		desc->alloc_sz += burst->sz;
 
-		if (direction == DMA_DEV_TO_MEM) {
+		if (dir == DMA_DEV_TO_MEM) {
 			burst->sar = src_addr;
 			if (xfer->cyclic) {
 				burst->dar = xfer->xfer.cyclic.paddr;
@@ -474,6 +488,25 @@ dw_edma_device_prep_dma_cyclic(struct dma_chan *dchan, dma_addr_t paddr,
 	return dw_edma_device_transfer(&xfer);
 }
 
+static void dw_hdma_set_callback_result(struct virt_dma_desc *vd,
+					enum dmaengine_tx_result result)
+{
+	u32 residue = 0;
+	struct dw_edma_desc *desc;
+	struct dmaengine_result *res;
+
+	if (!vd->tx.callback_result)
+		return;
+
+	desc = vd2dw_edma_desc(vd);
+	if (desc)
+		residue = desc->alloc_sz - desc->xfer_sz;
+
+	res = &vd->tx_result;
+	res->result = result;
+	res->residue = residue;
+}
+
 static void dw_edma_done_interrupt(struct dw_edma_chan *chan)
 {
 	struct dw_edma_desc *desc;
@@ -489,6 +522,8 @@ static void dw_edma_done_interrupt(struct dw_edma_chan *chan)
 		case EDMA_REQ_NONE:
 			desc = vd2dw_edma_desc(vd);
 			if (!desc->chunks_alloc) {
+				dw_hdma_set_callback_result(vd,
+							    DMA_TRANS_NOERROR);
 				list_del(&vd->node);
 				vchan_cookie_complete(vd);
 			}
@@ -527,6 +562,7 @@ static void dw_edma_abort_interrupt(struct dw_edma_chan *chan)
 	spin_lock_irqsave(&chan->vc.lock, flags);
 	vd = vchan_next_desc(&chan->vc);
 	if (vd) {
+		dw_hdma_set_callback_result(vd, DMA_TRANS_ABORTED);
 		list_del(&vd->node);
 		vchan_cookie_complete(vd);
 	}
@@ -779,6 +815,7 @@ static int dw_edma_irq_request(struct dw_edma_chip *chip,
 	u32 rd_mask = 1;
 	int i, err = 0;
 	u32 ch_cnt;
+	int irq;
 
 	ch_cnt = dw->wr_ch_cnt + dw->rd_ch_cnt;
 
@@ -787,16 +824,16 @@ static int dw_edma_irq_request(struct dw_edma_chip *chip,
 
 	if (dw->nr_irqs == 1) {
 		/* Common IRQ shared among all channels */
-		err = request_irq(pci_irq_vector(to_pci_dev(dev), 0),
-				  dw_edma_interrupt_common,
+		irq = dw->ops->irq_vector(dev, 0);
+		err = request_irq(irq, dw_edma_interrupt_common,
 				  IRQF_SHARED, dw->name, &dw->irq[0]);
 		if (err) {
 			dw->nr_irqs = 0;
 			return err;
 		}
 
-		get_cached_msi_msg(pci_irq_vector(to_pci_dev(dev), 0),
-				   &dw->irq[0].msi);
+		if (irq_get_msi_desc(irq))
+			get_cached_msi_msg(irq, &dw->irq[0].msi);
 	} else {
 		/* Distribute IRQs equally among all channels */
 		int tmp = dw->nr_irqs;
@@ -810,7 +847,8 @@ static int dw_edma_irq_request(struct dw_edma_chip *chip,
 		dw_edma_add_irq_mask(&rd_mask, *rd_alloc, dw->rd_ch_cnt);
 
 		for (i = 0; i < (*wr_alloc + *rd_alloc); i++) {
-			err = request_irq(pci_irq_vector(to_pci_dev(dev), i),
+			irq = dw->ops->irq_vector(dev, i);
+			err = request_irq(irq,
 					  i < *wr_alloc ?
 						dw_edma_interrupt_write :
 						dw_edma_interrupt_read,
@@ -821,8 +859,8 @@ static int dw_edma_irq_request(struct dw_edma_chip *chip,
 				return err;
 			}
 
-			get_cached_msi_msg(pci_irq_vector(to_pci_dev(dev), i),
-					   &dw->irq[i].msi);
+			if (irq_get_msi_desc(irq))
+				get_cached_msi_msg(irq, &dw->irq[i].msi);
 		}
 
 		dw->nr_irqs = i;
@@ -833,11 +871,22 @@ static int dw_edma_irq_request(struct dw_edma_chip *chip,
 
 int dw_edma_probe(struct dw_edma_chip *chip)
 {
-	struct device *dev = chip->dev;
-	struct dw_edma *dw = chip->dw;
+	struct device *dev;
+	struct dw_edma *dw;
 	u32 wr_alloc = 0;
 	u32 rd_alloc = 0;
 	int i, err;
+
+	if (!chip)
+		return -EINVAL;
+
+	dev = chip->dev;
+	if (!dev)
+		return -EINVAL;
+
+	dw = chip->dw;
+	if (!dw || !dw->irq || !dw->ops || !dw->ops->irq_vector)
+		return -EINVAL;
 
 	raw_spin_lock_init(&dw->lock);
 
@@ -890,7 +939,7 @@ int dw_edma_probe(struct dw_edma_chip *chip)
 
 err_irq_free:
 	for (i = (dw->nr_irqs - 1); i >= 0; i--)
-		free_irq(pci_irq_vector(to_pci_dev(dev), i), &dw->irq[i]);
+		free_irq(dw->ops->irq_vector(dev, i), &dw->irq[i]);
 
 	dw->nr_irqs = 0;
 
@@ -910,7 +959,7 @@ int dw_edma_remove(struct dw_edma_chip *chip)
 
 	/* Free irqs */
 	for (i = (dw->nr_irqs - 1); i >= 0; i--)
-		free_irq(pci_irq_vector(to_pci_dev(dev), i), &dw->irq[i]);
+		free_irq(dw->ops->irq_vector(dev, i), &dw->irq[i]);
 
 	/* Power management */
 	pm_runtime_disable(dev);

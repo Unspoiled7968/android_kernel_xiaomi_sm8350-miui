@@ -11,6 +11,7 @@
 
 /* #define VERBOSE_DEBUG */
 
+#include <linux/cleanup.h>
 #include <linux/slab.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -428,7 +429,7 @@ static void rndis_response_complete(struct usb_ep *ep, struct usb_request *req)
 		DBG(cdev, "RNDIS %s response error %d, %d/%d\n",
 			ep->name, status,
 			req->actual, req->length);
-		/* FALLTHROUGH */
+		fallthrough;
 	case 0:
 		if (ep != rndis->notify)
 			break;
@@ -690,9 +691,11 @@ rndis_bind(struct usb_configuration *c, struct usb_function *f)
 		f->os_desc_table[0].os_desc = &rndis_opts->rndis_os_desc;
 	}
 
+	mutex_lock(&rndis_opts->lock);
 	rndis_iad_descriptor.bFunctionClass = rndis_opts->class;
 	rndis_iad_descriptor.bFunctionSubClass = rndis_opts->subclass;
 	rndis_iad_descriptor.bFunctionProtocol = rndis_opts->protocol;
+	mutex_unlock(&rndis_opts->lock);
 
 	/*
 	 * in drivers/usb/gadget/configfs.c:configfs_composite_bind()

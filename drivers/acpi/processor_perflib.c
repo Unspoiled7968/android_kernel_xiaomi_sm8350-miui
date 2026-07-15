@@ -176,6 +176,9 @@ void acpi_processor_ppc_init(struct cpufreq_policy *policy)
 {
 	unsigned int cpu;
 
+	if (ignore_ppc == 1)
+		return;
+
 	for_each_cpu(cpu, policy->related_cpus) {
 		struct acpi_processor *pr = per_cpu(processors, cpu);
 		int ret;
@@ -195,6 +198,14 @@ void acpi_processor_ppc_init(struct cpufreq_policy *policy)
 					   FREQ_QOS_MAX_DEFAULT_VALUE);
 		if (ret < 0)
 			pr_err("Failed to add freq constraint for CPU%d (%d)\n",
+			       cpu, ret);
+
+		if (!pr->performance)
+			continue;
+
+		ret = acpi_processor_get_platform_limit(pr);
+		if (ret)
+			pr_err("Failed to update freq constraint for CPU%d (%d)\n",
 			       cpu, ret);
 	}
 }
@@ -376,7 +387,7 @@ static int acpi_processor_get_performance_states(struct acpi_processor *pr)
 				  (u32) px->control, (u32) px->status));
 
 		/*
- 		 * Check that ACPI's u64 MHz will be valid as u32 KHz in cpufreq
+		 * Check that ACPI's u64 MHz will be valid as u32 KHz in cpufreq
 		 */
 		if (!px->core_frequency ||
 		    ((u32)(px->core_frequency * 1000) !=
@@ -649,7 +660,7 @@ int acpi_processor_preregister_performance(
 		goto err_ret;
 
 	/*
-	 * Now that we have _PSD data from all CPUs, lets setup P-state 
+	 * Now that we have _PSD data from all CPUs, lets setup P-state
 	 * domain info.
 	 */
 	for_each_possible_cpu(i) {
@@ -715,7 +726,7 @@ int acpi_processor_preregister_performance(
 			if (match_pdomain->domain != pdomain->domain)
 				continue;
 
-			match_pr->performance->shared_type = 
+			match_pr->performance->shared_type =
 					pr->performance->shared_type;
 			cpumask_copy(match_pr->performance->shared_cpu_map,
 				     pr->performance->shared_cpu_map);

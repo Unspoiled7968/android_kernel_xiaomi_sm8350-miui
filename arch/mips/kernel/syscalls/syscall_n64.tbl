@@ -159,7 +159,7 @@
 149	n64	munlockall			sys_munlockall
 150	n64	vhangup				sys_vhangup
 151	n64	pivot_root			sys_pivot_root
-152	n64	_sysctl				sys_sysctl
+152	n64	_sysctl				sys_ni_syscall
 153	n64	prctl				sys_prctl
 154	n64	adjtimex			sys_adjtimex
 155	n64	setrlimit			sys_setrlimit
@@ -350,8 +350,10 @@
 433	n64	fspick				sys_fspick
 434	n64	pidfd_open			sys_pidfd_open
 435	n64	clone3				__sys_clone3
-# 436 reserved for close_range
-# 437 reserved for openat2
-# 438 reserved for pidfd_getfd
-# 439 reserved for faccessat2
+436	n64	close_range			sys_close_range
+437	n64	openat2				sys_openat2
+438	n64	pidfd_getfd			sys_pidfd_getfd
+439	n64	faccessat2			sys_faccessat2
 440	n64	process_madvise			sys_process_madvise
+# 447 reserved for memfd_secret
+448	n64	process_mrelease		sys_process_mrelease

@@ -1,20 +1,19 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2019-2021, The Linux Foundation. All rights reserved.
- *
+ * Copyright (c) 2020, The Linux Foundation. All rights reserved.
  */
 
 #ifndef __DRIVERS_INTERCONNECT_QCOM_ICC_RPMH_H__
 #define __DRIVERS_INTERCONNECT_QCOM_ICC_RPMH_H__
 
-#include <linux/regmap.h>
 #include <dt-bindings/interconnect/qcom,icc.h>
 
 #define to_qcom_provider(_provider) \
 	container_of(_provider, struct qcom_icc_provider, provider)
 
 /**
- * struct qcom_icc_provider - QTI specific interconnect provider
+ * struct qcom_icc_provider - Qualcomm specific interconnect provider
+ * @provider: generic interconnect provider
  * @dev: reference to the NoC device
  * @bcms: list of bcms that maps to the provider
  * @num_bcms: number of @bcms
@@ -25,12 +24,7 @@ struct qcom_icc_provider {
 	struct device *dev;
 	struct qcom_icc_bcm **bcms;
 	size_t num_bcms;
-	struct list_head probe_list;
-	struct regmap *regmap;
-	struct clk_bulk_data *clks;
-	int num_clks;
-	struct bcm_voter **voters;
-	size_t num_voters;
+	struct bcm_voter *voter;
 };
 
 /**
@@ -53,7 +47,7 @@ struct bcm_db {
 #define MAX_VCD			10
 
 /**
- * struct qcom_icc_node - QTI specific interconnect nodes
+ * struct qcom_icc_node - Qualcomm specific interconnect nodes
  * @name: the node name used in debugfs
  * @links: an array of nodes where we can go next while traversing
  * @id: a unique node identifier
@@ -76,13 +70,10 @@ struct qcom_icc_node {
 	u64 max_peak[QCOM_ICC_NUM_BUCKETS];
 	struct qcom_icc_bcm *bcms[MAX_BCM_PER_NODE];
 	size_t num_bcms;
-	struct regmap *regmap;
-	struct qcom_icc_qosbox *qosbox;
-	const struct qcom_icc_noc_ops *noc_ops;
 };
 
 /**
- * struct qcom_icc_bcm - QTI specific hardware accelerator nodes
+ * struct qcom_icc_bcm - Qualcomm specific hardware accelerator nodes
  * known as Bus Clock Manager (BCM)
  * @name: the bcm node name used to fetch BCM data from command db
  * @type: latency or bandwidth bcm
@@ -90,6 +81,7 @@ struct qcom_icc_node {
  * @vote_x: aggregated threshold values, represents sum_bw when @type is bw bcm
  * @vote_y: aggregated threshold values, represents peak_bw when @type is bw bcm
  * @vote_scale: scaling factor for vote_x and vote_y
+ * @enable_mask: optional mask to send as vote instead of vote_x/vote_y
  * @dirty: flag used to indicate whether the bcm needs to be committed
  * @keepalive: flag used to indicate whether a keepalive is required
  * @aux_data: auxiliary data used when calculating threshold values and
@@ -106,12 +98,12 @@ struct qcom_icc_bcm {
 	u64 vote_x[QCOM_ICC_NUM_BUCKETS];
 	u64 vote_y[QCOM_ICC_NUM_BUCKETS];
 	u64 vote_scale;
+	u32 enable_mask;
 	bool dirty;
 	bool keepalive;
 	struct bcm_db aux_data;
 	struct list_head list;
 	struct list_head ws_list;
-	int voter_idx;
 	size_t num_nodes;
 	struct qcom_icc_node *nodes[];
 };
@@ -122,34 +114,27 @@ struct qcom_icc_fabric {
 };
 
 struct qcom_icc_desc {
-	const struct regmap_config *config;
 	struct qcom_icc_node **nodes;
 	size_t num_nodes;
 	struct qcom_icc_bcm **bcms;
 	size_t num_bcms;
-	char **voters;
-	size_t num_voters;
 };
 
-#define DEFINE_QNODE(_name, _id, _channels, _buswidth,			\
-			_qosbox, _numlinks, ...)			\
+#define DEFINE_QNODE(_name, _id, _channels, _buswidth, ...)		\
 		static struct qcom_icc_node _name = {			\
 		.id = _id,						\
 		.name = #_name,						\
 		.channels = _channels,					\
 		.buswidth = _buswidth,					\
-		.qosbox = _qosbox,					\
-		.noc_ops = &qcom_qnoc4_ops,				\
-		.num_links = _numlinks,					\
+		.num_links = ARRAY_SIZE(((int[]){ __VA_ARGS__ })),	\
 		.links = { __VA_ARGS__ },				\
 	}
 
 int qcom_icc_aggregate(struct icc_node *node, u32 tag, u32 avg_bw,
-			      u32 peak_bw, u32 *agg_avg, u32 *agg_peak);
+		       u32 peak_bw, u32 *agg_avg, u32 *agg_peak);
 int qcom_icc_set(struct icc_node *src, struct icc_node *dst);
+struct icc_node_data *qcom_icc_xlate_extended(struct of_phandle_args *spec, void *data);
 int qcom_icc_bcm_init(struct qcom_icc_bcm *bcm, struct device *dev);
 void qcom_icc_pre_aggregate(struct icc_node *node);
-int qcom_icc_enable_qos_deps(struct qcom_icc_provider *qp);
-void qcom_icc_disable_qos_deps(struct qcom_icc_provider *qp);
 
 #endif

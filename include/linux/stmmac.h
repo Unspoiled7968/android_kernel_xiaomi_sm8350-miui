@@ -13,7 +13,7 @@
 #define __STMMAC_PLATFORM_DATA
 
 #include <linux/platform_device.h>
-#include <linux/netdevice.h>
+#include <linux/phy.h>
 
 #define MTL_MAX_RX_QUEUES	8
 #define MTL_MAX_TX_QUEUES	8
@@ -80,6 +80,7 @@
 
 struct stmmac_mdio_bus_data {
 	unsigned int phy_mask;
+	unsigned int has_xpcs;
 	int *irqs;
 	int probed_phy_irq;
 	bool needs_reset;
@@ -93,6 +94,7 @@ struct stmmac_dma_cfg {
 	int fixed_burst;
 	int mixed_burst;
 	bool aal;
+	bool eame;
 };
 
 #define AXI_BLEN	7
@@ -106,6 +108,19 @@ struct stmmac_axi {
 	bool axi_fb;
 	bool axi_mb;
 	bool axi_rb;
+};
+
+#define EST_GCL		1024
+struct stmmac_est {
+	struct mutex lock;
+	int enable;
+	u32 btr_offset[2];
+	u32 btr[2];
+	u32 ctr[2];
+	u32 ter;
+	u32 gcl_unaligned[EST_GCL];
+	u32 gcl[EST_GCL];
+	u32 gcl_size;
 };
 
 struct stmmac_rxq_cfg {
@@ -126,30 +141,20 @@ struct stmmac_txq_cfg {
 	u32 low_credit;
 	bool use_prio;
 	u32 prio;
-};
-
-struct emac_emb_smmu_cb_ctx {
-	bool valid;
-	struct platform_device *pdev_master;
-	struct platform_device *smmu_pdev;
-	struct dma_iommu_mapping *mapping;
-	struct iommu_domain *iommu_domain;
-	u32 va_start;
-	u32 va_size;
-	u32 va_end;
-	int ret;
+	int tbs_en;
 };
 
 struct plat_stmmacenet_data {
 	int bus_id;
 	int phy_addr;
 	int interface;
-	int phy_interface;
+	phy_interface_t phy_interface;
 	struct stmmac_mdio_bus_data *mdio_bus_data;
 	struct device_node *phy_node;
 	struct device_node *phylink_node;
 	struct device_node *mdio_node;
 	struct stmmac_dma_cfg *dma_cfg;
+	struct stmmac_est *est;
 	int clk_csr;
 	int has_gmac;
 	int enh_desc;
@@ -166,6 +171,7 @@ struct plat_stmmacenet_data {
 	int unicast_filter_entries;
 	int tx_fifo_size;
 	int rx_fifo_size;
+	u32 addr64;
 	u32 rx_queues_to_use;
 	u32 tx_queues_to_use;
 	u8 rx_sched_algorithm;
@@ -173,6 +179,8 @@ struct plat_stmmacenet_data {
 	struct stmmac_rxq_cfg rx_queues_cfg[MTL_MAX_RX_QUEUES];
 	struct stmmac_txq_cfg tx_queues_cfg[MTL_MAX_TX_QUEUES];
 	void (*fix_mac_speed)(void *priv, unsigned int speed);
+	int (*serdes_powerup)(struct net_device *ndev, void *priv);
+	void (*serdes_powerdown)(struct net_device *ndev, void *priv);
 	int (*init)(struct platform_device *pdev, void *priv);
 	void (*exit)(struct platform_device *pdev, void *priv);
 	struct mac_device_info *(*setup)(void *priv);
@@ -181,7 +189,6 @@ struct plat_stmmacenet_data {
 	struct clk *pclk;
 	struct clk *clk_ptp_ref;
 	unsigned int clk_ptp_rate;
-	unsigned int clk_ptp_req_rate;
 	unsigned int clk_ref_rate;
 	s32 ptp_max_adj;
 	struct reset_control *stmmac_rst;
@@ -194,18 +201,9 @@ struct plat_stmmacenet_data {
 	bool en_tx_lpi_clockgating;
 	bool rx_clk_runs_in_lpi;
 	int has_xgmac;
-	u16	(*tx_select_queue)
-		(struct net_device *dev, struct sk_buff *skb,
-		 struct net_device *sb_dev);
-	unsigned int (*get_plat_tx_coal_frames)
-		(struct sk_buff *skb);
-	bool early_eth;
-	struct emac_emb_smmu_cb_ctx stmmac_emb_smmu_ctx;
-	bool phy_intr_en_extn_stm;
-	int (*handle_prv_ioctl)(struct net_device *dev, struct ifreq *ifr,
-				int cmd);
-	void (*request_phy_wol)(void *plat);
-	int (*init_pps)(void *priv);
+	bool vlan_fail_q_en;
+	u8 vlan_fail_q;
+	unsigned int eee_usecs_rate;
 	bool sph_disable;
 };
 #endif

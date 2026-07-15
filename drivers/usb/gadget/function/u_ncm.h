@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * u_ncm.h
  *
@@ -31,6 +31,11 @@ struct f_ncm_opts {
 	 */
 	struct mutex			lock;
 	int				refcnt;
+};
+
+struct ncm_vendor_opts {
+	struct f_ncm_opts		opts;
+	u16				max_segment_size;
 };
 
 #endif /* U_NCM_H */

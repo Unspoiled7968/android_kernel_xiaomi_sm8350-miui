@@ -301,7 +301,8 @@ xfs_iwalk_ag_start(
 	error = xfs_inobt_get_rec(*curpp, irec, has_more);
 	if (error)
 		return error;
-	XFS_WANT_CORRUPTED_RETURN(mp, *has_more == 1);
+	if (XFS_IS_CORRUPT(mp, *has_more != 1))
+		return -EFSCORRUPTED;
 
 	iwag->lastino = XFS_AGINO_TO_INO(mp, agno,
 				irec->ir_startino + XFS_INODES_PER_CHUNK - 1);
@@ -417,8 +418,8 @@ xfs_iwalk_ag(
 
 		/* Make sure that we always move forward. */
 		rec_fsino = XFS_AGINO_TO_INO(mp, agno, irec->ir_startino);
-		if (iwag->lastino != NULLFSINO && iwag->lastino >= rec_fsino) {
-			ASSERT(iwag->lastino < rec_fsino);
+		if (iwag->lastino != NULLFSINO &&
+		    XFS_IS_CORRUPT(mp, iwag->lastino >= rec_fsino)) {
 			error = -EFSCORRUPTED;
 			goto out;
 		}

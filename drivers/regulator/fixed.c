@@ -25,9 +25,6 @@
 #include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/regulator/of_regulator.h>
-#ifdef QTI_FIXED_REGULATOR
-#include <linux/regulator/proxy-consumer.h>
-#endif
 #include <linux/regulator/machine.h>
 #include <linux/clk.h>
 
@@ -42,14 +39,6 @@ struct fixed_voltage_data {
 
 struct fixed_dev_type {
 	bool has_enable_clock;
-};
-
-static const struct fixed_dev_type fixed_voltage_data = {
-	.has_enable_clock = false,
-};
-
-static const struct fixed_dev_type fixed_clkenable_data = {
-	.has_enable_clock = true,
 };
 
 static int reg_clock_enable(struct regulator_dev *rdev)
@@ -126,6 +115,7 @@ of_get_fixed_voltage_config(struct device *dev,
 		config->enabled_at_boot = true;
 
 	of_property_read_u32(np, "startup-delay-us", &config->startup_delay);
+	of_property_read_u32(np, "off-on-delay-us", &config->off_on_delay);
 
 	if (of_find_property(np, "vin-supply", NULL))
 		config->input_supply = "vin";
@@ -133,31 +123,14 @@ of_get_fixed_voltage_config(struct device *dev,
 	return config;
 }
 
-static struct regulator_ops fixed_voltage_ops = {
+static const struct regulator_ops fixed_voltage_ops = {
 };
 
-static struct regulator_ops fixed_voltage_clkenabled_ops = {
+static const struct regulator_ops fixed_voltage_clkenabled_ops = {
 	.enable = reg_clock_enable,
 	.disable = reg_clock_disable,
 	.is_enabled = reg_clock_is_enabled,
 };
-
-#ifdef QTI_FIXED_REGULATOR
-static void qti_reg_fixed_voltage_init(struct device *dev,
-				       struct regulator_dev *rdev)
-{
-	int ret;
-
-	ret = devm_regulator_proxy_consumer_register(dev, dev->of_node);
-	if (ret)
-		dev_err(dev, "failed to register proxy consumer, ret=%d\n",
-			ret);
-}
-#else
-static void qti_reg_fixed_voltage_init(struct device *dev,
-				       struct regulator_dev *rdev)
-{ }
-#endif
 
 static int reg_fixed_voltage_probe(struct platform_device *pdev)
 {
@@ -209,6 +182,7 @@ static int reg_fixed_voltage_probe(struct platform_device *pdev)
 	}
 
 	drvdata->desc.enable_time = config->startup_delay;
+	drvdata->desc.off_on_delay = config->off_on_delay;
 
 	if (config->input_supply) {
 		drvdata->desc.supply_name = devm_kstrdup(&pdev->dev,
@@ -228,7 +202,7 @@ static int reg_fixed_voltage_probe(struct platform_device *pdev)
 
 	/*
 	 * The signal will be inverted by the GPIO core if flagged so in the
-	 * decriptor.
+	 * descriptor.
 	 */
 	if (config->enabled_at_boot)
 		gflags = GPIOD_OUT_HIGH;
@@ -264,14 +238,14 @@ static int reg_fixed_voltage_probe(struct platform_device *pdev)
 	drvdata->dev = devm_regulator_register(&pdev->dev, &drvdata->desc,
 					       &cfg);
 	if (IS_ERR(drvdata->dev)) {
-		ret = PTR_ERR(drvdata->dev);
-		dev_err(&pdev->dev, "Failed to register regulator: %d\n", ret);
+		ret = dev_err_probe(&pdev->dev, PTR_ERR(drvdata->dev),
+				    "Failed to register regulator: %ld\n",
+				    PTR_ERR(drvdata->dev));
+		gpiod_put(cfg.ena_gpiod);
 		return ret;
 	}
 
 	platform_set_drvdata(pdev, drvdata);
-
-	qti_reg_fixed_voltage_init(dev, drvdata->dev);
 
 	dev_dbg(&pdev->dev, "%s supplying %duV\n", drvdata->desc.name,
 		drvdata->desc.fixed_uV);
@@ -280,13 +254,15 @@ static int reg_fixed_voltage_probe(struct platform_device *pdev)
 }
 
 #if defined(CONFIG_OF)
+static const struct fixed_dev_type fixed_voltage_data = {
+	.has_enable_clock = false,
+};
+
+static const struct fixed_dev_type fixed_clkenable_data = {
+	.has_enable_clock = true,
+};
+
 static const struct of_device_id fixed_of_match[] = {
-#ifdef QTI_FIXED_REGULATOR
-	{
-		.compatible = "qti-regulator-fixed",
-		.data = &fixed_voltage_data,
-	},
-#endif
 	{
 		.compatible = "regulator-fixed",
 		.data = &fixed_voltage_data,
@@ -304,12 +280,7 @@ MODULE_DEVICE_TABLE(of, fixed_of_match);
 static struct platform_driver regulator_fixed_voltage_driver = {
 	.probe		= reg_fixed_voltage_probe,
 	.driver		= {
-#ifdef QTI_FIXED_REGULATOR
-		.name		= "qti-reg-fixed-voltage",
-		.sync_state	= regulator_proxy_consumer_sync_state,
-#else
 		.name		= "reg-fixed-voltage",
-#endif
 		.of_match_table = of_match_ptr(fixed_of_match),
 	},
 };

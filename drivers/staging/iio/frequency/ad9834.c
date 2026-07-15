@@ -115,7 +115,7 @@ static int ad9834_write_frequency(struct ad9834_state *st,
 
 	clk_freq = clk_get_rate(st->mclk);
 
-	if (fout > (clk_freq / 2))
+	if (!clk_freq || fout > (clk_freq / 2))
 		return -EINVAL;
 
 	regval = ad9834_calc_freqreg(clk_freq, fout);
@@ -132,7 +132,7 @@ static int ad9834_write_frequency(struct ad9834_state *st,
 static int ad9834_write_phase(struct ad9834_state *st,
 			      unsigned long addr, unsigned long phase)
 {
-	if (phase > BIT(AD9834_PHASE_BITS))
+	if (phase >= BIT(AD9834_PHASE_BITS))
 		return -EINVAL;
 	st->data = cpu_to_be16(addr | phase);
 
@@ -397,7 +397,6 @@ static int ad9834_probe(struct spi_device *spi)
 	struct regulator *reg;
 	int ret;
 
-
 	reg = devm_regulator_get(&spi->dev, "avdd");
 	if (IS_ERR(reg))
 		return PTR_ERR(reg);
@@ -431,7 +430,6 @@ static int ad9834_probe(struct spi_device *spi)
 	st->spi = spi;
 	st->devid = spi_get_device_id(spi)->driver_data;
 	st->reg = reg;
-	indio_dev->dev.parent = &spi->dev;
 	indio_dev->name = spi_get_device_id(spi)->name;
 	switch (st->devid) {
 	case ID_AD9833:

@@ -49,11 +49,6 @@ static inline void set_clock_comparator(__u64 time)
 	asm volatile("sckc %0" : : "Q" (time));
 }
 
-static inline void store_clock_comparator(__u64 *time)
-{
-	asm volatile("stckc %0" : "=Q" (*time));
-}
-
 void clock_comparator_work(void);
 
 void __init time_early_init(void);
@@ -172,16 +167,8 @@ static inline unsigned long long get_tod_clock_fast(void)
 	return get_tod_clock();
 #endif
 }
-
-static inline cycles_t get_cycles(void)
-{
-	return (cycles_t) get_tod_clock() >> 2;
-}
-#define get_cycles get_cycles
-
 int get_phys_clock(unsigned long *clock);
 void init_cpu_timer(void);
-unsigned long long monotonic_clock(void);
 
 extern unsigned char tod_clock_base[16] __aligned(8);
 
@@ -201,6 +188,12 @@ static inline unsigned long long get_tod_clock_monotonic(void)
 	preempt_enable_notrace();
 	return tod;
 }
+
+static inline cycles_t get_cycles(void)
+{
+	return (cycles_t)get_tod_clock_monotonic() >> 2;
+}
+#define get_cycles get_cycles
 
 /**
  * tod_to_ns - convert a TOD format value to nanoseconds

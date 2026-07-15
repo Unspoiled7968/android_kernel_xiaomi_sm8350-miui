@@ -37,11 +37,11 @@ config ARCH_BCM2835
 	select PINCTRL
 	select PINCTRL_BCM2835
 	select ARM_AMBA
+	select ARM_GIC
 	select ARM_TIMER_SP804
-	select HAVE_ARM_ARCH_TIMER
 	help
-	  This enables support for the Broadcom BCM2837 SoC.
-	  This SoC is used in the Raspberry Pi 3 device.
+	  This enables support for the Broadcom BCM2837 and BCM2711 SoC.
+	  These SoCs are used in the Raspberry Pi 3 and 4 devices.
 
 config ARCH_BCM_IPROC
 	bool "Broadcom iProc SoC Family"
@@ -81,7 +81,6 @@ config ARCH_EXYNOS
 	select EXYNOS_CHIPID
 	select EXYNOS_PM_DOMAINS if PM_GENERIC_DOMAINS
 	select EXYNOS_PMU
-	select HAVE_S3C2410_WATCHDOG if WATCHDOG
 	select HAVE_S3C_RTC if RTC_CLASS
 	select PINCTRL
 	select PINCTRL_EXYNOS
@@ -89,6 +88,20 @@ config ARCH_EXYNOS
 	select SOC_SAMSUNG
 	help
 	  This enables support for ARMv8 based Samsung Exynos SoC family.
+
+config ARCH_SPARX5
+	bool "ARMv8 based Microchip Sparx5 SoC family"
+	select PINCTRL
+	select DW_APB_TIMER_OF
+	help
+	  This enables support for the Microchip Sparx5 ARMv8-based
+	  SoC family of TSN-capable gigabit switches.
+
+	  The SparX-5 Ethernet switch family provides a rich set of
+	  switching features such as advanced TCAM-based VLAN and QoS
+	  processing enabling delivery of differentiated services, and
+	  security through TCAM-based frame processing using versatile
+	  content aware processor (VCAP).
 
 config ARCH_K3
 	bool "Texas Instruments Inc. K3 multicore SoC architecture"
@@ -99,6 +112,7 @@ config ARCH_K3
 	select TI_SCI_PROTOCOL
 	select TI_SCI_INTR_IRQCHIP
 	select TI_SCI_INTA_IRQCHIP
+	select TI_K3_SOCINFO
 	help
 	  This enables support for Texas Instruments' K3 multicore SoC
 	  architecture.
@@ -122,6 +136,11 @@ config ARCH_HISI
 	help
 	  This enables support for Hisilicon ARMv8 SoC family
 
+config ARCH_KEEMBAY
+	bool "Keem Bay SoC"
+	help
+	  This enables support for Intel Movidius SoC code-named Keem Bay.
+
 config ARCH_MEDIATEK
 	bool "MediaTek SoC Family"
 	select ARM_GIC
@@ -133,12 +152,7 @@ config ARCH_MEDIATEK
 
 config ARCH_MESON
 	bool "Amlogic Platforms"
-	select PINCTRL
-	select PINCTRL_MESON
-	select COMMON_CLK_GXBB
-	select COMMON_CLK_AXG
-	select COMMON_CLK_G12A
-	select MESON_IRQ_GPIO
+	select COMMON_CLK
 	help
 	  This enables support for the arm64 based Amlogic SoCs
 	  such as the s905, S905X/D, S912, A113X/D or S905X/D2
@@ -187,211 +201,9 @@ config ARCH_QCOM
 	help
 	  This enables support for the ARMv8 based Qualcomm chipsets.
 
-config ARCH_LAHAINA
-	bool "Enable Support for Qualcomm Technologies, Inc. LAHAINA"
-	depends on ARCH_QCOM
-	help
-	  This enables support for the Qualcomm Technologies, Inc.'s
-	  LAHAINA chipset. If you do not wish to build a kernel that
-	  runs on this chipset or if you are unsure, say 'N' here.
-
-config ARCH_QTI_VM
-	bool "Enable Virtual Machines Support for Qualcomm Technologies, Inc."
-	depends on ARCH_QCOM
-	help
-	  This enables support for the Qualcomm Technologies, Inc.'s
-	  Virtual Machines. If you wish to build a kernel that doesn't
-	  require VM support or if you are unsure,
-	  say 'N' here.
-
-config ARCH_SHIMA
-	bool "Enable Support for Qualcomm Technologies, Inc. SHIMA"
-	depends on ARCH_QCOM
-	help
-	  This enables support for the Qualcomm Technologies, Inc.'s
-	  SHIMA chipset. If you do not wish to build a kernel that
-	  runs on this chipset or if you are unsure, say 'N' here.
-
-config ARCH_HOLI
-	bool "Enable Support for Qualcomm Technologies, Inc. HOLI"
-	depends on ARCH_QCOM
-	help
-	  This enables support for the Qualcomm Technologies, Inc.'s
-	  HOLI chipset. If you do not wish to build a kernel that
-	  runs on this chipset or if you are unsure, say 'N' here.
-
-config ARCH_BLAIR
-	bool "Enable Support for Qualcomm Technologies, Inc. BLAIR"
-	depends on ARCH_QCOM
-	help
-	  This enables support for the Qualcomm Technologies, Inc.'s
-	  BLAIR chipset. If you do not wish to build a kernel that
-	  runs on this chipset or if you are unsure, say 'N' here.
-
-config ARCH_YUPIK
-	bool "Enable Support for Qualcomm Technologies, Inc. YUPIK"
-	depends on ARCH_QCOM
-	help
-	  This enables support for the Qualcomm Technologies,
-	  Inc.'s YUPIK chipset. If you do not wish to build a
-	  kernel that runs on this chipset or if you are unsure,
-	  say 'N' here.
-
-config ARCH_SA8155
-	bool "Enable Support for Qualcomm Technologies, Inc. SA8155"
-	depends on ARCH_QCOM
-	help
-	  This enables support for the Qualcomm Technologies, Inc.'s
-	  SA8155 chipset. If you do not wish to build a kernel that
-	  runs on this chipset or if you are unsure, say 'N' here.
-
-config ARCH_SA8195
-	bool "Enable Support for Qualcomm Technologies, Inc. SA8195"
-	depends on ARCH_QCOM
-	help
-	  This enables support for the Qualcomm Technologies, Inc.'s
-	  SA8195 chipset. If you do not wish to build a kernel that
-	  runs on this chipset or if you are unsure, say 'N' here.
-
-config ARCH_SA6155
-	bool "Enable Support for Qualcomm Technologies, Inc. SA6155"
-	depends on ARCH_QCOM
-	help
-	  This enables support for the Qualcomm Technologies, Inc.'s
-	  SA6155 chipset. If you do not wish to build a kernel that
-	  runs on this chipset or if you are unsure, say 'N' here.
-
-config ARCH_DIREWOLF
-	bool "Enable Support for Qualcomm Technologies, Inc. DIREWOLF AU"
-	depends on ARCH_QCOM
-	help
-	  This enables support for the Qualcomm Technologies, Inc.'s
-	  DIREWOLF Automotive chipset. If you do not wish to build a
-	  kernel that runs on this chipset or if you are unsure,
-	  say 'N' here.
-
-config ARCH_SCUBA
-	bool "Enable Support for Qualcomm Technologies, Inc. SCUBA"
-	depends on ARCH_QCOM
-	help
-	  This enables support for the Qualcomm Technologies, Inc.'s
-	  SCUBA chipset. If you do not wish to build a kernel that
-	  runs on this chipset or if you are unsure, say 'N' here.
-
-menu "Kernel config for xiaomi devices"
-
-config BOARD_XIAOMI
-	bool "Xiaomi devices support"
-	help
-		Enable to enable support to xiaomi devices
-
-if BOARD_XIAOMI
-
-config BOARD_XIAOMI_LAHAINA
-	bool "Xiaomi lahaina devices support"
-	select ARCH_QCOM
-	select ARCH_LAHAINA
-	help
-		Enable support for xiaomi lahaina devices
-
-config BOARD_XIAOMI_YUPIK
-	bool "Xiaomi yupik devices support"
-	select ARCH_QCOM
-	select ARCH_YUPIK
-	help
-		Enable support for xiaomi yupik devices
-
-config BOARD_XIAOMI_SHIMA
-	bool "Xiaomi shima devices support"
-	select ARCH_QCOM
-	select ARCH_SHIMA
-	help
-		Enable support for xiaomi shima devices
-
-config BOARD_XIAOMI_CETUS
-	bool "Xiaomi Mi MIX Fold"
-	select BOARD_XIAOMI_LAHAINA
-	help
-		Enable support for Xiaomi Mi MIX Fold
-
-config BOARD_XIAOMI_HAYDN
-	bool "Xiaomi Redmi K40 Pro / Redmi K40 Pro+ / Mi 11X Pro / Mi 11i"
-	select BOARD_XIAOMI_LAHAINA
-	help
-		Enable support for Xiaomi Redmi K40 Pro / Redmi K40 Pro+ / Mi 11X Pro / Mi 11i
-
-config BOARD_XIAOMI_LISA
-	bool "Xiaomi Mi 11 Lite 5G NE"
-	select BOARD_XIAOMI_YUPIK
-	help
-		Enable support for Xiaomi Mi 11 Lite 5G NE
-
-config BOARD_XIAOMI_MONA
-	bool "Xiaomi Civi"
-	select BOARD_XIAOMI_YUPIK
-	help
-		Enable support for Xiaomi Civi
-
-config BOARD_XIAOMI_ODIN
-	bool "Xiaomi MIX 4"
-	select BOARD_XIAOMI_LAHAINA
-	help
-		Enable support for Xiaomi MIX 4
-
-config BOARD_XIAOMI_REDWOOD
-	bool "Xiaomi Redmi Note 12 Pro Speed"
-	select BOARD_XIAOMI_YUPIK
-	help
-		Enable support for Redmi Note 12 Pro Speed
-
-config BOARD_XIAOMI_RENOIR
-	bool "Xiaomi Mi 11 Lite 5G"
-	select BOARD_XIAOMI_SHIMA
-	help
-		Enable support for Xiaomi Mi 11 Lite 5G
-
-config BOARD_XIAOMI_STAR
-	bool "Xiaomi Mi 11 Pro/Ultra"
-	select BOARD_XIAOMI_LAHAINA
-	help
-		Enable support for Xiaomi Mi 11 Ultra
-
-config BOARD_XIAOMI_TAOYAO
-	bool "Xiaomi Mi 12 Lite"
-	select BOARD_XIAOMI_YUPIK
-	help
-		Enable support for Xiaomi Mi 12 Lite
-
-config BOARD_XIAOMI_VENUS
-	bool "Xiaomi Mi 11"
-	select BOARD_XIAOMI_LAHAINA
-	help
-		Enable support for Xiaomi Mi 11
-
-config BOARD_XIAOMI_VILI
-	bool "Xiaomi 11T Pro"
-	select BOARD_XIAOMI_LAHAINA
-	help
-		Enable support for Xiaomi Mi 11T Pro
-
-config BOARD_XIAOMI_ZIJIN
-	bool "Xiaomi Civi 1S"
-	select BOARD_XIAOMI_YUPIK
-	help
-		Enable support for Xiaomi Civi 1S
-
-config USE_COMMON_CAMERA
-	bool "Use common camera driver"
-	depends on BOARD_XIAOMI
-	help
-	  This enables use common camera driver.
-
-endif
-
-endmenu
-
 config ARCH_REALTEK
 	bool "Realtek Platforms"
+	select RESET_CONTROLLER
 	help
 	  This enables support for the ARMv8 based Realtek chipsets,
 	  like the RTD1295.
@@ -416,6 +228,11 @@ config ARCH_ROCKCHIP
 	  This enables support for the ARMv8 based Rockchip chipsets,
 	  like the RK3368.
 
+config ARCH_S32
+	bool "NXP S32 SoC Family"
+	help
+	  This enables support for the NXP S32 family of processors.
+
 config ARCH_SEATTLE
 	bool "AMD Seattle SoC Family"
 	help
@@ -434,7 +251,6 @@ config ARCH_TEGRA
 	bool "NVIDIA Tegra SoC Family"
 	select ARCH_HAS_RESET_CONTROLLER
 	select ARM_GIC_PM
-	select CLKDEV_LOOKUP
 	select CLKSRC_MMIO
 	select TIMER_OF
 	select GENERIC_CLOCKEVENTS
@@ -473,15 +289,19 @@ config ARCH_UNIPHIER
 
 config ARCH_VEXPRESS
 	bool "ARMv8 software model (Versatile Express)"
-	select COMMON_CLK_VERSATILE
 	select GPIOLIB
 	select PM
 	select PM_GENERIC_DOMAINS
-	select POWER_RESET_VEXPRESS
-	select VEXPRESS_CONFIG
 	help
 	  This enables support for the ARMv8 software model (Versatile
 	  Express).
+
+config ARCH_VISCONTI
+	bool "Toshiba Visconti SoC Family"
+	select PINCTRL
+	select PINCTRL_VISCONTI
+	help
+	  This enables support for Toshiba Visconti SoCs Family.
 
 config ARCH_VULCAN
 	def_bool n
@@ -499,17 +319,7 @@ config ARCH_ZX
 
 config ARCH_ZYNQMP
 	bool "Xilinx ZynqMP Family"
-	select ZYNQMP_FIRMWARE
 	help
 	  This enables support for Xilinx ZynqMP Family
-
-config ARCH_SA2150P
-	bool "Enable Support for Qualcomm Technologies, Inc. SA2150P"
-	depends on ARCH_QCOM
-	help
-	  This configuration option enables support to build kernel for
-	  SA2150P SoC.
-	  If you do not wish to build a kernel that runs on this chipset,
-	  say 'N' here.
 
 endmenu

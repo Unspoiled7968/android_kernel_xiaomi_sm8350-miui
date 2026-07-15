@@ -36,16 +36,6 @@
 #define BFITNOENT ((u32)~0)
 #define NO_BLOCK ((u64)~0)
 
-#if BITS_PER_LONG == 32
-#define LBITMASK   (0x55555555UL)
-#define LBITSKIP55 (0x55555555UL)
-#define LBITSKIP00 (0x00000000UL)
-#else
-#define LBITMASK   (0x5555555555555555UL)
-#define LBITSKIP55 (0x5555555555555555UL)
-#define LBITSKIP00 (0x0000000000000000UL)
-#endif
-
 /*
  * These routines are used by the resource group routines (rgrp.c)
  * to keep track of block allocation.  Each block is represented by two
@@ -467,24 +457,24 @@ void gfs2_rgrp_verify(struct gfs2_rgrpd *rgd)
 	}
 
 	if (count[0] != rgd->rd_free) {
-		if (gfs2_consist_rgrpd(rgd))
-			fs_err(sdp, "free data mismatch:  %u != %u\n",
-			       count[0], rgd->rd_free);
+		gfs2_lm(sdp, "free data mismatch:  %u != %u\n",
+			count[0], rgd->rd_free);
+		gfs2_consist_rgrpd(rgd);
 		return;
 	}
 
 	tmp = rgd->rd_data - rgd->rd_free - rgd->rd_dinodes;
 	if (count[1] != tmp) {
-		if (gfs2_consist_rgrpd(rgd))
-			fs_err(sdp, "used data mismatch:  %u != %u\n",
-			       count[1], tmp);
+		gfs2_lm(sdp, "used data mismatch:  %u != %u\n",
+			count[1], tmp);
+		gfs2_consist_rgrpd(rgd);
 		return;
 	}
 
 	if (count[2] + count[3] != rgd->rd_dinodes) {
-		if (gfs2_consist_rgrpd(rgd))
-			fs_err(sdp, "used metadata mismatch:  %u != %u\n",
-			       count[2] + count[3], rgd->rd_dinodes);
+		gfs2_lm(sdp, "used metadata mismatch:  %u != %u\n",
+			count[2] + count[3], rgd->rd_dinodes);
+		gfs2_consist_rgrpd(rgd);
 		return;
 	}
 }
@@ -600,16 +590,6 @@ void gfs2_free_clones(struct gfs2_rgrpd *rgd)
 	}
 }
 
-/**
- * gfs2_rsqa_alloc - make sure we have a reservation assigned to the inode
- *                 plus a quota allocations data structure, if necessary
- * @ip: the inode for this reservation
- */
-int gfs2_rsqa_alloc(struct gfs2_inode *ip)
-{
-	return gfs2_qa_alloc(ip);
-}
-
 static void dump_rs(struct seq_file *seq, const struct gfs2_blkreserv *rs,
 		    const char *fs_id_buf)
 {
@@ -682,18 +662,18 @@ void gfs2_rs_deltree(struct gfs2_blkreserv *rs)
 }
 
 /**
- * gfs2_rsqa_delete - delete a multi-block reservation and quota allocation
+ * gfs2_rs_delete - delete a multi-block reservation
  * @ip: The inode for this reservation
- * @wcount: The inode's write count, or NULL
  *
  */
-void gfs2_rsqa_delete(struct gfs2_inode *ip, atomic_t *wcount)
+void gfs2_rs_delete(struct gfs2_inode *ip)
 {
+	struct inode *inode = &ip->i_inode;
+
 	down_write(&ip->i_rw_mutex);
-	if ((wcount == NULL) || (atomic_read(wcount) <= 1))
+	if (atomic_read(&inode->i_writecount) <= 1)
 		gfs2_rs_deltree(&ip->i_res);
 	up_write(&ip->i_rw_mutex);
-	gfs2_qa_delete(ip, wcount);
 }
 
 /**
@@ -730,8 +710,12 @@ void gfs2_clear_rgrpd(struct gfs2_sbd *sdp)
 		rb_erase(n, &sdp->sd_rindex_tree);
 
 		if (gl) {
-			glock_clear_object(gl, rgd);
+			if (gl->gl_state != LM_ST_UNLOCKED) {
+				gfs2_glock_cb(gl, LM_ST_UNLOCKED);
+				flush_delayed_work(&gl->gl_work);
+			}
 			gfs2_rgrp_brelse(rgd);
+			glock_clear_object(gl, rgd);
 			gfs2_glock_put(gl);
 		}
 
@@ -741,17 +725,6 @@ void gfs2_clear_rgrpd(struct gfs2_sbd *sdp)
 		rgd->rd_bits = NULL;
 		kmem_cache_free(gfs2_rgrpd_cachep, rgd);
 	}
-}
-
-static void gfs2_rindex_print(const struct gfs2_rgrpd *rgd)
-{
-	struct gfs2_sbd *sdp = rgd->rd_sbd;
-
-	fs_info(sdp, "ri_addr = %llu\n", (unsigned long long)rgd->rd_addr);
-	fs_info(sdp, "ri_length = %u\n", rgd->rd_length);
-	fs_info(sdp, "ri_data0 = %llu\n", (unsigned long long)rgd->rd_data0);
-	fs_info(sdp, "ri_data = %u\n", rgd->rd_data);
-	fs_info(sdp, "ri_bitbytes = %u\n", rgd->rd_bitbytes);
 }
 
 /**
@@ -824,11 +797,20 @@ static int compute_bitstructs(struct gfs2_rgrpd *rgd)
 	}
 	bi = rgd->rd_bits + (length - 1);
 	if ((bi->bi_start + bi->bi_bytes) * GFS2_NBBY != rgd->rd_data) {
-		if (gfs2_consist_rgrpd(rgd)) {
-			gfs2_rindex_print(rgd);
-			fs_err(sdp, "start=%u len=%u offset=%u\n",
-			       bi->bi_start, bi->bi_bytes, bi->bi_offset);
-		}
+		gfs2_lm(sdp,
+			"ri_addr = %llu\n"
+			"ri_length = %u\n"
+			"ri_data0 = %llu\n"
+			"ri_data = %u\n"
+			"ri_bitbytes = %u\n"
+			"start=%u len=%u offset=%u\n",
+			(unsigned long long)rgd->rd_addr,
+			rgd->rd_length,
+			(unsigned long long)rgd->rd_data0,
+			rgd->rd_data,
+			rgd->rd_bitbytes,
+			bi->bi_start, bi->bi_bytes, bi->bi_offset);
+		gfs2_consist_rgrpd(rgd);
 		return -EIO;
 	}
 
@@ -897,7 +879,6 @@ static int rgd_insert(struct gfs2_rgrpd *rgd)
 static int read_rindex_entry(struct gfs2_inode *ip)
 {
 	struct gfs2_sbd *sdp = GFS2_SB(&ip->i_inode);
-	const unsigned bsize = sdp->sd_sb.sb_bsize;
 	loff_t pos = sdp->sd_rgrps * sizeof(struct gfs2_rindex);
 	struct gfs2_rindex buf;
 	int error;
@@ -943,9 +924,6 @@ static int read_rindex_entry(struct gfs2_inode *ip)
 	spin_unlock(&sdp->sd_rindex_spin);
 	if (!error) {
 		glock_set_object(rgd->rd_gl, rgd);
-		rgd->rd_gl->gl_vm.start = (rgd->rd_addr * bsize) & PAGE_MASK;
-		rgd->rd_gl->gl_vm.end = PAGE_ALIGN((rgd->rd_addr +
-						    rgd->rd_length) * bsize) - 1;
 		return 0;
 	}
 
@@ -1269,6 +1247,8 @@ static int update_rgrp_lvb(struct gfs2_rgrpd *rgd)
 		rgd->rd_flags &= ~GFS2_RDF_CHECK;
 	rgd->rd_free = be32_to_cpu(rgd->rd_rgl->rl_free);
 	rgd->rd_free_clone = rgd->rd_free;
+	/* max out the rgrp allocation failure point */
+	rgd->rd_extfail_pt = rgd->rd_free;
 	rgd->rd_dinodes = be32_to_cpu(rgd->rd_rgl->rl_dinodes);
 	rgd->rd_igeneration = be64_to_cpu(rgd->rd_rgl->rl_igeneration);
 	return 0;
@@ -1301,23 +1281,6 @@ void gfs2_rgrp_brelse(struct gfs2_rgrpd *rgd)
 			bi->bi_bh = NULL;
 		}
 	}
-
-}
-
-/**
- * gfs2_rgrp_go_unlock - Unlock a rgrp glock
- * @gh: The glock holder for the resource group
- *
- */
-
-void gfs2_rgrp_go_unlock(struct gfs2_holder *gh)
-{
-	struct gfs2_rgrpd *rgd = gh->gh_gl->gl_object;
-	int demote_requested = test_bit(GLF_DEMOTE, &gh->gh_gl->gl_flags) |
-		test_bit(GLF_PENDING_DEMOTE, &gh->gh_gl->gl_flags);
-
-	if (rgd && demote_requested)
-		gfs2_rgrp_brelse(rgd);
 }
 
 int gfs2_rgrp_send_discards(struct gfs2_sbd *sdp, u64 offset,
@@ -1687,7 +1650,7 @@ static int gfs2_reservation_check_and_update(struct gfs2_rbm *rbm,
 	 * If we have a minimum extent length, then skip over any extent
 	 * which is less than the min extent length in size.
 	 */
-	if (minext) {
+	if (minext > 1) {
 		extlen = gfs2_free_extlen(rbm, minext);
 		if (extlen <= maxext->len)
 			goto fail;
@@ -1719,7 +1682,7 @@ fail:
  * gfs2_rbm_find - Look for blocks of a particular state
  * @rbm: Value/result starting position and final position
  * @state: The state which we want to find
- * @minext: Pointer to the requested extent length (NULL for a single block)
+ * @minext: Pointer to the requested extent length
  *          This is updated to be the actual reservation size.
  * @ip: If set, check for reservations
  * @nowrap: Stop looking at the end of the rgrp, rather than wrapping
@@ -1756,8 +1719,7 @@ static int gfs2_rbm_find(struct gfs2_rbm *rbm, u8 state, u32 *minext,
 
 	while(1) {
 		bi = rbm_bi(rbm);
-		if ((ip == NULL || !gfs2_rs_active(&ip->i_res)) &&
-		    test_bit(GBF_FULL, &bi->bi_flags) &&
+		if (test_bit(GBF_FULL, &bi->bi_flags) &&
 		    (state == GFS2_BLKST_FREE))
 			goto next_bitmap;
 
@@ -1776,8 +1738,7 @@ static int gfs2_rbm_find(struct gfs2_rbm *rbm, u8 state, u32 *minext,
 		if (ip == NULL)
 			return 0;
 
-		ret = gfs2_reservation_check_and_update(rbm, ip,
-							minext ? *minext : 0,
+		ret = gfs2_reservation_check_and_update(rbm, ip, *minext,
 							&maxext);
 		if (ret == 0)
 			return 0;
@@ -1809,7 +1770,7 @@ next_iter:
 			break;
 	}
 
-	if (minext == NULL || state != GFS2_BLKST_FREE)
+	if (state != GFS2_BLKST_FREE)
 		return -ENOSPC;
 
 	/* If the extent was too small, and it's smaller than the smallest
@@ -1817,7 +1778,7 @@ next_iter:
 	   useless to search this rgrp again for this amount or more. */
 	if (wrapped && (scan_from_start || rbm->bii > last_bii) &&
 	    *minext < rbm->rgd->rd_extfail_pt)
-		rbm->rgd->rd_extfail_pt = *minext;
+		rbm->rgd->rd_extfail_pt = *minext - 1;
 
 	/* If the maximum extent we found is big enough to fulfill the
 	   minimum requirements, use it anyway. */
@@ -1851,10 +1812,8 @@ static void try_rgrp_unlink(struct gfs2_rgrpd *rgd, u64 *last_unlinked, u64 skip
 	struct gfs2_rbm rbm = { .rgd = rgd, .bii = 0, .offset = 0 };
 
 	while (1) {
-		down_write(&sdp->sd_log_flush_lock);
 		error = gfs2_rbm_find(&rbm, GFS2_BLKST_UNLINKED, NULL, NULL,
 				      true);
-		up_write(&sdp->sd_log_flush_lock);
 		if (error == -ENOSPC)
 			break;
 		if (WARN_ON_ONCE(error))
@@ -1882,7 +1841,7 @@ static void try_rgrp_unlink(struct gfs2_rgrpd *rgd, u64 *last_unlinked, u64 skip
 		 */
 		ip = gl->gl_object;
 
-		if (ip || queue_work(gfs2_delete_workqueue, &gl->gl_delete) == 0)
+		if (ip || !gfs2_queue_delete_work(gl, 0))
 			gfs2_glock_put(gl);
 		else
 			found++;
@@ -2256,20 +2215,17 @@ static void rgblk_free(struct gfs2_sbd *sdp, struct gfs2_rgrpd *rgd,
 /**
  * gfs2_rgrp_dump - print out an rgrp
  * @seq: The iterator
- * @gl: The glock in question
+ * @rgd: The rgrp in question
  * @fs_id_buf: pointer to file system id (if requested)
  *
  */
 
-void gfs2_rgrp_dump(struct seq_file *seq, struct gfs2_glock *gl,
+void gfs2_rgrp_dump(struct seq_file *seq, struct gfs2_rgrpd *rgd,
 		    const char *fs_id_buf)
 {
-	struct gfs2_rgrpd *rgd = gl->gl_object;
 	struct gfs2_blkreserv *trs;
 	const struct rb_node *n;
 
-	if (rgd == NULL)
-		return;
 	gfs2_print_dbg(seq, "%s R: n:%llu f:%02x b:%u/%u i:%u r:%u e:%u\n",
 		       fs_id_buf,
 		       (unsigned long long)rgd->rd_addr, rgd->rd_flags,
@@ -2300,7 +2256,7 @@ static void gfs2_rgrp_error(struct gfs2_rgrpd *rgd)
 		(unsigned long long)rgd->rd_addr);
 	fs_warn(sdp, "umount on all nodes and run fsck.gfs2 to fix the error\n");
 	sprintf(fs_id_buf, "fsid=%s: ", sdp->sd_fsname);
-	gfs2_rgrp_dump(NULL, rgd->rd_gl, fs_id_buf);
+	gfs2_rgrp_dump(NULL, rgd, fs_id_buf);
 	rgd->rd_flags |= GFS2_RDF_ERROR;
 }
 
@@ -2396,14 +2352,15 @@ int gfs2_alloc_blocks(struct gfs2_inode *ip, u64 *bn, unsigned int *nblocks,
 	struct gfs2_rbm rbm = { .rgd = ip->i_res.rs_rbm.rgd, };
 	unsigned int ndata;
 	u64 block; /* block, within the file system scope */
+	u32 minext = 1;
 	int error;
 
 	gfs2_set_alloc_start(&rbm, ip, dinode);
-	error = gfs2_rbm_find(&rbm, GFS2_BLKST_FREE, NULL, ip, false);
+	error = gfs2_rbm_find(&rbm, GFS2_BLKST_FREE, &minext, ip, false);
 
 	if (error == -ENOSPC) {
 		gfs2_set_alloc_start(&rbm, ip, dinode);
-		error = gfs2_rbm_find(&rbm, GFS2_BLKST_FREE, NULL, NULL, false);
+		error = gfs2_rbm_find(&rbm, GFS2_BLKST_FREE, &minext, NULL, false);
 	}
 
 	/* Since all blocks are reserved in advance, this shouldn't happen */
@@ -2492,8 +2449,8 @@ void __gfs2_free_blocks(struct gfs2_inode *ip, struct gfs2_rgrpd *rgd,
 	gfs2_rgrp_out(rgd, rgd->rd_bits[0].bi_bh->b_data);
 
 	/* Directories keep their data in the metadata address space */
-	if (meta || ip->i_depth)
-		gfs2_meta_wipe(ip, bstart, blen);
+	if (meta || ip->i_depth || gfs2_is_jdata(ip))
+		gfs2_journal_wipe(ip, bstart, blen);
 }
 
 /**
@@ -2549,7 +2506,7 @@ void gfs2_free_di(struct gfs2_rgrpd *rgd, struct gfs2_inode *ip)
 	gfs2_statfs_change(sdp, 0, +1, -1);
 	trace_gfs2_block_alloc(ip, rgd, ip->i_no_addr, 1, GFS2_BLKST_FREE);
 	gfs2_quota_change(ip, -1, ip->i_inode.i_uid, ip->i_inode.i_gid);
-	gfs2_meta_wipe(ip, ip->i_no_addr, 1);
+	gfs2_journal_wipe(ip, ip->i_no_addr, 1);
 }
 
 /**

@@ -6,7 +6,6 @@
 #include <linux/hugetlb.h>
 #include <linux/mman.h>
 #include <linux/mmzone.h>
-#include <linux/memory.h>
 #include <linux/proc_fs.h>
 #include <linux/percpu.h>
 #include <linux/seq_file.h>
@@ -18,41 +17,16 @@
 #include <linux/cma.h>
 #endif
 #include <asm/page.h>
-#include <asm/pgtable.h>
 #include "internal.h"
-#ifdef CONFIG_QCOM_MINIDUMP_PANIC_DUMP
-#include <soc/qcom/minidump.h>
-#include <linux/seq_buf.h>
-#endif
-
+#include <trace/hooks/mm.h>
 void __attribute__((weak)) arch_report_meminfo(struct seq_file *m)
 {
 }
 
-static void show_val_kb2(struct seq_file *m, const char *s, unsigned long num)
-{
-	if (m) {
-		seq_printf(m, s, num);
-	} else {
-#ifdef CONFIG_QCOM_MINIDUMP_PANIC_DUMP
-		if (md_meminfo_seq_buf)
-			seq_buf_printf(md_meminfo_seq_buf, s, num);
-#endif
-	}
-}
-
 static void show_val_kb(struct seq_file *m, const char *s, unsigned long num)
 {
-	if (m) {
-		seq_put_decimal_ull_width(m, s, num << (PAGE_SHIFT - 10), 8);
-		seq_write(m, " kB\n", 4);
-	} else {
-#ifdef CONFIG_QCOM_MINIDUMP_PANIC_DUMP
-		if (md_meminfo_seq_buf)
-			seq_buf_printf(md_meminfo_seq_buf, "%s : %lld KB\n", s,
-					num << (PAGE_SHIFT - 10));
-#endif
-	}
+	seq_put_decimal_ull_width(m, s, num << (PAGE_SHIFT - 10), 8);
+	seq_write(m, " kB\n", 4);
 }
 
 static int meminfo_proc_show(struct seq_file *m, void *v)
@@ -67,7 +41,7 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
 
 	si_meminfo(&i);
 	si_swapinfo(&i);
-	committed = percpu_counter_read_positive(&vm_committed_as);
+	committed = vm_memory_committed();
 
 	cached = global_node_page_state(NR_FILE_PAGES) -
 			total_swapcache_pages() - i.bufferram;
@@ -78,13 +52,8 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
 		pages[lru] = global_node_page_state(NR_LRU_BASE + lru);
 
 	available = si_mem_available();
-
-#ifdef CONFIG_QCOM_MEM_OFFLINE
-	i.totalram = get_totalram_pages_count_inc_offlined();
-#endif
-
-	sreclaimable = global_node_page_state(NR_SLAB_RECLAIMABLE);
-	sunreclaim = global_node_page_state(NR_SLAB_UNRECLAIMABLE);
+	sreclaimable = global_node_page_state_pages(NR_SLAB_RECLAIMABLE_B);
+	sunreclaim = global_node_page_state_pages(NR_SLAB_UNRECLAIMABLE_B);
 
 	show_val_kb(m, "MemTotal:       ", i.totalram);
 	show_val_kb(m, "MemFree:        ", i.freeram);
@@ -131,31 +100,30 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
 	show_val_kb(m, "Slab:           ", sreclaimable + sunreclaim);
 	show_val_kb(m, "SReclaimable:   ", sreclaimable);
 	show_val_kb(m, "SUnreclaim:     ", sunreclaim);
-	show_val_kb2(m, "KernelStack:    %8lu kB\n",
-		   global_zone_page_state(NR_KERNEL_STACK_KB));
+	seq_printf(m, "KernelStack:    %8lu kB\n",
+		   global_node_page_state(NR_KERNEL_STACK_KB));
 #ifdef CONFIG_SHADOW_CALL_STACK
-	show_val_kb2(m, "ShadowCallStack:%8lu kB\n",
-		   global_zone_page_state(NR_KERNEL_SCS_BYTES) / 1024);
+	seq_printf(m, "ShadowCallStack:%8lu kB\n",
+		   global_node_page_state(NR_KERNEL_SCS_KB));
 #endif
 	show_val_kb(m, "PageTables:     ",
 		    global_zone_page_state(NR_PAGETABLE));
 
-	show_val_kb(m, "NFS_Unstable:   ",
-		    global_node_page_state(NR_UNSTABLE_NFS));
+	show_val_kb(m, "NFS_Unstable:   ", 0);
 	show_val_kb(m, "Bounce:         ",
 		    global_zone_page_state(NR_BOUNCE));
 	show_val_kb(m, "WritebackTmp:   ",
 		    global_node_page_state(NR_WRITEBACK_TEMP));
 	show_val_kb(m, "CommitLimit:    ", vm_commit_limit());
 	show_val_kb(m, "Committed_AS:   ", committed);
-	show_val_kb2(m, "VmallocTotal:   %8lu kB\n",
+	seq_printf(m, "VmallocTotal:   %8lu kB\n",
 		   (unsigned long)VMALLOC_TOTAL >> 10);
 	show_val_kb(m, "VmallocUsed:    ", vmalloc_nr_pages());
 	show_val_kb(m, "VmallocChunk:   ", 0ul);
 	show_val_kb(m, "Percpu:         ", pcpu_nr_pages());
 
 #ifdef CONFIG_MEMORY_FAILURE
-	show_val_kb2(m, "HardwareCorrupted: %5lu kB\n",
+	seq_printf(m, "HardwareCorrupted: %5lu kB\n",
 		   atomic_long_read(&num_poisoned_pages) << (PAGE_SHIFT - 10));
 #endif
 
@@ -177,21 +145,14 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
 	show_val_kb(m, "CmaFree:        ",
 		    global_zone_page_state(NR_FREE_CMA_PAGES));
 #endif
+	trace_android_vh_meminfo_proc_show(m);
 
-	if (m) {
-		hugetlb_report_meminfo(m);
-		arch_report_meminfo(m);
-	}
+	hugetlb_report_meminfo(m);
+
+	arch_report_meminfo(m);
 
 	return 0;
 }
-
-#ifdef CONFIG_QCOM_MINIDUMP_PANIC_DUMP
-void md_dump_meminfo(void)
-{
-	meminfo_proc_show(NULL, NULL);
-}
-#endif
 
 static int __init proc_meminfo_init(void)
 {

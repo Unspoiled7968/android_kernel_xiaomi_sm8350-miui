@@ -53,10 +53,6 @@ rules:
 	  fail with -ENOTEMPTY
 	* if new parent is equal to or is a descendent of source
 	  fail with -ELOOP
-	* Lock both the source and the target provided they exist. If we
-	  need to lock two inodes of different type (dir vs non-dir), we lock
-	  the directory first. If we need to lock two inodes of the same type,
-	  lock them in inode pointer order.
 	* Lock subdirectories involved (source before target).
 	* Lock non-directories involved, in inode pointer order.
 	* call the method.

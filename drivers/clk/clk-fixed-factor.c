@@ -98,7 +98,6 @@ __clk_hw_register_fixed_factor(struct device *dev, struct device_node *np,
 		ret = clk_hw_register(dev, hw);
 	else
 		ret = of_clk_hw_register(np, hw);
-	hw->init = NULL;
 	if (ret) {
 		kfree(fix);
 		hw = ERR_PTR(ret);
@@ -207,6 +206,7 @@ static struct clk_hw *_of_fixed_factor_clk_setup(struct device_node *node)
 
 /**
  * of_fixed_factor_clk_setup() - Setup function for simple fixed factor clock
+ * @node:	device node for the clock
  */
 void __init of_fixed_factor_clk_setup(struct device_node *node)
 {

@@ -17,6 +17,7 @@
 #include <linux/mman.h>
 #include <linux/nodemask.h>
 #include <linux/memblock.h>
+#include <linux/memory.h>
 #include <linux/fs.h>
 #include <linux/io.h>
 #include <linux/mm.h>
@@ -34,6 +35,7 @@
 #include <asm/mmu_context.h>
 #include <asm/ptdump.h>
 #include <asm/tlbflush.h>
+#include <asm/pgalloc.h>
 
 #define NO_BLOCK_MAPPINGS	BIT(0)
 #define NO_CONT_MAPPINGS	BIT(1)
@@ -59,6 +61,7 @@ static pmd_t bm_pmd[PTRS_PER_PMD] __page_aligned_bss __maybe_unused;
 static pud_t bm_pud[PTRS_PER_PUD] __page_aligned_bss __maybe_unused;
 
 static DEFINE_SPINLOCK(swapper_pgdir_lock);
+static DEFINE_MUTEX(fixmap_lock);
 
 void set_swapper_pgd(pgd_t *pgdp, pgd_t pgd)
 {
@@ -120,7 +123,7 @@ static bool pgattr_change_is_safe(u64 old, u64 new)
 	 * The following mapping attributes may be updated in live
 	 * kernel mappings without the need for break-before-make.
 	 */
-	static const pteval_t mask = PTE_PXN | PTE_RDONLY | PTE_WRITE | PTE_NG;
+	pteval_t mask = PTE_PXN | PTE_RDONLY | PTE_WRITE | PTE_NG;
 
 	/* creating or taking down mappings is always safe */
 	if (old == 0 || new == 0)
@@ -133,6 +136,17 @@ static bool pgattr_change_is_safe(u64 old, u64 new)
 	/* Transitioning from Non-Global to Global is unsafe */
 	if (old & ~new & PTE_NG)
 		return false;
+
+	/*
+	 * Changing the memory type between Normal and Normal-Tagged is safe
+	 * since Tagged is considered a permission attribute from the
+	 * mismatched attribute aliases perspective.
+	 */
+	if (((old & PTE_ATTRINDX_MASK) == PTE_ATTRINDX(MT_NORMAL) ||
+	     (old & PTE_ATTRINDX_MASK) == PTE_ATTRINDX(MT_NORMAL_TAGGED)) &&
+	    ((new & PTE_ATTRINDX_MASK) == PTE_ATTRINDX(MT_NORMAL) ||
+	     (new & PTE_ATTRINDX_MASK) == PTE_ATTRINDX(MT_NORMAL_TAGGED)))
+		mask |= PTE_ATTRINDX_MASK;
 
 	return ((old ^ new) & ~mask) == 0;
 }
@@ -289,18 +303,25 @@ static void alloc_init_pud(pgd_t *pgdp, unsigned long addr, unsigned long end,
 {
 	unsigned long next;
 	pud_t *pudp;
-	pgd_t pgd = READ_ONCE(*pgdp);
+	p4d_t *p4dp = p4d_offset(pgdp, addr);
+	p4d_t p4d = READ_ONCE(*p4dp);
 
-	if (pgd_none(pgd)) {
+	if (p4d_none(p4d)) {
 		phys_addr_t pud_phys;
 		BUG_ON(!pgtable_alloc);
 		pud_phys = pgtable_alloc(PUD_SHIFT);
-		__pgd_populate(pgdp, pud_phys, PUD_TYPE_TABLE);
-		pgd = READ_ONCE(*pgdp);
+		__p4d_populate(p4dp, pud_phys, PUD_TYPE_TABLE);
+		p4d = READ_ONCE(*p4dp);
 	}
-	BUG_ON(pgd_bad(pgd));
+	BUG_ON(p4d_bad(p4d));
 
-	pudp = pud_set_fixmap_offset(pgdp, addr);
+	/*
+	 * No need for locking during early boot. And it doesn't work as
+	 * expected with KASLR enabled.
+	 */
+	if (system_state != SYSTEM_BOOTING)
+		mutex_lock(&fixmap_lock);
+	pudp = pud_set_fixmap_offset(p4dp, addr);
 	do {
 		pud_t old_pud = READ_ONCE(*pudp);
 
@@ -330,6 +351,8 @@ static void alloc_init_pud(pgd_t *pgdp, unsigned long addr, unsigned long end,
 	} while (pudp++, addr = next, addr != end);
 
 	pud_clear_fixmap();
+	if (system_state != SYSTEM_BOOTING)
+		mutex_unlock(&fixmap_lock);
 }
 
 static void __create_pgd_mapping(pgd_t *pgdir, phys_addr_t phys,
@@ -338,8 +361,8 @@ static void __create_pgd_mapping(pgd_t *pgdir, phys_addr_t phys,
 				 phys_addr_t (*pgtable_alloc)(int),
 				 int flags)
 {
-	unsigned long addr, length, end, next;
-	pgd_t *pgdp = pgd_offset_raw(pgdir, virt);
+	unsigned long addr, end, next;
+	pgd_t *pgdp = pgd_offset_pgd(pgdir, virt);
 
 	/*
 	 * If the virtual and physical address don't have the same offset
@@ -350,9 +373,8 @@ static void __create_pgd_mapping(pgd_t *pgdir, phys_addr_t phys,
 
 	phys &= PAGE_MASK;
 	addr = virt & PAGE_MASK;
-	length = PAGE_ALIGN(size + (virt & ~PAGE_MASK));
+	end = PAGE_ALIGN(virt + size);
 
-	end = addr + length;
 	do {
 		next = pgd_addr_end(addr, end);
 		alloc_init_pud(pgdp, addr, next, phys, prot, pgtable_alloc,
@@ -389,14 +411,6 @@ static phys_addr_t pgd_pgtable_alloc(int shift)
 		BUG_ON(!pgtable_pmd_page_ctor(phys_to_page(pa)));
 
 	return pa;
-}
-
-void create_pgtable_mapping(phys_addr_t start, phys_addr_t end)
-{
-	unsigned long virt = (unsigned long)phys_to_virt(start);
-
-	__create_pgd_mapping(init_mm.pgd, start, virt, end - start,
-				PAGE_KERNEL, NULL, 0);
 }
 
 /*
@@ -464,14 +478,31 @@ void __init mark_linear_text_alias_ro(void)
 			    PAGE_KERNEL_RO);
 }
 
+static bool crash_mem_map __initdata;
+
+static int __init enable_crash_mem_map(char *arg)
+{
+	/*
+	 * Proper parameter parsing is done by reserve_crashkernel(). We only
+	 * need to know if the linear map has to avoid block mappings so that
+	 * the crashkernel reservations can be unmapped later.
+	 */
+	crash_mem_map = true;
+
+	return 0;
+}
+early_param("crashkernel", enable_crash_mem_map);
+
 static void __init map_mem(pgd_t *pgdp)
 {
 	phys_addr_t kernel_start = __pa_symbol(_text);
 	phys_addr_t kernel_end = __pa_symbol(__init_begin);
-	struct memblock_region *reg;
+	phys_addr_t start, end;
 	int flags = 0;
+	u64 i;
 
-	if (rodata_full || debug_pagealloc_enabled())
+	if (rodata_full || debug_pagealloc_enabled() ||
+	    IS_ENABLED(CONFIG_KFENCE))
 		flags = NO_BLOCK_MAPPINGS | NO_CONT_MAPPINGS;
 
 	/*
@@ -481,23 +512,29 @@ static void __init map_mem(pgd_t *pgdp)
 	 * the following for-loop
 	 */
 	memblock_mark_nomap(kernel_start, kernel_end - kernel_start);
+
 #ifdef CONFIG_KEXEC_CORE
-	if (crashk_res.end)
-		memblock_mark_nomap(crashk_res.start,
-				    resource_size(&crashk_res));
+	if (crash_mem_map) {
+		if (IS_ENABLED(CONFIG_ZONE_DMA) ||
+		    IS_ENABLED(CONFIG_ZONE_DMA32))
+			flags |= NO_BLOCK_MAPPINGS | NO_CONT_MAPPINGS;
+		else if (crashk_res.end)
+			memblock_mark_nomap(crashk_res.start,
+					    resource_size(&crashk_res));
+	}
 #endif
 
 	/* map all the memory banks */
-	for_each_memblock(memory, reg) {
-		phys_addr_t start = reg->base;
-		phys_addr_t end = start + reg->size;
-
+	for_each_mem_range(i, &start, &end) {
 		if (start >= end)
 			break;
-		if (memblock_is_nomap(reg))
-			continue;
-
-		__map_memblock(pgdp, start, end, PAGE_KERNEL, flags);
+		/*
+		 * The linear map must allow allocation tags reading/writing
+		 * if MTE is present. Otherwise, it has the same attributes as
+		 * PAGE_KERNEL.
+		 */
+		__map_memblock(pgdp, start, end, pgprot_tagged(PAGE_KERNEL),
+			       flags);
 	}
 
 	/*
@@ -514,18 +551,22 @@ static void __init map_mem(pgd_t *pgdp)
 		       PAGE_KERNEL, NO_CONT_MAPPINGS);
 	memblock_clear_nomap(kernel_start, kernel_end - kernel_start);
 
-#ifdef CONFIG_KEXEC_CORE
 	/*
 	 * Use page-level mappings here so that we can shrink the region
 	 * in page granularity and put back unused memory to buddy system
 	 * through /sys/kernel/kexec_crash_size interface.
 	 */
-	if (crashk_res.end) {
-		__map_memblock(pgdp, crashk_res.start, crashk_res.end + 1,
-			       PAGE_KERNEL,
-			       NO_BLOCK_MAPPINGS | NO_CONT_MAPPINGS);
-		memblock_clear_nomap(crashk_res.start,
-				     resource_size(&crashk_res));
+#ifdef CONFIG_KEXEC_CORE
+	if (crash_mem_map &&
+	    !IS_ENABLED(CONFIG_ZONE_DMA) && !IS_ENABLED(CONFIG_ZONE_DMA32)) {
+		if (crashk_res.end) {
+			__map_memblock(pgdp, crashk_res.start,
+				       crashk_res.end + 1,
+				       PAGE_KERNEL,
+				       NO_BLOCK_MAPPINGS | NO_CONT_MAPPINGS);
+			memblock_clear_nomap(crashk_res.start,
+					     resource_size(&crashk_res));
+		}
 	}
 #endif
 }
@@ -624,6 +665,22 @@ core_initcall(map_entry_trampoline);
 #endif
 
 /*
+ * Open coded check for BTI, only for use to determine configuration
+ * for early mappings for before the cpufeature code has run.
+ */
+static bool arm64_early_this_cpu_has_bti(void)
+{
+	u64 pfr1;
+
+	if (!IS_ENABLED(CONFIG_ARM64_BTI_KERNEL))
+		return false;
+
+	pfr1 = __read_sysreg_by_encoding(SYS_ID_AA64PFR1_EL1);
+	return cpuid_feature_extract_unsigned_field(pfr1,
+						    ID_AA64PFR1_BT_SHIFT);
+}
+
+/*
  * Create fine-grained mappings for the kernel.
  */
 static void __init map_kernel(pgd_t *pgdp)
@@ -639,6 +696,14 @@ static void __init map_kernel(pgd_t *pgdp)
 	pgprot_t text_prot = rodata_enabled ? PAGE_KERNEL_ROX : PAGE_KERNEL_EXEC;
 
 	/*
+	 * If we have a CPU that supports BTI and a kernel built for
+	 * BTI then mark the kernel executable text as guarded pages
+	 * now so we don't have to rewrite the page tables later.
+	 */
+	if (arm64_early_this_cpu_has_bti())
+		text_prot = __pgprot_modify(text_prot, PTE_GP, PTE_GP);
+
+	/*
 	 * Only rodata will be remapped with different permissions later on,
 	 * all other segments are allowed to use contiguous mappings.
 	 */
@@ -652,16 +717,17 @@ static void __init map_kernel(pgd_t *pgdp)
 			   &vmlinux_initdata, 0, VM_NO_GUARD);
 	map_kernel_segment(pgdp, _data, _end, PAGE_KERNEL, &vmlinux_data, 0, 0);
 
-	if (!READ_ONCE(pgd_val(*pgd_offset_raw(pgdp, FIXADDR_START)))) {
+	if (!READ_ONCE(pgd_val(*pgd_offset_pgd(pgdp, FIXADDR_START)))) {
 		/*
 		 * The fixmap falls in a separate pgd to the kernel, and doesn't
 		 * live in the carveout for the swapper_pg_dir. We can simply
 		 * re-use the existing dir for the fixmap.
 		 */
-		set_pgd(pgd_offset_raw(pgdp, FIXADDR_START),
+		set_pgd(pgd_offset_pgd(pgdp, FIXADDR_START),
 			READ_ONCE(*pgd_offset_k(FIXADDR_START)));
 	} else if (CONFIG_PGTABLE_LEVELS > 3) {
 		pgd_t *bm_pgdp;
+		p4d_t *bm_p4dp;
 		pud_t *bm_pudp;
 		/*
 		 * The fixmap shares its top level pgd entry with the kernel
@@ -670,8 +736,9 @@ static void __init map_kernel(pgd_t *pgdp)
 		 * entry instead.
 		 */
 		BUG_ON(!IS_ENABLED(CONFIG_ARM64_16K_PAGES));
-		bm_pgdp = pgd_offset_raw(pgdp, FIXADDR_START);
-		bm_pudp = pud_set_fixmap_offset(bm_pgdp, FIXADDR_START);
+		bm_pgdp = pgd_offset_pgd(pgdp, FIXADDR_START);
+		bm_p4dp = p4d_offset(bm_pgdp, FIXADDR_START);
+		bm_pudp = pud_set_fixmap_offset(bm_p4dp, FIXADDR_START);
 		pud_populate(&init_mm, bm_pudp, lm_alias(bm_pmd));
 		pud_clear_fixmap();
 	} else {
@@ -699,398 +766,18 @@ void __init paging_init(void)
 	memblock_allow_resize();
 }
 
-#ifdef CONFIG_MEMORY_HOTPLUG
-#define PAGE_INUSE 0xFD
-
-static void  free_pagetable(struct page *page, int order, bool direct)
-{
-	unsigned long magic;
-	unsigned int nr_pages = 1 << order;
-
-	/* bootmem page has reserved flag */
-	if (PageReserved(page)) {
-		__ClearPageReserved(page);
-
-		magic = (unsigned long)page->lru.next;
-		if (magic == SECTION_INFO || magic == MIX_SECTION_INFO) {
-			while (nr_pages--)
-				put_page_bootmem(page++);
-		} else {
-			while (nr_pages--)
-				free_reserved_page(page++);
-		}
-	} else {
-		/*
-		 * Only direct pagetable allocation (those allocated via
-		 * hotplug) call the pgtable_page_ctor; vmemmap pgtable
-		 * allocations don't.
-		 */
-		if (direct)
-			pgtable_pte_page_dtor(page);
-
-		free_pages((unsigned long)page_address(page), order);
-	}
-}
-
-static void free_pte_table(pmd_t *pmd, bool direct)
-{
-	pte_t *pte_start, *pte;
-	struct page *page;
-	int i;
-
-	pte_start =  (pte_t *) pmd_page_vaddr(*pmd);
-	/* Check if there is no valid entry in the PMD */
-	for (i = 0; i < PTRS_PER_PTE; i++) {
-		pte = pte_start + i;
-		if (!pte_none(*pte))
-			return;
-	}
-
-	page = pmd_page(*pmd);
-
-	free_pagetable(page, 0, direct);
-
-	/*
-	 * This spin lock could be only taken in _pte_aloc_kernel
-	 * in mm/memory.c and nowhere else (for arm64). Not sure if
-	 * the function above can be called concurrently. In doubt,
-	 * I am living it here for now, but it probably can be removed
-	 */
-	spin_lock(&init_mm.page_table_lock);
-	pmd_clear(pmd);
-	spin_unlock(&init_mm.page_table_lock);
-}
-
-static void free_pmd_table(pud_t *pud, bool direct)
-{
-	pmd_t *pmd_start, *pmd;
-	struct page *page;
-	int i;
-
-	pmd_start = (pmd_t *) pud_page_vaddr(*pud);
-	/* Check if there is no valid entry in the PMD */
-	for (i = 0; i < PTRS_PER_PMD; i++) {
-		pmd = pmd_start + i;
-		if (!pmd_none(*pmd))
-			return;
-	}
-
-	page = pud_page(*pud);
-
-	free_pagetable(page, 0, direct);
-
-	/*
-	 * This spin lock could be only taken in _pte_aloc_kernel
-	 * in mm/memory.c and nowhere else (for arm64). Not sure if
-	 * the function above can be called concurrently. In doubt,
-	 * I am living it here for now, but it probably can be removed
-	 */
-	spin_lock(&init_mm.page_table_lock);
-	pud_clear(pud);
-	spin_unlock(&init_mm.page_table_lock);
-}
-
-/*
- * When the PUD is folded on the PGD (three levels of paging),
- * there's no need to free PUDs
- */
-#if CONFIG_PGTABLE_LEVELS > 3
-static void free_pud_table(pgd_t *pgd, bool direct)
-{
-	pud_t *pud_start, *pud;
-	struct page *page;
-	int i;
-
-	pud_start = (pud_t *) pgd_page_vaddr(*pgd);
-	/* Check if there is no valid entry in the PUD */
-	for (i = 0; i < PTRS_PER_PUD; i++) {
-		pud = pud_start + i;
-		if (!pud_none(*pud))
-			return;
-	}
-
-	page = pgd_page(*pgd);
-
-	free_pagetable(page, 0, direct);
-
-	/*
-	 * This spin lock could be only
-	 * taken in _pte_aloc_kernel in
-	 * mm/memory.c and nowhere else
-	 * (for arm64). Not sure if the
-	 * function above can be called
-	 * concurrently. In doubt,
-	 * I am living it here for now,
-	 * but it probably can be removed.
-	 */
-	spin_lock(&init_mm.page_table_lock);
-	pgd_clear(pgd);
-	spin_unlock(&init_mm.page_table_lock);
-}
-#endif
-
-static void remove_pte_table(pte_t *pte, unsigned long addr,
-	unsigned long end, bool direct)
-{
-	unsigned long next;
-	void *page_addr;
-
-	for (; addr < end; addr = next, pte++) {
-		next = (addr + PAGE_SIZE) & PAGE_MASK;
-		if (next > end)
-			next = end;
-
-		if (!pte_present(*pte))
-			continue;
-
-		if (PAGE_ALIGNED(addr) && PAGE_ALIGNED(next)) {
-			/*
-			 * Do not free direct mapping pages since they were
-			 * freed when offlining, or simplely not in use.
-			 */
-			if (!direct)
-				free_pagetable(pte_page(*pte), 0, direct);
-
-			/*
-			 * This spin lock could be only
-			 * taken in _pte_aloc_kernel in
-			 * mm/memory.c and nowhere else
-			 * (for arm64). Not sure if the
-			 * function above can be called
-			 * concurrently. In doubt,
-			 * I am living it here for now,
-			 * but it probably can be removed.
-			 */
-			spin_lock(&init_mm.page_table_lock);
-			pte_clear(&init_mm, addr, pte);
-			spin_unlock(&init_mm.page_table_lock);
-		} else {
-			/*
-			 * If we are here, we are freeing vmemmap pages since
-			 * direct mapped memory ranges to be freed are aligned.
-			 *
-			 * If we are not removing the whole page, it means
-			 * other page structs in this page are being used and
-			 * we canot remove them. So fill the unused page_structs
-			 * with 0xFD, and remove the page when it is wholly
-			 * filled with 0xFD.
-			 */
-			memset((void *)addr, PAGE_INUSE, next - addr);
-
-			page_addr = page_address(pte_page(*pte));
-			if (!memchr_inv(page_addr, PAGE_INUSE, PAGE_SIZE)) {
-				free_pagetable(pte_page(*pte), 0, direct);
-
-				/*
-				 * This spin lock could be only
-				 * taken in _pte_aloc_kernel in
-				 * mm/memory.c and nowhere else
-				 * (for arm64). Not sure if the
-				 * function above can be called
-				 * concurrently. In doubt,
-				 * I am living it here for now,
-				 * but it probably can be removed.
-				 */
-				spin_lock(&init_mm.page_table_lock);
-				pte_clear(&init_mm, addr, pte);
-				spin_unlock(&init_mm.page_table_lock);
-			}
-		}
-	}
-
-	// I am adding this flush here in simmetry to the x86 code.
-	// Why do I need to call it here and not in remove_p[mu]d
-	flush_tlb_all();
-}
-
-static void remove_pmd_table(pmd_t *pmd, unsigned long addr,
-	unsigned long end, bool direct)
-{
-	unsigned long next;
-	void *page_addr;
-	pte_t *pte;
-
-	for (; addr < end; addr = next, pmd++) {
-		next = pmd_addr_end(addr, end);
-
-		if (!pmd_present(*pmd))
-			continue;
-
-		// check if we are using 2MB section mappings
-		if (pmd_sect(*pmd)) {
-			if (PAGE_ALIGNED(addr) && PAGE_ALIGNED(next)) {
-				if (!direct) {
-					free_pagetable(pmd_page(*pmd),
-						get_order(PMD_SIZE), direct);
-				}
-				/*
-				 * This spin lock could be only
-				 * taken in _pte_aloc_kernel in
-				 * mm/memory.c and nowhere else
-				 * (for arm64). Not sure if the
-				 * function above can be called
-				 * concurrently. In doubt,
-				 * I am living it here for now,
-				 * but it probably can be removed.
-				 */
-				spin_lock(&init_mm.page_table_lock);
-				pmd_clear(pmd);
-				spin_unlock(&init_mm.page_table_lock);
-			} else {
-				/* If here, we are freeing vmemmap pages. */
-				memset((void *)addr, PAGE_INUSE, next - addr);
-
-				page_addr = page_address(pmd_page(*pmd));
-				if (!memchr_inv(page_addr, PAGE_INUSE,
-						PMD_SIZE)) {
-					free_pagetable(pmd_page(*pmd),
-						get_order(PMD_SIZE), direct);
-
-					/*
-					 * This spin lock could be only
-					 * taken in _pte_aloc_kernel in
-					 * mm/memory.c and nowhere else
-					 * (for arm64). Not sure if the
-					 * function above can be called
-					 * concurrently. In doubt,
-					 * I am living it here for now,
-					 * but it probably can be removed.
-					 */
-					spin_lock(&init_mm.page_table_lock);
-					pmd_clear(pmd);
-					spin_unlock(&init_mm.page_table_lock);
-				}
-			}
-			continue;
-		}
-
-		BUG_ON(!pmd_table(*pmd));
-
-		pte = pte_offset_map(pmd, addr);
-		remove_pte_table(pte, addr, next, direct);
-		free_pte_table(pmd, direct);
-	}
-}
-
-static void remove_pud_table(pud_t *pud, unsigned long addr,
-	unsigned long end, bool direct)
-{
-	unsigned long next;
-	pmd_t *pmd;
-	void *page_addr;
-
-	for (; addr < end; addr = next, pud++) {
-		next = pud_addr_end(addr, end);
-		if (!pud_present(*pud))
-			continue;
-		/*
-		 * If we are using 4K granules, check if we are using
-		 * 1GB section mapping.
-		 */
-		if (pud_sect(*pud)) {
-			if (PAGE_ALIGNED(addr) && PAGE_ALIGNED(next)) {
-				if (!direct) {
-					free_pagetable(pud_page(*pud),
-						get_order(PUD_SIZE), direct);
-				}
-
-				/*
-				 * This spin lock could be only
-				 * taken in _pte_aloc_kernel in
-				 * mm/memory.c and nowhere else
-				 * (for arm64). Not sure if the
-				 * function above can be called
-				 * concurrently. In doubt,
-				 * I am living it here for now,
-				 * but it probably can be removed.
-				 */
-				spin_lock(&init_mm.page_table_lock);
-				pud_clear(pud);
-				spin_unlock(&init_mm.page_table_lock);
-			} else {
-				/* If here, we are freeing vmemmap pages. */
-				memset((void *)addr, PAGE_INUSE, next - addr);
-
-				page_addr = page_address(pud_page(*pud));
-				if (!memchr_inv(page_addr, PAGE_INUSE,
-						PUD_SIZE)) {
-
-					free_pagetable(pud_page(*pud),
-						get_order(PUD_SIZE), direct);
-
-					/*
-					 * This spin lock could be only
-					 * taken in _pte_aloc_kernel in
-					 * mm/memory.c and nowhere else
-					 * (for arm64). Not sure if the
-					 * function above can be called
-					 * concurrently. In doubt,
-					 * I am living it here for now,
-					 * but it probably can be removed.
-					 */
-					spin_lock(&init_mm.page_table_lock);
-					pud_clear(pud);
-					spin_unlock(&init_mm.page_table_lock);
-				}
-			}
-			continue;
-		}
-
-		BUG_ON(!pud_table(*pud));
-
-		pmd = pmd_offset(pud, addr);
-		remove_pmd_table(pmd, addr, next, direct);
-		free_pmd_table(pud, direct);
-	}
-}
-
-static void remove_pagetable(unsigned long start, unsigned long end,
-			     bool direct)
-{
-	unsigned long next;
-	unsigned long addr;
-	pgd_t *pgd;
-	pud_t *pud;
-
-	for (addr = start; addr < end; addr = next) {
-		next = pgd_addr_end(addr, end);
-
-		pgd = pgd_offset_k(addr);
-		if (pgd_none(*pgd))
-			continue;
-
-		pud = pud_offset(pgd, addr);
-		remove_pud_table(pud, addr, next, direct);
-		/*
-		 * When the PUD is folded on the PGD (three levels of paging),
-		 * I did already clear the PMD page in free_pmd_table,
-		 * and reset the corresponding PGD==PUD entry.
-		 */
-#if CONFIG_PGTABLE_LEVELS > 3
-		free_pud_table(pgd, direct);
-#endif
-	}
-
-	flush_tlb_all();
-}
-
-#else
-static void remove_pagetable(unsigned long start, unsigned long end,
-			     bool direct)
-{
-}
-#endif /* CONFIG_MEMORY_HOTPLUG */
-
 /*
  * Check whether a kernel address is valid (derived from arch/x86/).
  */
 int kern_addr_valid(unsigned long addr)
 {
 	pgd_t *pgdp;
+	p4d_t *p4dp;
 	pud_t *pudp, pud;
 	pmd_t *pmdp, pmd;
 	pte_t *ptep, pte;
 
+	addr = arch_kasan_reset_tag(addr);
 	if ((((long)addr) >> VA_BITS) != -1UL)
 		return 0;
 
@@ -1098,7 +785,11 @@ int kern_addr_valid(unsigned long addr)
 	if (pgd_none(READ_ONCE(*pgdp)))
 		return 0;
 
-	pudp = pud_offset(pgdp, addr);
+	p4dp = p4d_offset(pgdp, addr);
+	if (p4d_none(READ_ONCE(*p4dp)))
+		return 0;
+
+	pudp = pud_offset(p4dp, addr);
 	pud = READ_ONCE(*pudp);
 	if (pud_none(pud))
 		return 0;
@@ -1121,12 +812,336 @@ int kern_addr_valid(unsigned long addr)
 
 	return pfn_valid(pte_pfn(pte));
 }
+
+#ifdef CONFIG_MEMORY_HOTPLUG
+static void free_hotplug_page_range(struct page *page, size_t size,
+				    struct vmem_altmap *altmap)
+{
+	if (altmap) {
+		vmem_altmap_free(altmap, size >> PAGE_SHIFT);
+	} else {
+		WARN_ON(PageReserved(page));
+		free_pages((unsigned long)page_address(page), get_order(size));
+	}
+}
+
+static void free_hotplug_pgtable_page(struct page *page)
+{
+	free_hotplug_page_range(page, PAGE_SIZE, NULL);
+}
+
+static bool pgtable_range_aligned(unsigned long start, unsigned long end,
+				  unsigned long floor, unsigned long ceiling,
+				  unsigned long mask)
+{
+	start &= mask;
+	if (start < floor)
+		return false;
+
+	if (ceiling) {
+		ceiling &= mask;
+		if (!ceiling)
+			return false;
+	}
+
+	if (end - 1 > ceiling - 1)
+		return false;
+	return true;
+}
+
+static void unmap_hotplug_pte_range(pmd_t *pmdp, unsigned long addr,
+				    unsigned long end, bool free_mapped,
+				    struct vmem_altmap *altmap)
+{
+	pte_t *ptep, pte;
+
+	do {
+		ptep = pte_offset_kernel(pmdp, addr);
+		pte = READ_ONCE(*ptep);
+		if (pte_none(pte))
+			continue;
+
+		WARN_ON(!pte_present(pte));
+		pte_clear(&init_mm, addr, ptep);
+		flush_tlb_kernel_range(addr, addr + PAGE_SIZE);
+		if (free_mapped)
+			free_hotplug_page_range(pte_page(pte),
+						PAGE_SIZE, altmap);
+	} while (addr += PAGE_SIZE, addr < end);
+}
+
+static void unmap_hotplug_pmd_range(pud_t *pudp, unsigned long addr,
+				    unsigned long end, bool free_mapped,
+				    struct vmem_altmap *altmap)
+{
+	unsigned long next;
+	pmd_t *pmdp, pmd;
+
+	do {
+		next = pmd_addr_end(addr, end);
+		pmdp = pmd_offset(pudp, addr);
+		pmd = READ_ONCE(*pmdp);
+		if (pmd_none(pmd))
+			continue;
+
+		WARN_ON(!pmd_present(pmd));
+		if (pmd_sect(pmd)) {
+			pmd_clear(pmdp);
+
+			/*
+			 * One TLBI should be sufficient here as the PMD_SIZE
+			 * range is mapped with a single block entry.
+			 */
+			flush_tlb_kernel_range(addr, addr + PAGE_SIZE);
+			if (free_mapped)
+				free_hotplug_page_range(pmd_page(pmd),
+							PMD_SIZE, altmap);
+			continue;
+		}
+		WARN_ON(!pmd_table(pmd));
+		unmap_hotplug_pte_range(pmdp, addr, next, free_mapped, altmap);
+	} while (addr = next, addr < end);
+}
+
+static void unmap_hotplug_pud_range(p4d_t *p4dp, unsigned long addr,
+				    unsigned long end, bool free_mapped,
+				    struct vmem_altmap *altmap)
+{
+	unsigned long next;
+	pud_t *pudp, pud;
+
+	do {
+		next = pud_addr_end(addr, end);
+		pudp = pud_offset(p4dp, addr);
+		pud = READ_ONCE(*pudp);
+		if (pud_none(pud))
+			continue;
+
+		WARN_ON(!pud_present(pud));
+		if (pud_sect(pud)) {
+			pud_clear(pudp);
+
+			/*
+			 * One TLBI should be sufficient here as the PUD_SIZE
+			 * range is mapped with a single block entry.
+			 */
+			flush_tlb_kernel_range(addr, addr + PAGE_SIZE);
+			if (free_mapped)
+				free_hotplug_page_range(pud_page(pud),
+							PUD_SIZE, altmap);
+			continue;
+		}
+		WARN_ON(!pud_table(pud));
+		unmap_hotplug_pmd_range(pudp, addr, next, free_mapped, altmap);
+	} while (addr = next, addr < end);
+}
+
+static void unmap_hotplug_p4d_range(pgd_t *pgdp, unsigned long addr,
+				    unsigned long end, bool free_mapped,
+				    struct vmem_altmap *altmap)
+{
+	unsigned long next;
+	p4d_t *p4dp, p4d;
+
+	do {
+		next = p4d_addr_end(addr, end);
+		p4dp = p4d_offset(pgdp, addr);
+		p4d = READ_ONCE(*p4dp);
+		if (p4d_none(p4d))
+			continue;
+
+		WARN_ON(!p4d_present(p4d));
+		unmap_hotplug_pud_range(p4dp, addr, next, free_mapped, altmap);
+	} while (addr = next, addr < end);
+}
+
+static void unmap_hotplug_range(unsigned long addr, unsigned long end,
+				bool free_mapped, struct vmem_altmap *altmap)
+{
+	unsigned long next;
+	pgd_t *pgdp, pgd;
+
+	/*
+	 * altmap can only be used as vmemmap mapping backing memory.
+	 * In case the backing memory itself is not being freed, then
+	 * altmap is irrelevant. Warn about this inconsistency when
+	 * encountered.
+	 */
+	WARN_ON(!free_mapped && altmap);
+
+	do {
+		next = pgd_addr_end(addr, end);
+		pgdp = pgd_offset_k(addr);
+		pgd = READ_ONCE(*pgdp);
+		if (pgd_none(pgd))
+			continue;
+
+		WARN_ON(!pgd_present(pgd));
+		unmap_hotplug_p4d_range(pgdp, addr, next, free_mapped, altmap);
+	} while (addr = next, addr < end);
+}
+
+static void free_empty_pte_table(pmd_t *pmdp, unsigned long addr,
+				 unsigned long end, unsigned long floor,
+				 unsigned long ceiling)
+{
+	pte_t *ptep, pte;
+	unsigned long i, start = addr;
+
+	do {
+		ptep = pte_offset_kernel(pmdp, addr);
+		pte = READ_ONCE(*ptep);
+
+		/*
+		 * This is just a sanity check here which verifies that
+		 * pte clearing has been done by earlier unmap loops.
+		 */
+		WARN_ON(!pte_none(pte));
+	} while (addr += PAGE_SIZE, addr < end);
+
+	if (!pgtable_range_aligned(start, end, floor, ceiling, PMD_MASK))
+		return;
+
+	/*
+	 * Check whether we can free the pte page if the rest of the
+	 * entries are empty. Overlap with other regions have been
+	 * handled by the floor/ceiling check.
+	 */
+	ptep = pte_offset_kernel(pmdp, 0UL);
+	for (i = 0; i < PTRS_PER_PTE; i++) {
+		if (!pte_none(READ_ONCE(ptep[i])))
+			return;
+	}
+
+	pmd_clear(pmdp);
+	__flush_tlb_kernel_pgtable(start);
+	free_hotplug_pgtable_page(virt_to_page(ptep));
+}
+
+static void free_empty_pmd_table(pud_t *pudp, unsigned long addr,
+				 unsigned long end, unsigned long floor,
+				 unsigned long ceiling)
+{
+	pmd_t *pmdp, pmd;
+	unsigned long i, next, start = addr;
+
+	do {
+		next = pmd_addr_end(addr, end);
+		pmdp = pmd_offset(pudp, addr);
+		pmd = READ_ONCE(*pmdp);
+		if (pmd_none(pmd))
+			continue;
+
+		WARN_ON(!pmd_present(pmd) || !pmd_table(pmd) || pmd_sect(pmd));
+		free_empty_pte_table(pmdp, addr, next, floor, ceiling);
+	} while (addr = next, addr < end);
+
+	if (CONFIG_PGTABLE_LEVELS <= 2)
+		return;
+
+	if (!pgtable_range_aligned(start, end, floor, ceiling, PUD_MASK))
+		return;
+
+	/*
+	 * Check whether we can free the pmd page if the rest of the
+	 * entries are empty. Overlap with other regions have been
+	 * handled by the floor/ceiling check.
+	 */
+	pmdp = pmd_offset(pudp, 0UL);
+	for (i = 0; i < PTRS_PER_PMD; i++) {
+		if (!pmd_none(READ_ONCE(pmdp[i])))
+			return;
+	}
+
+	pud_clear(pudp);
+	__flush_tlb_kernel_pgtable(start);
+	free_hotplug_pgtable_page(virt_to_page(pmdp));
+}
+
+static void free_empty_pud_table(p4d_t *p4dp, unsigned long addr,
+				 unsigned long end, unsigned long floor,
+				 unsigned long ceiling)
+{
+	pud_t *pudp, pud;
+	unsigned long i, next, start = addr;
+
+	do {
+		next = pud_addr_end(addr, end);
+		pudp = pud_offset(p4dp, addr);
+		pud = READ_ONCE(*pudp);
+		if (pud_none(pud))
+			continue;
+
+		WARN_ON(!pud_present(pud) || !pud_table(pud) || pud_sect(pud));
+		free_empty_pmd_table(pudp, addr, next, floor, ceiling);
+	} while (addr = next, addr < end);
+
+	if (CONFIG_PGTABLE_LEVELS <= 3)
+		return;
+
+	if (!pgtable_range_aligned(start, end, floor, ceiling, PGDIR_MASK))
+		return;
+
+	/*
+	 * Check whether we can free the pud page if the rest of the
+	 * entries are empty. Overlap with other regions have been
+	 * handled by the floor/ceiling check.
+	 */
+	pudp = pud_offset(p4dp, 0UL);
+	for (i = 0; i < PTRS_PER_PUD; i++) {
+		if (!pud_none(READ_ONCE(pudp[i])))
+			return;
+	}
+
+	p4d_clear(p4dp);
+	__flush_tlb_kernel_pgtable(start);
+	free_hotplug_pgtable_page(virt_to_page(pudp));
+}
+
+static void free_empty_p4d_table(pgd_t *pgdp, unsigned long addr,
+				 unsigned long end, unsigned long floor,
+				 unsigned long ceiling)
+{
+	unsigned long next;
+	p4d_t *p4dp, p4d;
+
+	do {
+		next = p4d_addr_end(addr, end);
+		p4dp = p4d_offset(pgdp, addr);
+		p4d = READ_ONCE(*p4dp);
+		if (p4d_none(p4d))
+			continue;
+
+		WARN_ON(!p4d_present(p4d));
+		free_empty_pud_table(p4dp, addr, next, floor, ceiling);
+	} while (addr = next, addr < end);
+}
+
+static void free_empty_tables(unsigned long addr, unsigned long end,
+			      unsigned long floor, unsigned long ceiling)
+{
+	unsigned long next;
+	pgd_t *pgdp, pgd;
+
+	do {
+		next = pgd_addr_end(addr, end);
+		pgdp = pgd_offset_k(addr);
+		pgd = READ_ONCE(*pgdp);
+		if (pgd_none(pgd))
+			continue;
+
+		WARN_ON(!pgd_present(pgd));
+		free_empty_p4d_table(pgdp, addr, next, floor, ceiling);
+	} while (addr = next, addr < end);
+}
+#endif
+
 #ifdef CONFIG_SPARSEMEM_VMEMMAP
 #if !ARM64_SWAPPER_USES_SECTION_MAPS
 int __meminit vmemmap_populate(unsigned long start, unsigned long end, int node,
 		struct vmem_altmap *altmap)
 {
-	return vmemmap_populate_basepages(start, end, node);
+	return vmemmap_populate_basepages(start, end, node, altmap);
 }
 #else	/* !ARM64_SWAPPER_USES_SECTION_MAPS */
 int __meminit vmemmap_populate(unsigned long start, unsigned long end, int node,
@@ -1135,9 +1150,9 @@ int __meminit vmemmap_populate(unsigned long start, unsigned long end, int node,
 	unsigned long addr = start;
 	unsigned long next;
 	pgd_t *pgdp;
+	p4d_t *p4dp;
 	pud_t *pudp;
 	pmd_t *pmdp;
-	int ret = 0;
 
 	do {
 		next = pmd_addr_end(addr, end);
@@ -1146,7 +1161,11 @@ int __meminit vmemmap_populate(unsigned long start, unsigned long end, int node,
 		if (!pgdp)
 			return -ENOMEM;
 
-		pudp = vmemmap_pud_populate(pgdp, addr, node);
+		p4dp = vmemmap_p4d_populate(pgdp, addr, node);
+		if (!p4dp)
+			return -ENOMEM;
+
+		pudp = vmemmap_pud_populate(p4dp, addr, node);
 		if (!pudp)
 			return -ENOMEM;
 
@@ -1154,13 +1173,11 @@ int __meminit vmemmap_populate(unsigned long start, unsigned long end, int node,
 		if (pmd_none(READ_ONCE(*pmdp))) {
 			void *p = NULL;
 
-			p = vmemmap_alloc_block_buf(PMD_SIZE, node);
+			p = vmemmap_alloc_block_buf(PMD_SIZE, node, altmap);
 			if (!p) {
-#ifdef CONFIG_MEMORY_HOTPLUG
-				vmemmap_free(start, end, altmap);
-#endif
-				ret = -ENOMEM;
-				break;
+				if (vmemmap_populate_basepages(addr, next, node, altmap))
+					return -ENOMEM;
+				continue;
 			}
 
 			pmd_set_huge(pmdp, __pa(p), __pgprot(PROT_SECT_NORMAL));
@@ -1168,27 +1185,30 @@ int __meminit vmemmap_populate(unsigned long start, unsigned long end, int node,
 			vmemmap_verify((pte_t *)pmdp, node, addr, next);
 	} while (addr = next, addr != end);
 
-	if (ret)
-		return vmemmap_populate_basepages(start, end, node);
-	else
-		return ret;
+	return 0;
 }
 #endif	/* !ARM64_SWAPPER_USES_SECTION_MAPS */
 void vmemmap_free(unsigned long start, unsigned long end,
 		struct vmem_altmap *altmap)
 {
-	remove_pagetable(start, end, false);
+#ifdef CONFIG_MEMORY_HOTPLUG
+	WARN_ON((start < VMEMMAP_START) || (end > VMEMMAP_END));
+
+	unmap_hotplug_range(start, end, true, altmap);
+	free_empty_tables(start, end, VMEMMAP_START, VMEMMAP_END);
+#endif
 }
 #endif	/* CONFIG_SPARSEMEM_VMEMMAP */
 
 static inline pud_t * fixmap_pud(unsigned long addr)
 {
 	pgd_t *pgdp = pgd_offset_k(addr);
-	pgd_t pgd = READ_ONCE(*pgdp);
+	p4d_t *p4dp = p4d_offset(pgdp, addr);
+	p4d_t p4d = READ_ONCE(*p4dp);
 
-	BUG_ON(pgd_none(pgd) || pgd_bad(pgd));
+	BUG_ON(p4d_none(p4d) || p4d_bad(p4d));
 
-	return pud_offset_kimg(pgdp, addr);
+	return pud_offset_kimg(p4dp, addr);
 }
 
 static inline pmd_t * fixmap_pmd(unsigned long addr)
@@ -1214,25 +1234,27 @@ static inline pte_t * fixmap_pte(unsigned long addr)
  */
 void __init early_fixmap_init(void)
 {
-	pgd_t *pgdp, pgd;
+	pgd_t *pgdp;
+	p4d_t *p4dp, p4d;
 	pud_t *pudp;
 	pmd_t *pmdp;
 	unsigned long addr = FIXADDR_START;
 
 	pgdp = pgd_offset_k(addr);
-	pgd = READ_ONCE(*pgdp);
+	p4dp = p4d_offset(pgdp, addr);
+	p4d = READ_ONCE(*p4dp);
 	if (CONFIG_PGTABLE_LEVELS > 3 &&
-	    !(pgd_none(pgd) || pgd_page_paddr(pgd) == __pa_symbol(bm_pud))) {
+	    !(p4d_none(p4d) || p4d_page_paddr(p4d) == __pa_symbol(bm_pud))) {
 		/*
 		 * We only end up here if the kernel mapping and the fixmap
 		 * share the top level pgd entry, which should only happen on
 		 * 16k/4 levels configurations.
 		 */
 		BUG_ON(!IS_ENABLED(CONFIG_ARM64_16K_PAGES));
-		pudp = pud_offset_kimg(pgdp, addr);
+		pudp = pud_offset_kimg(p4dp, addr);
 	} else {
-		if (pgd_none(pgd))
-			__pgd_populate(pgdp, __pa_symbol(bm_pud), PUD_TYPE_TABLE);
+		if (p4d_none(p4d))
+			__p4d_populate(p4dp, __pa_symbol(bm_pud), PUD_TYPE_TABLE);
 		pudp = fixmap_pud(addr);
 	}
 	if (pud_none(READ_ONCE(*pudp)))
@@ -1350,13 +1372,13 @@ int __init arch_ioremap_pud_supported(void)
 	 * SW table walks can't handle removal of intermediate entries.
 	 */
 	return IS_ENABLED(CONFIG_ARM64_4K_PAGES) &&
-	       !IS_ENABLED(CONFIG_ARM64_PTDUMP_DEBUGFS);
+	       !IS_ENABLED(CONFIG_PTDUMP_DEBUGFS);
 }
 
 int __init arch_ioremap_pmd_supported(void)
 {
 	/* See arch_ioremap_pud_supported() */
-	return !IS_ENABLED(CONFIG_ARM64_PTDUMP_DEBUGFS);
+	return !IS_ENABLED(CONFIG_PTDUMP_DEBUGFS);
 }
 
 int pud_set_huge(pud_t *pudp, phys_addr_t phys, pgprot_t prot)
@@ -1441,7 +1463,8 @@ int pud_free_pmd_page(pud_t *pudp, unsigned long addr)
 	next = addr;
 	end = addr + PUD_SIZE;
 	do {
-		pmd_free_pte_page(pmdp, next);
+		if (pmd_present(READ_ONCE(*pmdp)))
+			pmd_free_pte_page(pmdp, next);
 	} while (pmdp++, next += PMD_SIZE, next != end);
 
 	pud_clear(pudp);
@@ -1456,43 +1479,80 @@ int p4d_free_pud_page(p4d_t *p4d, unsigned long addr)
 }
 
 #ifdef CONFIG_MEMORY_HOTPLUG
-int arch_add_memory(int nid, u64 start, u64 size,
-			struct mhp_restrictions *restrictions)
+static void __remove_pgd_mapping(pgd_t *pgdir, unsigned long start, u64 size)
 {
-	int flags = 0;
-	int ret;
-	unsigned long end_pfn = PHYS_PFN(start + size);
-	unsigned long max_sparsemem_pfn = 1UL << (MAX_PHYSMEM_BITS-PAGE_SHIFT);
+	unsigned long end = start + size;
 
-	if (end_pfn > max_sparsemem_pfn) {
-		pr_err("end_pfn too big\n");
-		return -1;
+	WARN_ON(pgdir != init_mm.pgd);
+	WARN_ON((start < PAGE_OFFSET) || (end > PAGE_END));
+
+	unmap_hotplug_range(start, end, false, NULL);
+	free_empty_tables(start, end, PAGE_OFFSET, PAGE_END);
+}
+
+static bool inside_linear_region(u64 start, u64 size)
+{
+	u64 start_linear_pa = __pa(_PAGE_OFFSET(vabits_actual));
+	u64 end_linear_pa = __pa(PAGE_END - 1);
+
+	if (IS_ENABLED(CONFIG_RANDOMIZE_BASE)) {
+		/*
+		 * Check for a wrap, it is possible because of randomized linear
+		 * mapping the start physical address is actually bigger than
+		 * the end physical address. In this case set start to zero
+		 * because [0, end_linear_pa] range must still be able to cover
+		 * all addressable physical addresses.
+		 */
+		if (start_linear_pa > end_linear_pa)
+			start_linear_pa = 0;
 	}
 
-	if (rodata_full || debug_pagealloc_enabled())
+	WARN_ON(start_linear_pa > end_linear_pa);
+
+	/*
+	 * Linear mapping region is the range [PAGE_OFFSET..(PAGE_END - 1)]
+	 * accommodating both its ends but excluding PAGE_END. Max physical
+	 * range which can be mapped inside this linear mapping range, must
+	 * also be derived from its end points.
+	 */
+	return start >= start_linear_pa && (start + size - 1) <= end_linear_pa;
+}
+
+int arch_add_memory(int nid, u64 start, u64 size,
+		    struct mhp_params *params)
+{
+	int ret, flags = 0;
+
+	if (!inside_linear_region(start, size)) {
+		pr_err("[%llx %llx] is outside linear mapping region\n", start, start + size);
+		return -EINVAL;
+	}
+
+	/*
+	 * KFENCE requires linear map to be mapped at page granularity, so that
+	 * it is possible to protect/unprotect single pages in the KFENCE pool.
+	 */
+	if (rodata_full || debug_pagealloc_enabled() ||
+	    IS_ENABLED(CONFIG_KFENCE))
 		flags = NO_BLOCK_MAPPINGS | NO_CONT_MAPPINGS;
 
 	__create_pgd_mapping(swapper_pg_dir, start, __phys_to_virt(start),
-			     size, PAGE_KERNEL, __pgd_pgtable_alloc, flags);
+			     size, params->pgprot, __pgd_pgtable_alloc,
+			     flags);
+
+	memblock_clear_nomap(start, size);
 
 	ret = __add_pages(nid, start >> PAGE_SHIFT, size >> PAGE_SHIFT,
-			  restrictions);
-
+			   params);
 	if (ret)
-		pr_warn("%s: Problem encountered in __add_pages() ret=%d\n",
-			__func__, ret);
+		__remove_pgd_mapping(swapper_pg_dir,
+				     __phys_to_virt(start), size);
+	else {
+		max_pfn = PFN_UP(start + size);
+		max_low_pfn = max_pfn;
+	}
 
 	return ret;
-}
-
-static void kernel_physical_mapping_remove(unsigned long start,
-	unsigned long end)
-{
-	start = (unsigned long)__va(start);
-	end = (unsigned long)__va(end);
-
-	remove_pagetable(start, end, true);
-
 }
 
 void arch_remove_memory(int nid, u64 start, u64 size,
@@ -1501,15 +1561,110 @@ void arch_remove_memory(int nid, u64 start, u64 size,
 	unsigned long start_pfn = start >> PAGE_SHIFT;
 	unsigned long nr_pages = size >> PAGE_SHIFT;
 
-	/*
-	 * FIXME: Cleanup page tables (also in arch_add_memory() in case
-	 * adding fails). Until then, this function should only be used
-	 * during memory hotplug (adding memory), not for memory
-	 * unplug. ARCH_ENABLE_MEMORY_HOTREMOVE must not be
-	 * unlocked yet.
-	 */
 	__remove_pages(start_pfn, nr_pages, altmap);
-
-	kernel_physical_mapping_remove(start, start + size);
+	__remove_pgd_mapping(swapper_pg_dir, __phys_to_virt(start), size);
 }
-#endif /* CONFIG_MEMORY_HOTPLUG */
+
+int check_range_driver_managed(u64 start, u64 size, const char *resource_name)
+{
+	struct mem_section *ms;
+	unsigned long pfn = __phys_to_pfn(start);
+	unsigned long end_pfn = __phys_to_pfn(start + size);
+	struct resource *res;
+	unsigned long flags;
+
+	res = lookup_resource(&iomem_resource, start);
+	if (!res) {
+		pr_err("%s: couldn't find memory resource for start 0x%llx\n",
+			   __func__, start);
+		return -EINVAL;
+	}
+
+	flags = res->flags;
+
+	if (!(flags & IORESOURCE_SYSRAM_DRIVER_MANAGED) ||
+	    strstr(resource_name, "System RAM (") != resource_name)
+		return -EINVAL;
+
+	for (; pfn < end_pfn; pfn += PAGES_PER_SECTION) {
+		ms = __pfn_to_section(pfn);
+		if (early_section(ms))
+			return -EINVAL;
+	}
+
+	return 0;
+}
+
+int populate_range_driver_managed(u64 start, u64 size,
+			const char *resource_name)
+{
+	unsigned long virt = (unsigned long)phys_to_virt(start);
+	int flags = 0;
+
+	if (check_range_driver_managed(start, size, resource_name))
+		return -EINVAL;
+
+	/*
+	 * When rodata_full is enabled, memory is mapped at page size granule,
+	 * as opposed to block mapping.
+	 */
+	if (rodata_full || debug_pagealloc_enabled())
+		flags = NO_BLOCK_MAPPINGS | NO_CONT_MAPPINGS;
+
+	__create_pgd_mapping(init_mm.pgd, start, virt, size,
+			     PAGE_KERNEL, NULL, flags);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(populate_range_driver_managed);
+
+int depopulate_range_driver_managed(u64 start, u64 size,
+			const char *resource_name)
+{
+	if (check_range_driver_managed(start, size, resource_name))
+		return -EINVAL;
+
+	unmap_hotplug_range(start, start + size, false, NULL);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(depopulate_range_driver_managed);
+
+/*
+ * This memory hotplug notifier helps prevent boot memory from being
+ * inadvertently removed as it blocks pfn range offlining process in
+ * __offline_pages(). Hence this prevents both offlining as well as
+ * removal process for boot memory which is initially always online.
+ * In future if and when boot memory could be removed, this notifier
+ * should be dropped and free_hotplug_page_range() should handle any
+ * reserved pages allocated during boot.
+ */
+static int prevent_bootmem_remove_notifier(struct notifier_block *nb,
+					   unsigned long action, void *data)
+{
+	struct mem_section *ms;
+	struct memory_notify *arg = data;
+	unsigned long end_pfn = arg->start_pfn + arg->nr_pages;
+	unsigned long pfn = arg->start_pfn;
+
+	if (action != MEM_GOING_OFFLINE)
+		return NOTIFY_OK;
+
+	for (; pfn < end_pfn; pfn += PAGES_PER_SECTION) {
+		ms = __pfn_to_section(pfn);
+		if (early_section(ms))
+			return NOTIFY_BAD;
+	}
+	return NOTIFY_OK;
+}
+
+static struct notifier_block prevent_bootmem_remove_nb = {
+	.notifier_call = prevent_bootmem_remove_notifier,
+};
+
+static int __init prevent_bootmem_remove_init(void)
+{
+	return register_memory_notifier(&prevent_bootmem_remove_nb);
+}
+device_initcall(prevent_bootmem_remove_init);
+#endif

@@ -423,7 +423,7 @@ static int clcdfb_mmap(struct fb_info *info,
 	return ret;
 }
 
-static struct fb_ops clcdfb_ops = {
+static const struct fb_ops clcdfb_ops = {
 	.owner		= THIS_MODULE,
 	.fb_check_var	= clcdfb_check_var,
 	.fb_set_par	= clcdfb_set_par,
@@ -602,20 +602,17 @@ static int clcdfb_snprintf_mode(char *buf, int size, struct fb_videomode *mode)
 			mode->refresh);
 }
 
-static int clcdfb_of_get_backlight(struct device_node *panel,
+static int clcdfb_of_get_backlight(struct device *dev,
 				   struct clcd_panel *clcd_panel)
 {
-	struct device_node *backlight;
+	struct backlight_device *backlight;
 
-	/* Look up the optional backlight phandle */
-	backlight = of_parse_phandle(panel, "backlight", 0);
-	if (backlight) {
-		clcd_panel->backlight = of_find_backlight_by_node(backlight);
-		of_node_put(backlight);
+	/* Look up the optional backlight device */
+	backlight = devm_of_find_backlight(dev);
+	if (IS_ERR(backlight))
+		return PTR_ERR(backlight);
 
-		if (!clcd_panel->backlight)
-			return -EPROBE_DEFER;
-	}
+	clcd_panel->backlight = backlight;
 	return 0;
 }
 
@@ -719,7 +716,7 @@ static int clcdfb_of_init_display(struct clcd_fb *fb)
 		goto out_endpoint_put;
 	}
 
-	err = clcdfb_of_get_backlight(panel, fb->panel);
+	err = clcdfb_of_get_backlight(&fb->dev->dev, fb->panel);
 	if (err)
 		goto out_panel_put;
 
@@ -943,7 +940,7 @@ static int clcdfb_probe(struct amba_device *dev, const struct amba_id *id)
 	return ret;
 }
 
-static int clcdfb_remove(struct amba_device *dev)
+static void clcdfb_remove(struct amba_device *dev)
 {
 	struct clcd_fb *fb = amba_get_drvdata(dev);
 
@@ -960,8 +957,6 @@ static int clcdfb_remove(struct amba_device *dev)
 	kfree(fb);
 
 	amba_release_regions(dev);
-
-	return 0;
 }
 
 static const struct amba_id clcdfb_id_table[] = {

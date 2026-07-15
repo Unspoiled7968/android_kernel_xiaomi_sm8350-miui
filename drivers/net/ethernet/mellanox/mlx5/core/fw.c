@@ -31,11 +31,11 @@
  */
 
 #include <linux/mlx5/driver.h>
-#include <linux/mlx5/cmd.h>
 #include <linux/mlx5/eswitch.h>
 #include <linux/module.h>
 #include "mlx5_core.h"
 #include "../../mlxfw/mlxfw.h"
+#include "accel/tls.h"
 
 enum {
 	MCQS_IDENTIFIER_BOOT_IMG	= 0x1,
@@ -68,26 +68,19 @@ enum {
 	MCQI_FW_STORED_VERSION  = 1,
 };
 
-static int mlx5_cmd_query_adapter(struct mlx5_core_dev *dev, u32 *out,
-				  int outlen)
-{
-	u32 in[MLX5_ST_SZ_DW(query_adapter_in)] = {0};
-
-	MLX5_SET(query_adapter_in, in, opcode, MLX5_CMD_OP_QUERY_ADAPTER);
-	return mlx5_cmd_exec(dev, in, sizeof(in), out, outlen);
-}
-
 int mlx5_query_board_id(struct mlx5_core_dev *dev)
 {
 	u32 *out;
 	int outlen = MLX5_ST_SZ_BYTES(query_adapter_out);
+	u32 in[MLX5_ST_SZ_DW(query_adapter_in)] = {};
 	int err;
 
 	out = kzalloc(outlen, GFP_KERNEL);
 	if (!out)
 		return -ENOMEM;
 
-	err = mlx5_cmd_query_adapter(dev, out, outlen);
+	MLX5_SET(query_adapter_in, in, opcode, MLX5_CMD_OP_QUERY_ADAPTER);
+	err = mlx5_cmd_exec_inout(dev, query_adapter, in, out);
 	if (err)
 		goto out;
 
@@ -106,13 +99,15 @@ int mlx5_core_query_vendor_id(struct mlx5_core_dev *mdev, u32 *vendor_id)
 {
 	u32 *out;
 	int outlen = MLX5_ST_SZ_BYTES(query_adapter_out);
+	u32 in[MLX5_ST_SZ_DW(query_adapter_in)] = {};
 	int err;
 
 	out = kzalloc(outlen, GFP_KERNEL);
 	if (!out)
 		return -ENOMEM;
 
-	err = mlx5_cmd_query_adapter(mdev, out, outlen);
+	MLX5_SET(query_adapter_in, in, opcode, MLX5_CMD_OP_QUERY_ADAPTER);
+	err = mlx5_cmd_exec_inout(mdev, query_adapter, in, out);
 	if (err)
 		goto out;
 
@@ -131,11 +126,11 @@ static int mlx5_get_pcam_reg(struct mlx5_core_dev *dev)
 				   MLX5_PCAM_REGS_5000_TO_507F);
 }
 
-static int mlx5_get_mcam_reg(struct mlx5_core_dev *dev)
+static int mlx5_get_mcam_access_reg_group(struct mlx5_core_dev *dev,
+					  enum mlx5_mcam_reg_groups group)
 {
-	return mlx5_query_mcam_reg(dev, dev->caps.mcam,
-				   MLX5_MCAM_FEATURE_ENHANCED_FEATURES,
-				   MLX5_MCAM_REGS_FIRST_128);
+	return mlx5_query_mcam_reg(dev, dev->caps.mcam[group],
+				   MLX5_MCAM_FEATURE_ENHANCED_FEATURES, group);
 }
 
 static int mlx5_get_qcam_reg(struct mlx5_core_dev *dev)
@@ -221,8 +216,11 @@ int mlx5_query_hca_caps(struct mlx5_core_dev *dev)
 	if (MLX5_CAP_GEN(dev, pcam_reg))
 		mlx5_get_pcam_reg(dev);
 
-	if (MLX5_CAP_GEN(dev, mcam_reg))
-		mlx5_get_mcam_reg(dev);
+	if (MLX5_CAP_GEN(dev, mcam_reg)) {
+		mlx5_get_mcam_access_reg_group(dev, MLX5_MCAM_REGS_FIRST_128);
+		mlx5_get_mcam_access_reg_group(dev, MLX5_MCAM_REGS_0x9080_0x90FF);
+		mlx5_get_mcam_access_reg_group(dev, MLX5_MCAM_REGS_0x9100_0x917F);
+	}
 
 	if (MLX5_CAP_GEN(dev, qcam_reg))
 		mlx5_get_qcam_reg(dev);
@@ -239,8 +237,21 @@ int mlx5_query_hca_caps(struct mlx5_core_dev *dev)
 			return err;
 	}
 
-	if (MLX5_CAP_GEN(dev, tls_tx)) {
+	if (mlx5_accel_is_ktls_tx(dev) || mlx5_accel_is_ktls_rx(dev)) {
 		err = mlx5_core_get_caps(dev, MLX5_CAP_TLS);
+		if (err)
+			return err;
+	}
+
+	if (MLX5_CAP_GEN_64(dev, general_obj_types) &
+		MLX5_GENERAL_OBJ_TYPES_CAP_VIRTIO_NET_Q) {
+		err = mlx5_core_get_caps(dev, MLX5_CAP_VDPA_EMULATION);
+		if (err)
+			return err;
+	}
+
+	if (MLX5_CAP_GEN(dev, ipsec_offload)) {
+		err = mlx5_core_get_caps(dev, MLX5_CAP_IPSEC);
 		if (err)
 			return err;
 	}
@@ -250,8 +261,7 @@ int mlx5_query_hca_caps(struct mlx5_core_dev *dev)
 
 int mlx5_cmd_init_hca(struct mlx5_core_dev *dev, uint32_t *sw_owner_id)
 {
-	u32 out[MLX5_ST_SZ_DW(init_hca_out)] = {0};
-	u32 in[MLX5_ST_SZ_DW(init_hca_in)]   = {0};
+	u32 in[MLX5_ST_SZ_DW(init_hca_in)] = {};
 	int i;
 
 	MLX5_SET(init_hca_in, in, opcode, MLX5_CMD_OP_INIT_HCA);
@@ -262,16 +272,15 @@ int mlx5_cmd_init_hca(struct mlx5_core_dev *dev, uint32_t *sw_owner_id)
 				       sw_owner_id[i]);
 	}
 
-	return mlx5_cmd_exec(dev, in, sizeof(in), out, sizeof(out));
+	return mlx5_cmd_exec_in(dev, init_hca, in);
 }
 
 int mlx5_cmd_teardown_hca(struct mlx5_core_dev *dev)
 {
-	u32 out[MLX5_ST_SZ_DW(teardown_hca_out)] = {0};
-	u32 in[MLX5_ST_SZ_DW(teardown_hca_in)]   = {0};
+	u32 in[MLX5_ST_SZ_DW(teardown_hca_in)] = {};
 
 	MLX5_SET(teardown_hca_in, in, opcode, MLX5_CMD_OP_TEARDOWN_HCA);
-	return mlx5_cmd_exec(dev, in, sizeof(in), out, sizeof(out));
+	return mlx5_cmd_exec_in(dev, teardown_hca, in);
 }
 
 int mlx5_cmd_force_teardown_hca(struct mlx5_core_dev *dev)
@@ -306,8 +315,8 @@ int mlx5_cmd_force_teardown_hca(struct mlx5_core_dev *dev)
 int mlx5_cmd_fast_teardown_hca(struct mlx5_core_dev *dev)
 {
 	unsigned long end, delay_ms = MLX5_FAST_TEARDOWN_WAIT_MS;
-	u32 out[MLX5_ST_SZ_DW(teardown_hca_out)] = {0};
-	u32 in[MLX5_ST_SZ_DW(teardown_hca_in)] = {0};
+	u32 out[MLX5_ST_SZ_DW(teardown_hca_out)] = {};
+	u32 in[MLX5_ST_SZ_DW(teardown_hca_in)] = {};
 	int state;
 	int ret;
 
@@ -320,7 +329,7 @@ int mlx5_cmd_fast_teardown_hca(struct mlx5_core_dev *dev)
 	MLX5_SET(teardown_hca_in, in, profile,
 		 MLX5_TEARDOWN_HCA_IN_PROFILE_PREPARE_FAST_TEARDOWN);
 
-	ret = mlx5_cmd_exec(dev, in, sizeof(in), out, sizeof(out));
+	ret = mlx5_cmd_exec_inout(dev, teardown_hca, in, out);
 	if (ret)
 		return ret;
 
@@ -337,10 +346,6 @@ int mlx5_cmd_fast_teardown_hca(struct mlx5_core_dev *dev)
 	do {
 		if (mlx5_get_nic_state(dev) == MLX5_NIC_IFC_DISABLED)
 			break;
-		if (pci_channel_offline(dev->pdev)) {
-			mlx5_core_err(dev, "PCI channel offline, stop waiting for NIC IFC\n");
-			return -EACCES;
-		}
 
 		cond_resched();
 	} while (!time_after(jiffies, end));
@@ -607,6 +612,44 @@ static void mlx5_fsm_release(struct mlxfw_dev *mlxfw_dev, u32 fwhandle)
 			 fwhandle, 0);
 }
 
+#define MLX5_FSM_REACTIVATE_TOUT 5000 /* msecs */
+static int mlx5_fsm_reactivate(struct mlxfw_dev *mlxfw_dev, u8 *status)
+{
+	unsigned long exp_time = jiffies + msecs_to_jiffies(MLX5_FSM_REACTIVATE_TOUT);
+	struct mlx5_mlxfw_dev *mlx5_mlxfw_dev =
+		container_of(mlxfw_dev, struct mlx5_mlxfw_dev, mlxfw_dev);
+	struct mlx5_core_dev *dev = mlx5_mlxfw_dev->mlx5_core_dev;
+	u32 out[MLX5_ST_SZ_DW(mirc_reg)];
+	u32 in[MLX5_ST_SZ_DW(mirc_reg)];
+	int err;
+
+	if (!MLX5_CAP_MCAM_REG2(dev, mirc))
+		return -EOPNOTSUPP;
+
+	memset(in, 0, sizeof(in));
+
+	err = mlx5_core_access_reg(dev, in, sizeof(in), out,
+				   sizeof(out), MLX5_REG_MIRC, 0, 1);
+	if (err)
+		return err;
+
+	do {
+		memset(out, 0, sizeof(out));
+		err = mlx5_core_access_reg(dev, in, sizeof(in), out,
+					   sizeof(out), MLX5_REG_MIRC, 0, 0);
+		if (err)
+			return err;
+
+		*status = MLX5_GET(mirc_reg, out, status_code);
+		if (*status != MLXFW_FSM_REACTIVATE_STATUS_BUSY)
+			return 0;
+
+		msleep(20);
+	} while (time_before(jiffies, exp_time));
+
+	return 0;
+}
+
 static const struct mlxfw_dev_ops mlx5_mlxfw_dev_ops = {
 	.component_query	= mlx5_component_query,
 	.fsm_lock		= mlx5_fsm_lock,
@@ -614,6 +657,7 @@ static const struct mlxfw_dev_ops mlx5_mlxfw_dev_ops = {
 	.fsm_block_download	= mlx5_fsm_block_download,
 	.fsm_component_verify	= mlx5_fsm_component_verify,
 	.fsm_activate		= mlx5_fsm_activate,
+	.fsm_reactivate		= mlx5_fsm_reactivate,
 	.fsm_query_state	= mlx5_fsm_query_state,
 	.fsm_cancel		= mlx5_fsm_cancel,
 	.fsm_release		= mlx5_fsm_release
@@ -628,6 +672,7 @@ int mlx5_firmware_flash(struct mlx5_core_dev *dev,
 			.ops = &mlx5_mlxfw_dev_ops,
 			.psid = dev->board_id,
 			.psid_size = strlen(dev->board_id),
+			.devlink = priv_to_devlink(dev),
 		},
 		.mlx5_core_dev = dev
 	};
@@ -725,48 +770,63 @@ mlx5_fw_image_pending(struct mlx5_core_dev *dev,
 	return 0;
 }
 
-int mlx5_fw_version_query(struct mlx5_core_dev *dev,
-			  u32 *running_ver, u32 *pending_ver)
+void mlx5_fw_version_query(struct mlx5_core_dev *dev,
+			   u32 *running_ver, u32 *pending_ver)
 {
 	u32 reg_mcqi_version[MLX5_ST_SZ_DW(mcqi_version)] = {};
 	bool pending_version_exists;
 	int component_index;
 	int err;
 
+	*running_ver = 0;
+	*pending_ver = 0;
+
 	if (!MLX5_CAP_GEN(dev, mcam_reg) || !MLX5_CAP_MCAM_REG(dev, mcqi) ||
 	    !MLX5_CAP_MCAM_REG(dev, mcqs)) {
 		mlx5_core_warn(dev, "fw query isn't supported by the FW\n");
-		return -EOPNOTSUPP;
+		return;
 	}
 
 	component_index = mlx5_get_boot_img_component_index(dev);
-	if (component_index < 0)
-		return component_index;
+	if (component_index < 0) {
+		mlx5_core_warn(dev, "fw query failed to find boot img component index, err %d\n",
+			       component_index);
+		return;
+	}
 
+	*running_ver = U32_MAX; /* indicate failure */
 	err = mlx5_reg_mcqi_version_query(dev, component_index,
 					  MCQI_FW_RUNNING_VERSION,
 					  reg_mcqi_version);
-	if (err)
-		return err;
+	if (!err)
+		*running_ver = MLX5_GET(mcqi_version, reg_mcqi_version,
+					version);
+	else
+		mlx5_core_warn(dev, "failed to query running version, err %d\n",
+			       err);
 
-	*running_ver = MLX5_GET(mcqi_version, reg_mcqi_version, version);
-
+	*pending_ver = U32_MAX; /* indicate failure */
 	err = mlx5_fw_image_pending(dev, component_index, &pending_version_exists);
-	if (err)
-		return err;
+	if (err) {
+		mlx5_core_warn(dev, "failed to query pending image, err %d\n",
+			       err);
+		return;
+	}
 
 	if (!pending_version_exists) {
 		*pending_ver = 0;
-		return 0;
+		return;
 	}
 
 	err = mlx5_reg_mcqi_version_query(dev, component_index,
 					  MCQI_FW_STORED_VERSION,
 					  reg_mcqi_version);
-	if (err)
-		return err;
+	if (!err)
+		*pending_ver = MLX5_GET(mcqi_version, reg_mcqi_version,
+					version);
+	else
+		mlx5_core_warn(dev, "failed to query pending version, err %d\n",
+			       err);
 
-	*pending_ver = MLX5_GET(mcqi_version, reg_mcqi_version, version);
-
-	return 0;
+	return;
 }

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2012-2014, 2016-2020 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2014, The Linux Foundation. All rights reserved.
  */
 
 #include <linux/gpio/driver.h>
@@ -14,7 +14,6 @@
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
-#include <linux/spmi.h>
 #include <linux/types.h>
 
 #include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
@@ -172,8 +171,6 @@ struct pmic_gpio_state {
 	struct pinctrl_dev *ctrl;
 	struct gpio_chip chip;
 	struct irq_chip irq;
-	u8 usid;
-	u8 pid_base;
 };
 
 static const struct pinconf_generic_params pmic_gpio_bindings[] = {
@@ -427,9 +424,6 @@ static int pmic_gpio_config_get(struct pinctrl_dev *pctldev,
 			return -EINVAL;
 		arg = 1;
 		break;
-	case PIN_CONFIG_OUTPUT_ENABLE:
-		arg = pad->output_enabled;
-		break;
 	case PIN_CONFIG_OUTPUT:
 		arg = pad->out_value;
 		break;
@@ -509,9 +503,6 @@ static int pmic_gpio_config_set(struct pinctrl_dev *pctldev, unsigned int pin,
 		case PIN_CONFIG_INPUT_ENABLE:
 			pad->input_enabled = arg ? true : false;
 			break;
-		case PIN_CONFIG_OUTPUT_ENABLE:
-			pad->output_enabled = arg ? true : false;
-			break;
 		case PIN_CONFIG_OUTPUT:
 			pad->output_enabled = true;
 			pad->out_value = arg;
@@ -522,7 +513,7 @@ static int pmic_gpio_config_set(struct pinctrl_dev *pctldev, unsigned int pin,
 			pad->pullup = arg;
 			break;
 		case PMIC_GPIO_CONF_STRENGTH:
-			if (arg > PMIC_GPIO_STRENGTH_HIGH)
+			if (arg > PMIC_GPIO_STRENGTH_LOW)
 				return -EINVAL;
 			pad->strength = arg;
 			break;
@@ -803,13 +794,13 @@ static int pmic_gpio_populate(struct pmic_gpio_state *state,
 	switch (subtype) {
 	case PMIC_GPIO_SUBTYPE_GPIO_4CH:
 		pad->have_buffer = true;
-		/* Fall through */
+		fallthrough;
 	case PMIC_GPIO_SUBTYPE_GPIOC_4CH:
 		pad->num_sources = 4;
 		break;
 	case PMIC_GPIO_SUBTYPE_GPIO_8CH:
 		pad->have_buffer = true;
-		/* Fall through */
+		fallthrough;
 	case PMIC_GPIO_SUBTYPE_GPIOC_8CH:
 		pad->num_sources = 8;
 		break;
@@ -958,26 +949,10 @@ static int pmic_gpio_child_to_parent_hwirq(struct gpio_chip *chip,
 					   unsigned int *parent_hwirq,
 					   unsigned int *parent_type)
 {
-	struct pmic_gpio_state *state = gpiochip_get_data(chip);
-
-	*parent_hwirq = child_hwirq + state->pid_base;
+	*parent_hwirq = child_hwirq + 0xc0;
 	*parent_type = child_type;
 
 	return 0;
-}
-
-static void pmic_gpio_populate_parent_fwspec(struct gpio_chip *chip,
-					     struct irq_fwspec *fwspec,
-					     unsigned int parent_hwirq,
-					     unsigned int parent_type)
-{
-	struct pmic_gpio_state *state = gpiochip_get_data(chip);
-
-	fwspec->param_count = 4;
-	fwspec->param[0] = state->usid;
-	fwspec->param[1] = parent_hwirq;
-	fwspec->param[2] = 0;
-	fwspec->param[3] = parent_type;
 }
 
 static int pmic_gpio_probe(struct platform_device *pdev)
@@ -990,7 +965,6 @@ static int pmic_gpio_probe(struct platform_device *pdev)
 	struct pmic_gpio_pad *pad, *pads;
 	struct pmic_gpio_state *state;
 	struct gpio_irq_chip *girq;
-	const struct spmi_device *parent_spmi_dev;
 	int ret, npins, i;
 	u32 reg;
 
@@ -1010,9 +984,6 @@ static int pmic_gpio_probe(struct platform_device *pdev)
 
 	state->dev = &pdev->dev;
 	state->map = dev_get_regmap(dev->parent, NULL);
-	parent_spmi_dev = to_spmi_device(dev->parent);
-	state->usid = parent_spmi_dev->usid;
-	state->pid_base = reg >> 8;
 
 	pindesc = devm_kcalloc(dev, npins, sizeof(*pindesc), GFP_KERNEL);
 	if (!pindesc)
@@ -1088,7 +1059,7 @@ static int pmic_gpio_probe(struct platform_device *pdev)
 	girq->fwnode = of_node_to_fwnode(state->dev->of_node);
 	girq->parent_domain = parent_domain;
 	girq->child_to_parent_hwirq = pmic_gpio_child_to_parent_hwirq;
-	girq->populate_parent_fwspec = pmic_gpio_populate_parent_fwspec;
+	girq->populate_parent_alloc_arg = gpiochip_populate_parent_fwspec_fourcell;
 	girq->child_offset_to_irq = pmic_gpio_child_offset_to_irq;
 	girq->child_irq_domain_ops.translate = pmic_gpio_domain_translate;
 
@@ -1135,7 +1106,12 @@ static int pmic_gpio_remove(struct platform_device *pdev)
 static const struct of_device_id pmic_gpio_of_match[] = {
 	{ .compatible = "qcom,pm8005-gpio", .data = (void *) 4 },
 	{ .compatible = "qcom,pm8916-gpio", .data = (void *) 4 },
+	/* pm8937 has 8 GPIOs with holes on 3, 4 and 6 */
+	{ .compatible = "qcom,pm8937-gpio", .data = (void *) 8 },
 	{ .compatible = "qcom,pm8941-gpio", .data = (void *) 36 },
+	/* pm8950 has 8 GPIOs with holes on 3 */
+	{ .compatible = "qcom,pm8950-gpio", .data = (void *) 8 },
+	{ .compatible = "qcom,pmi8950-gpio", .data = (void *) 2 },
 	{ .compatible = "qcom,pm8994-gpio", .data = (void *) 22 },
 	{ .compatible = "qcom,pmi8994-gpio", .data = (void *) 10 },
 	{ .compatible = "qcom,pm8998-gpio", .data = (void *) 26 },
@@ -1143,29 +1119,18 @@ static const struct of_device_id pmic_gpio_of_match[] = {
 	{ .compatible = "qcom,pma8084-gpio", .data = (void *) 22 },
 	/* pms405 has 12 GPIOs with holes on 1, 9, and 10 */
 	{ .compatible = "qcom,pms405-gpio", .data = (void *) 12 },
+	/* pm660 has 13 GPIOs with holes on 1, 5, 6, 7, 8 and 10 */
+	{ .compatible = "qcom,pm660-gpio", .data = (void *) 13 },
+	/* pm660l has 12 GPIOs with holes on 1, 2, 10, 11 and 12 */
+	{ .compatible = "qcom,pm660l-gpio", .data = (void *) 12 },
 	/* pm8150 has 10 GPIOs with holes on 2, 5, 7 and 8 */
 	{ .compatible = "qcom,pm8150-gpio", .data = (void *) 10 },
 	/* pm8150b has 12 GPIOs with holes on 3, r and 7 */
 	{ .compatible = "qcom,pm8150b-gpio", .data = (void *) 12 },
 	/* pm8150l has 12 GPIOs with holes on 7 */
 	{ .compatible = "qcom,pm8150l-gpio", .data = (void *) 12 },
-	{ .compatible = "qcom,pm8350-gpio", .data = (void *) 10 },
-	{ .compatible = "qcom,pm8350b-gpio", .data = (void *) 8 },
-	{ .compatible = "qcom,pm8350c-gpio", .data = (void *) 9 },
-	{ .compatible = "qcom,pmk8350-gpio", .data = (void *) 4 },
-	{ .compatible = "qcom,pmr735a-gpio", .data = (void *) 4 },
-	{ .compatible = "qcom,pmr735b-gpio", .data = (void *) 4 },
-	{ .compatible = "qcom,pm7250b-gpio", .data = (void *) 12 },
-	{ .compatible = "qcom,pm6350-gpio", .data = (void *) 9 },
+	{ .compatible = "qcom,pm6150-gpio", .data = (void *) 10 },
 	{ .compatible = "qcom,pm6150l-gpio", .data = (void *) 12 },
-	{ .compatible = "qcom,pmx65-gpio", .data = (void *) 16 },
-	{ .compatible = "qcom,pmd9650-gpio", .data = (void *) 12 },
-	{ .compatible = "qcom,pm7325-gpio", .data = (void *) 10 },
-	{ .compatible = "qcom,pm7325b-gpio", .data = (void *) 8 },
-	{ .compatible = "qcom,pm2250-gpio", .data = (void *) 10 },
-	{ .compatible = "qcom,pmi632-gpio", .data = (void *) 8 },
-	{ .compatible = "qcom,pm6125-gpio", .data = (void *) 9 },
-	{ .compatible = "qcom,pm5100-gpio", .data = (void *) 16 },
 	{ },
 };
 

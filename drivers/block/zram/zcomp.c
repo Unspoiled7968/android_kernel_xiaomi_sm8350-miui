@@ -15,18 +15,13 @@
 #include "zcomp.h"
 
 static const char * const backends[] = {
-#if IS_ENABLED(CONFIG_CRYPTO_LZO)
 	"lzo",
 	"lzo-rle",
-#endif
 #if IS_ENABLED(CONFIG_CRYPTO_LZ4)
 	"lz4",
 #endif
 #if IS_ENABLED(CONFIG_CRYPTO_LZ4HC)
 	"lz4hc",
-#endif
-#if IS_ENABLED(CONFIG_ZRAM_LZ4P)
-	"lz4p",
 #endif
 #if IS_ENABLED(CONFIG_CRYPTO_842)
 	"842",
@@ -66,12 +61,6 @@ static int zcomp_strm_init(struct zcomp_strm *zstrm, struct zcomp *comp)
 
 bool zcomp_available_algorithm(const char *comp)
 {
-	int i;
-
-	i = sysfs_match_string(backends, comp);
-	if (i >= 0)
-		return true;
-
 	/*
 	 * Crypto does not ignore a trailing new line symbol,
 	 * so make sure you don't supply a string containing
@@ -114,12 +103,13 @@ ssize_t zcomp_available_show(const char *comp, char *buf)
 
 struct zcomp_strm *zcomp_stream_get(struct zcomp *comp)
 {
-	return get_cpu_ptr(comp->stream);
+	local_lock(&comp->stream->lock);
+	return this_cpu_ptr(comp->stream);
 }
 
 void zcomp_stream_put(struct zcomp *comp)
 {
-	put_cpu_ptr(comp->stream);
+	local_unlock(&comp->stream->lock);
 }
 
 int zcomp_compress(struct zcomp_strm *zstrm,
@@ -163,6 +153,8 @@ int zcomp_cpu_up_prepare(unsigned int cpu, struct hlist_node *node)
 	int ret;
 
 	zstrm = per_cpu_ptr(comp->stream, cpu);
+	local_lock_init(&zstrm->lock);
+
 	ret = zcomp_strm_init(zstrm, comp);
 	if (ret)
 		pr_err("Can't allocate a compression stream\n");
@@ -212,19 +204,24 @@ void zcomp_destroy(struct zcomp *comp)
  * case of allocation error, or any other error potentially
  * returned by zcomp_init().
  */
-struct zcomp *zcomp_create(const char *alg)
+struct zcomp *zcomp_create(const char *compress)
 {
 	struct zcomp *comp;
 	int error;
 
-	if (!zcomp_available_algorithm(alg))
+	/*
+	 * Crypto API will execute /sbin/modprobe if the compression module
+	 * is not loaded yet. We must do it here, otherwise we are about to
+	 * call /sbin/modprobe under CPU hot-plug lock.
+	 */
+	if (!zcomp_available_algorithm(compress))
 		return ERR_PTR(-EINVAL);
 
 	comp = kzalloc(sizeof(struct zcomp), GFP_KERNEL);
 	if (!comp)
 		return ERR_PTR(-ENOMEM);
 
-	comp->name = alg;
+	comp->name = compress;
 	error = zcomp_init(comp);
 	if (error) {
 		kfree(comp);

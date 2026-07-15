@@ -31,7 +31,6 @@
 #include <crypto/hash.h>
 #include <crypto/algapi.h>
 
-#define FSCRYPT_NEED_OPS
 #include <linux/fscrypt.h>
 
 #include "ubifs-media.h"
@@ -1507,6 +1506,7 @@ extern const struct file_operations ubifs_dir_operations;
 extern const struct inode_operations ubifs_dir_inode_operations;
 extern const struct inode_operations ubifs_symlink_inode_operations;
 extern struct ubifs_compressor *ubifs_compressors[UBIFS_COMPR_TYPES_CNT];
+extern int ubifs_default_version;
 
 /* auth.c */
 static inline int ubifs_authenticated(const struct ubifs_info *c)

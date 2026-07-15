@@ -131,7 +131,7 @@ static void bgmac_nicpm_speed_set(struct net_device *net_dev)
 	switch (bgmac->net_dev->phydev->speed) {
 	default:
 		netdev_err(net_dev, "Unsupported speed. Defaulting to 1000Mb\n");
-		/* fall through */
+		fallthrough;
 	case SPEED_1000:
 		val |= NICPM_IOMUX_CTRL_SPD_1000M << NICPM_IOMUX_CTRL_SPD_SHIFT;
 		break;
@@ -171,6 +171,7 @@ static int platform_phy_connect(struct bgmac *bgmac)
 static int bgmac_probe(struct platform_device *pdev)
 {
 	struct device_node *np = pdev->dev.of_node;
+	struct device_node *phy_node;
 	struct bgmac *bgmac;
 	struct resource *regs;
 	const u8 *mac_addr;
@@ -202,13 +203,8 @@ static int bgmac_probe(struct platform_device *pdev)
 	if (bgmac->irq < 0)
 		return bgmac->irq;
 
-	regs = platform_get_resource_byname(pdev, IORESOURCE_MEM, "amac_base");
-	if (!regs) {
-		dev_err(&pdev->dev, "Unable to obtain base resource\n");
-		return -EINVAL;
-	}
-
-	bgmac->plat.base = devm_ioremap_resource(&pdev->dev, regs);
+	bgmac->plat.base =
+		devm_platform_ioremap_resource_byname(pdev, "amac_base");
 	if (IS_ERR(bgmac->plat.base))
 		return PTR_ERR(bgmac->plat.base);
 
@@ -237,7 +233,9 @@ static int bgmac_probe(struct platform_device *pdev)
 	bgmac->cco_ctl_maskset = platform_bgmac_cco_ctl_maskset;
 	bgmac->get_bus_clock = platform_bgmac_get_bus_clock;
 	bgmac->cmn_maskset32 = platform_bgmac_cmn_maskset32;
-	if (of_parse_phandle(np, "phy-handle", 0)) {
+	phy_node = of_parse_phandle(np, "phy-handle", 0);
+	if (phy_node) {
+		of_node_put(phy_node);
 		bgmac->phy_connect = platform_phy_connect;
 	} else {
 		bgmac->phy_connect = bgmac_phy_connect_direct;

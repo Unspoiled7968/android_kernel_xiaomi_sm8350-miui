@@ -14,7 +14,7 @@ menuconfig WLAN
 	  device drivers. For a complete list of drivers and documentation
 	  on them refer to the wireless wiki:
 
-	  http://wireless.kernel.org/en/users/Drivers
+	  https://wireless.wiki.kernel.org/en/users/Drivers
 
 if WLAN
 
@@ -40,6 +40,7 @@ source "drivers/net/wireless/intel/Kconfig"
 source "drivers/net/wireless/intersil/Kconfig"
 source "drivers/net/wireless/marvell/Kconfig"
 source "drivers/net/wireless/mediatek/Kconfig"
+source "drivers/net/wireless/microchip/Kconfig"
 source "drivers/net/wireless/ralink/Kconfig"
 source "drivers/net/wireless/realtek/Kconfig"
 source "drivers/net/wireless/rsi/Kconfig"
@@ -57,7 +58,8 @@ config PCMCIA_RAYCS
 	help
 	  Say Y here if you intend to attach an Aviator/Raytheon PCMCIA
 	  (PC-card) wireless Ethernet networking card to your computer.
-	  Please read the file <file:Documentation/networking/ray_cs.txt> for
+	  Please read the file
+	  <file:Documentation/networking/device_drivers/wifi/ray_cs.rst> for
 	  details.
 
 	  To compile this driver as a module, choose M here: the module will be
@@ -121,32 +123,5 @@ config VIRT_WIFI
 	help
 	  This option adds support for ethernet connections to appear as if they
 	  are wifi connections through a special rtnetlink device.
-
-config CLD_LL_CORE
-	tristate "QTI core WLAN driver for QCA6174 chipset"
-	select NL80211_TESTMODE
-	select WEXT_CORE
-	select WEXT_PRIV
-	select WEXT_SPY
-	select WIRELESS_EXT
-	help
-	  This section contains the necessary modules needed to enable the
-	  core WLAN driver for QTI QCA6174 chipset.
-	  Select Y to compile the driver in order to have WLAN functionality
-	  support.
-
-config CNSS_CRYPTO
-	tristate "Enable CNSS crypto support"
-	help
-	  Add crypto support for the WLAN  driver module.
-	  This feature enable wlan driver to use the crypto APIs exported
-	  from cnss platform driver. This crypto APIs used to generate cipher
-	  key and add support for the WLAN driver module security protocol.
-
-source "drivers/net/wireless/cnss2/Kconfig"
-source "drivers/net/wireless/cnss/Kconfig"
-source "drivers/net/wireless/cnss_utils/Kconfig"
-source "drivers/net/wireless/cnss_genl/Kconfig"
-source "drivers/net/wireless/cnss_prealloc/Kconfig"
 
 endif # WLAN

@@ -138,35 +138,40 @@ static int create_flat_tables(struct linux_binprm *bprm, unsigned long arg_start
 	current->mm->start_stack = (unsigned long)sp & -FLAT_STACK_ALIGN;
 	sp = (unsigned long __user *)current->mm->start_stack;
 
-	__put_user(bprm->argc, sp++);
+	if (put_user(bprm->argc, sp++))
+		return -EFAULT;
 	if (IS_ENABLED(CONFIG_BINFMT_FLAT_ARGVP_ENVP_ON_STACK)) {
 		unsigned long argv, envp;
 		argv = (unsigned long)(sp + 2);
 		envp = (unsigned long)(sp + 2 + bprm->argc + 1);
-		__put_user(argv, sp++);
-		__put_user(envp, sp++);
+		if (put_user(argv, sp++) || put_user(envp, sp++))
+			return -EFAULT;
 	}
 
 	current->mm->arg_start = (unsigned long)p;
 	for (i = bprm->argc; i > 0; i--) {
-		__put_user((unsigned long)p, sp++);
+		if (put_user((unsigned long)p, sp++))
+			return -EFAULT;
 		len = strnlen_user(p, MAX_ARG_STRLEN);
 		if (!len || len > MAX_ARG_STRLEN)
 			return -EINVAL;
 		p += len;
 	}
-	__put_user(0, sp++);
+	if (put_user(0, sp++))
+		return -EFAULT;
 	current->mm->arg_end = (unsigned long)p;
 
 	current->mm->env_start = (unsigned long) p;
 	for (i = bprm->envc; i > 0; i--) {
-		__put_user((unsigned long)p, sp++);
+		if (put_user((unsigned long)p, sp++))
+			return -EFAULT;
 		len = strnlen_user(p, MAX_ARG_STRLEN);
 		if (!len || len > MAX_ARG_STRLEN)
 			return -EINVAL;
 		p += len;
 	}
-	__put_user(0, sp++);
+	if (put_user(0, sp++))
+		return -EFAULT;
 	current->mm->env_end = (unsigned long)p;
 
 	return 0;
@@ -529,7 +534,7 @@ static int load_flat_file(struct linux_binprm *bprm,
 	 * 28 bits (256 MB) is way more than reasonable in this case.
 	 * If some top bits are set we have probable binary corruption.
 	*/
-	if ((text_len | data_len | bss_len | stack_len | full_data) >> 28) {
+	if ((text_len | data_len | bss_len | stack_len | relocs | full_data) >> 28) {
 		pr_err("bad header\n");
 		ret = -ENOEXEC;
 		goto err;
@@ -558,14 +563,13 @@ static int load_flat_file(struct linux_binprm *bprm,
 
 	/* Flush all traces of the currently running executable */
 	if (id == 0) {
-		ret = flush_old_exec(bprm);
+		ret = begin_new_exec(bprm);
 		if (ret)
 			goto err;
 
 		/* OK, This is the point of no return */
 		set_personality(PER_LINUX_32BIT);
 		setup_new_exec(bprm);
-		install_exec_creds(bprm);
 	}
 
 	/*
@@ -884,7 +888,7 @@ static int load_flat_file(struct linux_binprm *bprm,
 #endif /* CONFIG_BINFMT_FLAT_OLD */
 	}
 
-	flush_icache_range(start_code, end_code);
+	flush_icache_user_range(start_code, end_code);
 
 	/* zero the BSS,  BRK and stack areas */
 	if (clear_user((void __user *)(datapos + data_len), bss_len +
@@ -1026,7 +1030,8 @@ static int load_flat_binary(struct linux_binprm *bprm)
 			unsigned long __user *sp;
 			current->mm->start_stack -= sizeof(unsigned long);
 			sp = (unsigned long __user *)current->mm->start_stack;
-			__put_user(start_addr, sp);
+			if (put_user(start_addr, sp))
+				return -EFAULT;
 			start_addr = libinfo.lib_list[i].entry;
 		}
 	}

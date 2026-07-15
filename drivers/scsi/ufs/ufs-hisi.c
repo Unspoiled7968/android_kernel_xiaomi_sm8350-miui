@@ -452,10 +452,7 @@ static int ufs_hisi_get_resource(struct ufs_hisi_host *host)
 
 	/* get resource of ufs sys ctrl */
 	host->ufs_sys_ctrl = devm_platform_ioremap_resource(pdev, 1);
-	if (IS_ERR(host->ufs_sys_ctrl))
-		return PTR_ERR(host->ufs_sys_ctrl);
-
-	return 0;
+	return PTR_ERR_OR_ZERO(host->ufs_sys_ctrl);
 }
 
 static void ufs_hisi_set_pm_lvl(struct ufs_hba *hba)
@@ -477,14 +474,6 @@ static int ufs_hisi_init_common(struct ufs_hba *hba)
 	host = devm_kzalloc(dev, sizeof(*host), GFP_KERNEL);
 	if (!host)
 		return -ENOMEM;
-
-	/*
-	 * Inline crypto is currently broken with ufs-hisi because the keyslots
-	 * overlap with the vendor-specific SYS CTRL registers -- and even if
-	 * software uses only non-overlapping keyslots, the kernel crashes when
-	 * programming a key or a UFS error occurs on the first encrypted I/O.
-	 */
-	hba->quirks |= UFSHCD_QUIRK_BROKEN_CRYPTO;
 
 	host->hba = hba;
 	ufshcd_set_variant(hba, host);

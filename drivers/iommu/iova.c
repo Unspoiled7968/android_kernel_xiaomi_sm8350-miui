@@ -51,9 +51,6 @@ init_iova_domain(struct iova_domain *iovad, unsigned long granule,
 	rb_link_node(&iovad->anchor.node, NULL, &iovad->rbroot.rb_node);
 	rb_insert_color(&iovad->anchor.node, &iovad->rbroot);
 	iovad->best_fit = false;
-#ifdef CONFIG_DMA_CONFIGURE_ALIGNMENT
-	iovad->force_no_align = false;
-#endif
 	init_iova_rcaches(iovad);
 }
 EXPORT_SYMBOL_GPL(init_iova_domain);
@@ -221,7 +218,7 @@ static int __alloc_and_insert_iova_range(struct iova_domain *iovad,
 
 	curr = __get_cached_rbnode(iovad, limit_pfn);
 	curr_iova = rb_entry(curr, struct iova, node);
-	low_pfn_new = curr_iova->pfn_hi + 1;
+	low_pfn_new = curr_iova->pfn_hi;
 
 retry:
 	do {
@@ -235,7 +232,7 @@ retry:
 	if (high_pfn < size || new_pfn < low_pfn) {
 		if (low_pfn == iovad->start_pfn && low_pfn_new < limit_pfn) {
 			high_pfn = limit_pfn;
-			low_pfn = low_pfn_new;
+			low_pfn = low_pfn_new + 1;
 			curr = &iovad->anchor.node;
 			curr_iova = rb_entry(curr, struct iova, node);
 			goto retry;
@@ -350,7 +347,7 @@ int iova_cache_get(void)
 			SLAB_HWCACHE_ALIGN, NULL);
 		if (!iova_cache) {
 			mutex_unlock(&iova_cache_mutex);
-			printk(KERN_ERR "Couldn't create iova cache\n");
+			pr_err("Couldn't create iova cache\n");
 			return -ENOMEM;
 		}
 	}
@@ -398,11 +395,6 @@ alloc_iova(struct iova_domain *iovad, unsigned long size,
 	new_iova = alloc_iova_mem();
 	if (!new_iova)
 		return NULL;
-
-#ifdef CONFIG_DMA_CONFIGURE_ALIGNMENT
-	if (iovad->force_no_align)
-		size_aligned = false;
-#endif
 
 	if (iovad->best_fit) {
 		ret = __alloc_and_insert_iova_best_fit(iovad, size,
@@ -687,7 +679,7 @@ void queue_iova(struct iova_domain *iovad,
 
 	/* Avoid false sharing as much as possible. */
 	if (!atomic_read(&iovad->fq_timer_on) &&
-	    !atomic_cmpxchg(&iovad->fq_timer_on, 0, 1))
+	    !atomic_xchg(&iovad->fq_timer_on, 1))
 		mod_timer(&iovad->fq_timer,
 			  jiffies + msecs_to_jiffies(IOVA_FQ_TIMEOUT));
 }
@@ -826,8 +818,8 @@ copy_reserved_iova(struct iova_domain *from, struct iova_domain *to)
 
 		new_iova = reserve_iova(to, iova->pfn_lo, iova->pfn_hi);
 		if (!new_iova)
-			printk(KERN_ERR "Reserve iova range %lx@%lx failed\n",
-				iova->pfn_lo, iova->pfn_lo);
+			pr_err("Reserve iova range %lx@%lx failed\n",
+			       iova->pfn_lo, iova->pfn_lo);
 	}
 	spin_unlock_irqrestore(&from->iova_rbtree_lock, flags);
 }

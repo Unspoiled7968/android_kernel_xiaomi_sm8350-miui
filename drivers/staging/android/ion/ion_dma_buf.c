@@ -10,9 +10,6 @@
 #include <linux/scatterlist.h>
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
-#ifdef CONFIG_BOARD_XIAOMI
-#include <linux/sched/task.h>
-#endif
 
 #include "ion_private.h"
 
@@ -155,9 +152,6 @@ static void ion_dma_buf_release(struct dma_buf *dmabuf)
 	struct ion_buffer *buffer = dmabuf->priv;
 	struct ion_heap *heap = buffer->heap;
 
-#ifdef CONFIG_BOARD_XIAOMI
-	kfree(dmabuf->exp_name);
-#endif
 	if (heap->buf_ops.release)
 		return heap->buf_ops.release(dmabuf);
 
@@ -254,17 +248,6 @@ static int ion_dma_buf_end_cpu_access_partial(struct dma_buf *dmabuf,
 						    len);
 }
 
-static void *ion_dma_buf_map(struct dma_buf *dmabuf, unsigned long offset)
-{
-	struct ion_buffer *buffer = dmabuf->priv;
-	struct ion_heap *heap = buffer->heap;
-
-	if (heap->buf_ops.map)
-		return heap->buf_ops.map(dmabuf, offset);
-
-	return ion_buffer_kmap_get(buffer) + offset * PAGE_SIZE;
-}
-
 static int ion_dma_buf_mmap(struct dma_buf *dmabuf, struct vm_area_struct *vma)
 {
 	struct ion_buffer *buffer = dmabuf->priv;
@@ -288,17 +271,6 @@ static int ion_dma_buf_mmap(struct dma_buf *dmabuf, struct vm_area_struct *vma)
 		pr_err("%s: failure mapping buffer to userspace\n", __func__);
 
 	return ret;
-}
-
-static void ion_dma_buf_unmap(struct dma_buf *dmabuf, unsigned long offset,
-			      void *addr)
-{
-	struct ion_buffer *buffer = dmabuf->priv;
-	struct ion_heap *heap = buffer->heap;
-
-	if (!heap->buf_ops.unmap)
-		return;
-	heap->buf_ops.unmap(dmabuf, offset, addr);
 }
 
 static void *ion_dma_buf_vmap(struct dma_buf *dmabuf)
@@ -354,8 +326,6 @@ static const struct dma_buf_ops dma_buf_ops = {
 	.end_cpu_access = ion_dma_buf_end_cpu_access,
 	.end_cpu_access_partial = ion_dma_buf_end_cpu_access_partial,
 	.mmap = ion_dma_buf_mmap,
-	.map = ion_dma_buf_map,
-	.unmap = ion_dma_buf_unmap,
 	.vmap = ion_dma_buf_vmap,
 	.vunmap = ion_dma_buf_vunmap,
 	.get_flags = ion_dma_buf_get_flags,
@@ -368,9 +338,6 @@ struct dma_buf *ion_dmabuf_alloc(struct ion_device *dev, size_t len,
 	struct ion_buffer *buffer;
 	DEFINE_DMA_BUF_EXPORT_INFO(exp_info);
 	struct dma_buf *dmabuf;
-#ifdef CONFIG_BOARD_XIAOMI
-	char task_comm[TASK_COMM_LEN];
-#endif
 
 	pr_debug("%s: len %zu heap_id_mask %u flags %x\n", __func__,
 		 len, heap_id_mask, flags);
@@ -379,71 +346,14 @@ struct dma_buf *ion_dmabuf_alloc(struct ion_device *dev, size_t len,
 	if (IS_ERR(buffer))
 		return ERR_CAST(buffer);
 
-#ifdef CONFIG_BOARD_XIAOMI
-	get_task_comm(task_comm, current->group_leader);
-#endif
 	exp_info.ops = &dma_buf_ops;
 	exp_info.size = buffer->size;
 	exp_info.flags = O_RDWR;
 	exp_info.priv = buffer;
-#ifdef CONFIG_BOARD_XIAOMI
-	exp_info.exp_name = kasprintf(GFP_KERNEL, "%s-%s-%d-%s", KBUILD_MODNAME,
-		buffer->heap->name, current->tgid, task_comm);
-#endif
 
 	dmabuf = dma_buf_export(&exp_info);
-	if (IS_ERR(dmabuf)) {
+	if (IS_ERR(dmabuf))
 		ion_buffer_destroy(dev, buffer);
-#ifdef CONFIG_BOARD_XIAOMI
-		kfree(exp_info.exp_name);
-#endif
-	}
 
 	return dmabuf;
 }
-
-#ifdef CONFIG_BOARD_XIAOMI
-struct dma_buf *ion_dmabuf_alloc_with_caller_pid(struct ion_device *dev, size_t len,
-				 unsigned int heap_id_mask,
-				 unsigned int flags,
-				 int pid_info)
-{
-	struct ion_buffer *buffer;
-	DEFINE_DMA_BUF_EXPORT_INFO(exp_info);
-	struct dma_buf *dmabuf;
-	char task_comm[TASK_COMM_LEN];
-	char caller_task_comm[TASK_COMM_LEN];
-	struct task_struct *p = NULL;
-
-	pr_debug("%s: len %zu heap_id_mask %u flags %x\n", __func__,
-		len, heap_id_mask, flags);
-
-	get_task_comm(task_comm, current->group_leader);
-	if (pid_info)
-		p = find_get_task_by_vpid(pid_info);
-	if (p) {
-		get_task_comm(caller_task_comm, p);
-		put_task_struct(p);
-	}
-
-	buffer = ion_buffer_alloc(dev, len, heap_id_mask, flags);
-	if (IS_ERR(buffer))
-		return ERR_CAST(buffer);
-
-	exp_info.ops = &dma_buf_ops;
-	exp_info.size = buffer->size;
-	exp_info.flags = O_RDWR;
-	exp_info.priv = buffer;
-	exp_info.exp_name = kasprintf(GFP_KERNEL, "%s-%s-%d-%s-caller|%d-%s|",
-		KBUILD_MODNAME, buffer->heap->name, current->tgid, task_comm, pid_info,
-		p ? caller_task_comm : task_comm);
-
-	dmabuf = dma_buf_export(&exp_info);
-	if (IS_ERR(dmabuf)) {
-		ion_buffer_destroy(dev, buffer);
-		kfree(exp_info.exp_name);
-	}
-
-	return dmabuf;
-}
-#endif

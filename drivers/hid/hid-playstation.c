@@ -487,11 +487,16 @@ static struct input_dev *ps_gamepad_create(struct hid_device *hdev,
 	if (IS_ERR(gamepad))
 		return ERR_CAST(gamepad);
 
+	/* Set initial resting state for joysticks to 128 (center) */
 	input_set_abs_params(gamepad, ABS_X, 0, 255, 0, 0);
+	gamepad->absinfo[ABS_X].value = 128;
 	input_set_abs_params(gamepad, ABS_Y, 0, 255, 0, 0);
+	gamepad->absinfo[ABS_Y].value = 128;
 	input_set_abs_params(gamepad, ABS_Z, 0, 255, 0, 0);
 	input_set_abs_params(gamepad, ABS_RX, 0, 255, 0, 0);
+	gamepad->absinfo[ABS_RX].value = 128;
 	input_set_abs_params(gamepad, ABS_RY, 0, 255, 0, 0);
+	gamepad->absinfo[ABS_RY].value = 128;
 	input_set_abs_params(gamepad, ABS_RZ, 0, 255, 0, 0);
 
 	input_set_abs_params(gamepad, ABS_HAT0X, -1, 1, 0, 0);
@@ -686,7 +691,7 @@ static ssize_t firmware_version_show(struct device *dev,
 	struct hid_device *hdev = to_hid_device(dev);
 	struct ps_device *ps_dev = hid_get_drvdata(hdev);
 
-	return snprintf(buf, PAGE_SIZE, "0x%08x\n", ps_dev->fw_version);
+	return sysfs_emit(buf, "0x%08x\n", ps_dev->fw_version);
 }
 
 static DEVICE_ATTR_RO(firmware_version);
@@ -698,7 +703,7 @@ static ssize_t hardware_version_show(struct device *dev,
 	struct hid_device *hdev = to_hid_device(dev);
 	struct ps_device *ps_dev = hid_get_drvdata(hdev);
 
-	return snprintf(buf, PAGE_SIZE, "0x%08x\n", ps_dev->hw_version);
+	return sysfs_emit(buf, "0x%08x\n", ps_dev->hw_version);
 }
 
 static DEVICE_ATTR_RO(hardware_version);

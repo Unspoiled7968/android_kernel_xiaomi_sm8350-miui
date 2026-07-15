@@ -242,7 +242,7 @@ bool tpg_s_fourcc(struct tpg_data *tpg, u32 fourcc)
 		tpg->vdownsampling[1] = 1;
 		tpg->hdownsampling[1] = 1;
 		tpg->planes = 2;
-		/* fall through */
+		fallthrough;
 	case V4L2_PIX_FMT_RGB332:
 	case V4L2_PIX_FMT_RGB565:
 	case V4L2_PIX_FMT_RGB565X:
@@ -303,7 +303,7 @@ bool tpg_s_fourcc(struct tpg_data *tpg, u32 fourcc)
 	case V4L2_PIX_FMT_YUV420M:
 	case V4L2_PIX_FMT_YVU420M:
 		tpg->buffers = 3;
-		/* fall through */
+		fallthrough;
 	case V4L2_PIX_FMT_YUV420:
 	case V4L2_PIX_FMT_YVU420:
 		tpg->vdownsampling[1] = 2;
@@ -316,7 +316,7 @@ bool tpg_s_fourcc(struct tpg_data *tpg, u32 fourcc)
 	case V4L2_PIX_FMT_YUV422M:
 	case V4L2_PIX_FMT_YVU422M:
 		tpg->buffers = 3;
-		/* fall through */
+		fallthrough;
 	case V4L2_PIX_FMT_YUV422P:
 		tpg->vdownsampling[1] = 1;
 		tpg->vdownsampling[2] = 1;
@@ -328,7 +328,7 @@ bool tpg_s_fourcc(struct tpg_data *tpg, u32 fourcc)
 	case V4L2_PIX_FMT_NV16M:
 	case V4L2_PIX_FMT_NV61M:
 		tpg->buffers = 2;
-		/* fall through */
+		fallthrough;
 	case V4L2_PIX_FMT_NV16:
 	case V4L2_PIX_FMT_NV61:
 		tpg->vdownsampling[1] = 1;
@@ -340,7 +340,7 @@ bool tpg_s_fourcc(struct tpg_data *tpg, u32 fourcc)
 	case V4L2_PIX_FMT_NV12M:
 	case V4L2_PIX_FMT_NV21M:
 		tpg->buffers = 2;
-		/* fall through */
+		fallthrough;
 	case V4L2_PIX_FMT_NV12:
 	case V4L2_PIX_FMT_NV21:
 		tpg->vdownsampling[1] = 2;
@@ -1307,7 +1307,7 @@ static void gen_twopix(struct tpg_data *tpg,
 	case V4L2_PIX_FMT_RGB444:
 	case V4L2_PIX_FMT_XRGB444:
 		alpha = 0;
-		/* fall through */
+		fallthrough;
 	case V4L2_PIX_FMT_YUV444:
 	case V4L2_PIX_FMT_ARGB444:
 		buf[0][offset] = (g_u_s << 4) | b_v;
@@ -1315,21 +1315,21 @@ static void gen_twopix(struct tpg_data *tpg,
 		break;
 	case V4L2_PIX_FMT_RGBX444:
 		alpha = 0;
-		/* fall through */
+		fallthrough;
 	case V4L2_PIX_FMT_RGBA444:
 		buf[0][offset] = (b_v << 4) | (alpha >> 4);
 		buf[0][offset + 1] = (r_y_h << 4) | g_u_s;
 		break;
 	case V4L2_PIX_FMT_XBGR444:
 		alpha = 0;
-		/* fall through */
+		fallthrough;
 	case V4L2_PIX_FMT_ABGR444:
 		buf[0][offset] = (g_u_s << 4) | r_y_h;
 		buf[0][offset + 1] = (alpha & 0xf0) | b_v;
 		break;
 	case V4L2_PIX_FMT_BGRX444:
 		alpha = 0;
-		/* fall through */
+		fallthrough;
 	case V4L2_PIX_FMT_BGRA444:
 		buf[0][offset] = (r_y_h << 4) | (alpha >> 4);
 		buf[0][offset + 1] = (b_v << 4) | g_u_s;
@@ -1337,7 +1337,7 @@ static void gen_twopix(struct tpg_data *tpg,
 	case V4L2_PIX_FMT_RGB555:
 	case V4L2_PIX_FMT_XRGB555:
 		alpha = 0;
-		/* fall through */
+		fallthrough;
 	case V4L2_PIX_FMT_YUV555:
 	case V4L2_PIX_FMT_ARGB555:
 		buf[0][offset] = (g_u_s << 5) | b_v;
@@ -1346,7 +1346,7 @@ static void gen_twopix(struct tpg_data *tpg,
 		break;
 	case V4L2_PIX_FMT_RGBX555:
 		alpha = 0;
-		/* fall through */
+		fallthrough;
 	case V4L2_PIX_FMT_RGBA555:
 		buf[0][offset] = (g_u_s << 6) | (b_v << 1) |
 				 ((alpha & 0x80) >> 7);
@@ -1354,7 +1354,7 @@ static void gen_twopix(struct tpg_data *tpg,
 		break;
 	case V4L2_PIX_FMT_XBGR555:
 		alpha = 0;
-		/* fall through */
+		fallthrough;
 	case V4L2_PIX_FMT_ABGR555:
 		buf[0][offset] = (g_u_s << 5) | r_y_h;
 		buf[0][offset + 1] = (alpha & 0x80) | (b_v << 2)
@@ -1362,7 +1362,7 @@ static void gen_twopix(struct tpg_data *tpg,
 		break;
 	case V4L2_PIX_FMT_BGRX555:
 		alpha = 0;
-		/* fall through */
+		fallthrough;
 	case V4L2_PIX_FMT_BGRA555:
 		buf[0][offset] = (g_u_s << 6) | (r_y_h << 1) |
 				 ((alpha & 0x80) >> 7);
@@ -1371,7 +1371,7 @@ static void gen_twopix(struct tpg_data *tpg,
 	case V4L2_PIX_FMT_RGB555X:
 	case V4L2_PIX_FMT_XRGB555X:
 		alpha = 0;
-		/* fall through */
+		fallthrough;
 	case V4L2_PIX_FMT_ARGB555X:
 		buf[0][offset] = (alpha & 0x80) | (r_y_h << 2) | (g_u_s >> 3);
 		buf[0][offset + 1] = (g_u_s << 5) | b_v;
@@ -1398,7 +1398,7 @@ static void gen_twopix(struct tpg_data *tpg,
 	case V4L2_PIX_FMT_HSV32:
 	case V4L2_PIX_FMT_XYUV32:
 		alpha = 0;
-		/* fall through */
+		fallthrough;
 	case V4L2_PIX_FMT_YUV32:
 	case V4L2_PIX_FMT_ARGB32:
 	case V4L2_PIX_FMT_AYUV32:
@@ -1409,7 +1409,7 @@ static void gen_twopix(struct tpg_data *tpg,
 		break;
 	case V4L2_PIX_FMT_RGBX32:
 		alpha = 0;
-		/* fall through */
+		fallthrough;
 	case V4L2_PIX_FMT_RGBA32:
 		buf[0][offset] = r_y_h;
 		buf[0][offset + 1] = g_u_s;
@@ -1420,7 +1420,7 @@ static void gen_twopix(struct tpg_data *tpg,
 	case V4L2_PIX_FMT_XBGR32:
 	case V4L2_PIX_FMT_VUYX32:
 		alpha = 0;
-		/* fall through */
+		fallthrough;
 	case V4L2_PIX_FMT_ABGR32:
 	case V4L2_PIX_FMT_VUYA32:
 		buf[0][offset] = b_v;
@@ -1430,7 +1430,7 @@ static void gen_twopix(struct tpg_data *tpg,
 		break;
 	case V4L2_PIX_FMT_BGRX32:
 		alpha = 0;
-		/* fall through */
+		fallthrough;
 	case V4L2_PIX_FMT_BGRA32:
 		buf[0][offset] = alpha;
 		buf[0][offset + 1] = b_v;
@@ -1789,6 +1789,9 @@ static void tpg_precalculate_line(struct tpg_data *tpg)
 	unsigned p;
 	unsigned x;
 
+	if (WARN_ON_ONCE(!tpg->src_width || !tpg->scaled_width))
+		return;
+
 	switch (tpg->pattern) {
 	case TPG_PAT_GREEN:
 		contrast = TPG_COLOR_100_RED;
@@ -1959,43 +1962,45 @@ typedef struct { u16 __; u8 _; } __packed x24;
 
 static noinline void tpg_print_str_2(const struct tpg_data *tpg, u8 *basep[TPG_MAX_PLANES][2],
 			unsigned p, unsigned first, unsigned div, unsigned step,
-			int y, int x, char *text, unsigned len)
+			int y, int x, const char *text, unsigned len)
 {
 	PRINTSTR(u8);
 }
 
 static noinline void tpg_print_str_4(const struct tpg_data *tpg, u8 *basep[TPG_MAX_PLANES][2],
 			unsigned p, unsigned first, unsigned div, unsigned step,
-			int y, int x, char *text, unsigned len)
+			int y, int x, const char *text, unsigned len)
 {
 	PRINTSTR(u16);
 }
 
 static noinline void tpg_print_str_6(const struct tpg_data *tpg, u8 *basep[TPG_MAX_PLANES][2],
 			unsigned p, unsigned first, unsigned div, unsigned step,
-			int y, int x, char *text, unsigned len)
+			int y, int x, const char *text, unsigned len)
 {
 	PRINTSTR(x24);
 }
 
 static noinline void tpg_print_str_8(const struct tpg_data *tpg, u8 *basep[TPG_MAX_PLANES][2],
 			unsigned p, unsigned first, unsigned div, unsigned step,
-			int y, int x, char *text, unsigned len)
+			int y, int x, const char *text, unsigned len)
 {
 	PRINTSTR(u32);
 }
 
 void tpg_gen_text(const struct tpg_data *tpg, u8 *basep[TPG_MAX_PLANES][2],
-		  int y, int x, char *text)
+		  int y, int x, const char *text)
 {
 	unsigned step = V4L2_FIELD_HAS_T_OR_B(tpg->field) ? 2 : 1;
 	unsigned div = step;
 	unsigned first = 0;
-	unsigned len = strlen(text);
+	unsigned len;
 	unsigned p;
 
-	if (font8x16 == NULL || basep == NULL)
+	if (font8x16 == NULL || basep == NULL || text == NULL)
 		return;
+
+	len = strlen(text);
 
 	/* Checks if it is possible to show string */
 	if (y + 16 >= tpg->compose.height || x + 8 >= tpg->compose.width)
@@ -2037,6 +2042,30 @@ void tpg_gen_text(const struct tpg_data *tpg, u8 *basep[TPG_MAX_PLANES][2],
 	}
 }
 EXPORT_SYMBOL_GPL(tpg_gen_text);
+
+const char *tpg_g_color_order(const struct tpg_data *tpg)
+{
+	switch (tpg->pattern) {
+	case TPG_PAT_75_COLORBAR:
+	case TPG_PAT_100_COLORBAR:
+	case TPG_PAT_CSC_COLORBAR:
+	case TPG_PAT_100_HCOLORBAR:
+		return "White, yellow, cyan, green, magenta, red, blue, black";
+	case TPG_PAT_BLACK:
+		return "Black";
+	case TPG_PAT_WHITE:
+		return "White";
+	case TPG_PAT_RED:
+		return "Red";
+	case TPG_PAT_GREEN:
+		return "Green";
+	case TPG_PAT_BLUE:
+		return "Blue";
+	default:
+		return NULL;
+	}
+}
+EXPORT_SYMBOL_GPL(tpg_g_color_order);
 
 void tpg_update_mv_step(struct tpg_data *tpg)
 {

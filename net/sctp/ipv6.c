@@ -499,7 +499,9 @@ static void sctp_v6_from_sk(union sctp_addr *addr, struct sock *sk)
 {
 	addr->v6.sin6_family = AF_INET6;
 	addr->v6.sin6_port = 0;
+	addr->v6.sin6_flowinfo = 0;
 	addr->v6.sin6_addr = sk->sk_v6_rcv_saddr;
+	addr->v6.sin6_scope_id = 0;
 }
 
 /* Initialize sk->sk_rcv_saddr from sctp_addr. */
@@ -880,7 +882,7 @@ static int sctp_inet6_af_supported(sa_family_t family, struct sctp_sock *sp)
 	case AF_INET:
 		if (!__ipv6_only_sock(sctp_opt2sk(sp)))
 			return 1;
-		/* fallthru */
+		fallthrough;
 	default:
 		return 0;
 	}
@@ -1036,8 +1038,7 @@ static const struct proto_ops inet6_seqpacket_ops = {
 	.recvmsg	   = inet_recvmsg,
 	.mmap		   = sock_no_mmap,
 #ifdef CONFIG_COMPAT
-	.compat_setsockopt = compat_sock_common_setsockopt,
-	.compat_getsockopt = compat_sock_common_getsockopt,
+	.compat_ioctl	   = inet6_compat_ioctl,
 #endif
 };
 
@@ -1092,10 +1093,6 @@ static struct sctp_af sctp_af_inet6 = {
 	.net_header_len	   = sizeof(struct ipv6hdr),
 	.sockaddr_len	   = sizeof(struct sockaddr_in6),
 	.ip_options_len	   = sctp_v6_ip_options_len,
-#ifdef CONFIG_COMPAT
-	.compat_setsockopt = compat_ipv6_setsockopt,
-	.compat_getsockopt = compat_ipv6_getsockopt,
-#endif
 };
 
 static struct sctp_pf sctp_pf_inet6 = {

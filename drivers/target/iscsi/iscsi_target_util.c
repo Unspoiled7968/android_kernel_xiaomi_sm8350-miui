@@ -801,8 +801,11 @@ void iscsit_dec_session_usage_count(struct iscsi_session *sess)
 	spin_lock_bh(&sess->session_usage_lock);
 	sess->session_usage_count--;
 
-	if (!sess->session_usage_count && sess->session_waiting_on_uc)
+	if (!sess->session_usage_count && sess->session_waiting_on_uc) {
+		spin_unlock_bh(&sess->session_usage_lock);
 		complete(&sess->session_waiting_on_uc_comp);
+		return;
+	}
 
 	spin_unlock_bh(&sess->session_usage_lock);
 }
@@ -870,8 +873,11 @@ void iscsit_dec_conn_usage_count(struct iscsi_conn *conn)
 	spin_lock_bh(&conn->conn_usage_lock);
 	conn->conn_usage_count--;
 
-	if (!conn->conn_usage_count && conn->conn_waiting_on_uc)
+	if (!conn->conn_usage_count && conn->conn_waiting_on_uc) {
+		spin_unlock_bh(&conn->conn_usage_lock);
 		complete(&conn->conn_waiting_on_uc_comp);
+		return;
+	}
 
 	spin_unlock_bh(&conn->conn_usage_lock);
 }
@@ -1228,18 +1234,20 @@ void iscsit_print_session_params(struct iscsi_session *sess)
 	iscsi_dump_sess_ops(sess->sess_ops);
 }
 
-static int iscsit_do_rx_data(
+int rx_data(
 	struct iscsi_conn *conn,
-	struct iscsi_data_count *count)
+	struct kvec *iov,
+	int iov_count,
+	int data)
 {
-	int data = count->data_length, rx_loop = 0, total_rx = 0;
+	int rx_loop = 0, total_rx = 0;
 	struct msghdr msg;
 
 	if (!conn || !conn->sock || !conn->conn_ops)
 		return -1;
 
 	memset(&msg, 0, sizeof(struct msghdr));
-	iov_iter_kvec(&msg.msg_iter, READ, count->iov, count->iov_count, data);
+	iov_iter_kvec(&msg.msg_iter, READ, iov, iov_count, data);
 
 	while (msg_data_left(&msg)) {
 		rx_loop = sock_recvmsg(conn->sock, &msg, MSG_WAITALL);
@@ -1254,26 +1262,6 @@ static int iscsit_do_rx_data(
 	}
 
 	return total_rx;
-}
-
-int rx_data(
-	struct iscsi_conn *conn,
-	struct kvec *iov,
-	int iov_count,
-	int data)
-{
-	struct iscsi_data_count c;
-
-	if (!conn || !conn->sock || !conn->conn_ops)
-		return -1;
-
-	memset(&c, 0, sizeof(struct iscsi_data_count));
-	c.iov = iov;
-	c.iov_count = iov_count;
-	c.data_length = data;
-	c.type = ISCSI_RX_DATA;
-
-	return iscsit_do_rx_data(conn, &c);
 }
 
 int tx_data(

@@ -26,7 +26,9 @@
 #include <linux/sched/mm.h>
 #include <linux/sched/coredump.h>
 #include <linux/sched/task.h>
+#include <linux/sched/debug.h>
 #include <linux/swap.h>
+#include <linux/syscalls.h>
 #include <linux/timex.h>
 #include <linux/jiffies.h>
 #include <linux/cpuset.h>
@@ -42,8 +44,8 @@
 #include <linux/kthread.h>
 #include <linux/init.h>
 #include <linux/mmu_notifier.h>
-#include <linux/show_mem_notifier.h>
-#include <linux/memory_hotplug.h>
+#include <linux/cred.h>
+#include <linux/nmi.h>
 
 #include <asm/tlb.h>
 #include "internal.h"
@@ -52,17 +54,12 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/oom.h>
 
-int sysctl_panic_on_oom =
-IS_ENABLED(CONFIG_DEBUG_PANIC_ON_OOM) ? 2 : 0;
+#undef CREATE_TRACE_POINTS
+#include <trace/hooks/mm.h>
+
+int sysctl_panic_on_oom;
 int sysctl_oom_kill_allocating_task;
 int sysctl_oom_dump_tasks = 1;
-int sysctl_reap_mem_on_sigkill = 1;
-
-#ifdef CONFIG_PRIORITIZE_OOM_TASKS
-static unsigned long panic_on_oom_timeout;
-#endif
-static int panic_on_adj_zero;
-module_param(panic_on_adj_zero, int, 0644);
 
 /*
  * Serializes oom killer invocations (out_of_memory()) from all contexts to
@@ -137,7 +134,7 @@ static bool oom_cpuset_eligible(struct task_struct *tsk, struct oom_control *oc)
 
 /*
  * The process p may have detached its own ->mm while exiting or through
- * use_mm(), but one or more of its subthreads may still have a valid
+ * kthread_use_mm(), but one or more of its subthreads may still have a valid
  * pointer.  Return p, or any of its subthreads with a valid ->mm, with
  * task_lock() held.
  */
@@ -195,7 +192,7 @@ static bool is_dump_unreclaim_slabs(void)
 		 global_node_page_state(NR_ISOLATED_FILE) +
 		 global_node_page_state(NR_UNEVICTABLE);
 
-	return (global_node_page_state(NR_SLAB_UNRECLAIMABLE) > nr_lru);
+	return (global_node_page_state_pages(NR_SLAB_UNRECLAIMABLE_B) > nr_lru);
 }
 
 /**
@@ -261,7 +258,7 @@ static enum oom_constraint constrained_alloc(struct oom_control *oc)
 {
 	struct zone *zone;
 	struct zoneref *z;
-	enum zone_type high_zoneidx = gfp_zone(oc->gfp_mask);
+	enum zone_type highest_zoneidx = gfp_zone(oc->gfp_mask);
 	bool cpuset_limited = false;
 	int nid;
 
@@ -301,7 +298,7 @@ static enum oom_constraint constrained_alloc(struct oom_control *oc)
 
 	/* Check this allocation failure is caused by cpuset's wall function */
 	for_each_zone_zonelist_nodemask(zone, z, oc->zonelist,
-			high_zoneidx, oc->nodemask)
+			highest_zoneidx, oc->nodemask)
 		if (!cpuset_zone_allowed(zone, oc->gfp_mask))
 			cpuset_limited = true;
 
@@ -318,10 +315,6 @@ static int oom_evaluate_task(struct task_struct *task, void *arg)
 {
 	struct oom_control *oc = arg;
 	long points;
-#ifdef CONFIG_PRIORITIZE_OOM_TASKS
-	struct task_struct *p;
-	short adj;
-#endif
 
 	if (oom_unkillable_task(task))
 		goto next;
@@ -342,18 +335,6 @@ static int oom_evaluate_task(struct task_struct *task, void *arg)
 		goto abort;
 	}
 
-#ifdef CONFIG_PRIORITIZE_OOM_TASKS
-	p = find_lock_task_mm(task);
-	if (!p)
-		goto next;
-
-	adj = p->signal->oom_score_adj;
-	task_unlock(p);
-
-	if (adj < oc->min_kill_adj)
-		goto next;
-#endif
-
 	/*
 	 * If task is allocating a lot of memory and has been marked to be
 	 * killed first if it triggers an oom, then select it.
@@ -364,7 +345,24 @@ static int oom_evaluate_task(struct task_struct *task, void *arg)
 	}
 
 	points = oom_badness(task, oc->totalpages);
-	if (points == LONG_MIN || points < oc->chosen_points)
+
+	if (points == LONG_MIN)
+		goto next;
+
+	/*
+	 * Check to see if this is the worst task with a non-negative
+	 * ADJ score seen so far
+	 */
+	if (task->signal->oom_score_adj >= 0 &&
+	    points > oc->chosen_non_negative_adj_points) {
+		if (oc->chosen_non_negative_adj)
+			put_task_struct(oc->chosen_non_negative_adj);
+		get_task_struct(task);
+		oc->chosen_non_negative_adj = task;
+		oc->chosen_non_negative_adj_points = points;
+	}
+
+	if (points < oc->chosen_points)
 		goto next;
 
 select:
@@ -376,8 +374,11 @@ select:
 next:
 	return 0;
 abort:
+	if (oc->chosen_non_negative_adj)
+		put_task_struct(oc->chosen_non_negative_adj);
 	if (oc->chosen)
 		put_task_struct(oc->chosen);
+	oc->chosen_non_negative_adj = NULL;
 	oc->chosen = (void *)-1UL;
 	return 1;
 }
@@ -389,6 +390,8 @@ abort:
 static void select_bad_process(struct oom_control *oc)
 {
 	oc->chosen_points = LONG_MIN;
+	oc->chosen_non_negative_adj_points = LONG_MIN;
+	oc->chosen_non_negative_adj = NULL;
 
 	if (is_memcg_oom(oc))
 		mem_cgroup_scan_tasks(oc->memcg, oom_evaluate_task, oc);
@@ -400,6 +403,20 @@ static void select_bad_process(struct oom_control *oc)
 			if (oom_evaluate_task(p, oc))
 				break;
 		rcu_read_unlock();
+	}
+
+	if (oc->chosen_non_negative_adj) {
+		/*
+		 * If oc->chosen has a negative ADJ, and we found a task with
+		 * a postive ADJ to kill, kill the task with the positive ADJ
+		 * instead.
+		 */
+		if (oc->chosen && oc->chosen->signal->oom_score_adj < 0) {
+			put_task_struct(oc->chosen);
+			oc->chosen = oc->chosen_non_negative_adj;
+			oc->chosen_points = oc->chosen_non_negative_adj_points;
+		} else
+			put_task_struct(oc->chosen_non_negative_adj);
 	}
 }
 
@@ -455,10 +472,15 @@ static void dump_tasks(struct oom_control *oc)
 		mem_cgroup_scan_tasks(oc->memcg, dump_task, oc);
 	else {
 		struct task_struct *p;
+		int i = 0;
 
 		rcu_read_lock();
-		for_each_process(p)
+		for_each_process(p) {
+			/* Avoid potential softlockup warning */
+			if ((++i & 1023) == 0)
+				touch_softlockup_watchdog();
 			dump_task(p, oc);
+		}
 		rcu_read_unlock();
 	}
 }
@@ -490,10 +512,7 @@ static void dump_header(struct oom_control *oc, struct task_struct *p)
 		show_mem(SHOW_MEM_FILTER_NODES, oc->nodemask);
 		if (is_dump_unreclaim_slabs())
 			dump_unreclaimable_slab();
-
-		show_mem_call_notifiers();
 	}
-
 	if (sysctl_oom_dump_tasks)
 		dump_tasks(oc);
 	if (p)
@@ -597,7 +616,7 @@ static bool oom_reap_task_mm(struct task_struct *tsk, struct mm_struct *mm)
 {
 	bool ret = true;
 
-	if (!down_read_trylock(&mm->mmap_sem)) {
+	if (!mmap_read_trylock(mm)) {
 		trace_skip_task_reaping(tsk->pid);
 		return false;
 	}
@@ -605,8 +624,8 @@ static bool oom_reap_task_mm(struct task_struct *tsk, struct mm_struct *mm)
 	/*
 	 * MMF_OOM_SKIP is set by exit_mmap when the OOM reaper can't
 	 * work on the mm anymore. The check for MMF_OOM_SKIP must run
-	 * under mmap_sem for reading because it serializes against the
-	 * down_write();up_write() cycle in exit_mmap().
+	 * under mmap_lock for reading because it serializes against the
+	 * mmap_write_lock();mmap_write_unlock() cycle in exit_mmap().
 	 */
 	if (test_bit(MMF_OOM_SKIP, &mm->flags)) {
 		trace_skip_task_reaping(tsk->pid);
@@ -628,7 +647,7 @@ static bool oom_reap_task_mm(struct task_struct *tsk, struct mm_struct *mm)
 out_finish:
 	trace_finish_task_reaping(tsk->pid);
 out_unlock:
-	up_read(&mm->mmap_sem);
+	mmap_read_unlock(mm);
 
 	return ret;
 }
@@ -639,7 +658,7 @@ static void oom_reap_task(struct task_struct *tsk)
 	int attempts = 0;
 	struct mm_struct *mm = tsk->signal->oom_mm;
 
-	/* Retry the down_read_trylock(mmap_sem) a few times */
+	/* Retry the mmap_read_trylock(mm) a few times */
 	while (attempts++ < MAX_OOM_REAP_RETRIES && !oom_reap_task_mm(tsk, mm))
 		schedule_timeout_idle(HZ/10);
 
@@ -649,6 +668,7 @@ static void oom_reap_task(struct task_struct *tsk)
 
 	pr_info("oom_reaper: unable to reap pid:%d (%s)\n",
 		task_pid_nr(tsk), tsk->comm);
+	sched_show_task(tsk);
 	debug_show_all_locks();
 
 done:
@@ -656,7 +676,7 @@ done:
 
 	/*
 	 * Hide this mm from OOM killer because it has been either reaped or
-	 * somebody can't call up_write(mmap_sem).
+	 * somebody can't call mmap_write_unlock(mm).
 	 */
 	set_bit(MMF_OOM_SKIP, &mm->flags);
 
@@ -686,22 +706,13 @@ static int oom_reaper(void *unused)
 
 static void wake_oom_reaper(struct task_struct *tsk)
 {
-	/*
-	 * Move the lock here to avoid scenario of queuing
-	 * the same task by both OOM killer and any other SIGKILL
-	 * path.
-	 */
-	spin_lock(&oom_reaper_lock);
-
 	/* mm is already queued? */
-	if (test_and_set_bit(MMF_OOM_REAP_QUEUED,
-			     &tsk->signal->oom_mm->flags)) {
-		spin_unlock(&oom_reaper_lock);
+	if (test_and_set_bit(MMF_OOM_REAP_QUEUED, &tsk->signal->oom_mm->flags))
 		return;
-	}
 
 	get_task_struct(tsk);
 
+	spin_lock(&oom_reaper_lock);
 	tsk->oom_reaper_list = oom_reaper_list;
 	oom_reaper_list = tsk;
 	spin_unlock(&oom_reaper_lock);
@@ -721,6 +732,10 @@ static inline void wake_oom_reaper(struct task_struct *tsk)
 }
 #endif /* CONFIG_MMU */
 
+/**
+ * tsk->mm has to be non NULL and caller has to guarantee it is stable (either
+ * under task_lock or operate on the current).
+ */
 static void __mark_oom_victim(struct task_struct *tsk)
 {
 	struct mm_struct *mm = tsk->mm;
@@ -743,6 +758,8 @@ static void __mark_oom_victim(struct task_struct *tsk)
  */
 static void mark_oom_victim(struct task_struct *tsk)
 {
+	const struct cred *cred;
+
 	WARN_ON(oom_killer_disabled);
 	/* OOM killer might race with memcg OOM */
 	if (test_and_set_tsk_thread_flag(tsk, TIF_MEMDIE))
@@ -759,7 +776,9 @@ static void mark_oom_victim(struct task_struct *tsk)
 	 */
 	__thaw_task(tsk);
 	atomic_inc(&oom_victims);
-	trace_mark_victim(tsk->pid);
+	cred = get_task_cred(tsk);
+	trace_mark_victim(tsk, cred->uid.val);
+	put_cred(cred);
 }
 
 /**
@@ -904,6 +923,8 @@ static void __oom_kill_process(struct task_struct *victim, const char *message)
 
 	p = find_lock_task_mm(victim);
 	if (!p) {
+		pr_info("%s: OOM victim %d (%s) is already exiting. Skip killing the task\n",
+			message, task_pid_nr(victim), victim->comm);
 		put_task_struct(victim);
 		return;
 	} else if (victim != p) {
@@ -926,9 +947,6 @@ static void __oom_kill_process(struct task_struct *victim, const char *message)
 	 * reserves from the user space under its control.
 	 */
 	do_send_sig_info(SIGKILL, SEND_SIG_PRIV, victim, PIDTYPE_TGID);
-#ifdef CONFIG_PRIORITIZE_OOM_TASKS
-	panic_on_oom_timeout = 0;
-#endif
 	mark_oom_victim(victim);
 	pr_err("%s: Killed process %d (%s) total-vm:%lukB, anon-rss:%lukB, file-rss:%lukB, shmem-rss:%lukB, UID:%u pgtables:%lukB oom_score_adj:%hd\n",
 		message, task_pid_nr(victim), victim->comm, K(mm->total_vm),
@@ -942,7 +960,7 @@ static void __oom_kill_process(struct task_struct *victim, const char *message)
 	/*
 	 * Kill all user processes sharing victim->mm in other thread groups, if
 	 * any.  They don't get access to memory reserves, though, to avoid
-	 * depletion of all memory.  This prevents mm->mmap_sem livelock when an
+	 * depletion of all memory.  This prevents mm->mmap_lock livelock when an
 	 * oom killed thread cannot exit because it requires the semaphore and
 	 * its contended by another thread trying to allocate memory itself.
 	 * That thread will now get access to memory reserves since it has a
@@ -963,8 +981,8 @@ static void __oom_kill_process(struct task_struct *victim, const char *message)
 			continue;
 		}
 		/*
-		 * No use_mm() user needs to read from the userspace so we are
-		 * ok to reap it.
+		 * No kthead_use_mm() user needs to read from the userspace so
+		 * we are ok to reap it.
 		 */
 		if (unlikely(p->flags & PF_KTHREAD))
 			continue;
@@ -1016,11 +1034,7 @@ static void oom_kill_process(struct oom_control *oc, const char *message)
 	}
 	task_unlock(victim);
 
-	if (__ratelimit(&oom_rs)
-#ifdef CONFIG_PRIORITIZE_OOM_TASKS
-	    && oc->min_kill_adj < CONFIG_OOM_TASK_PRIORITY_ADJ_LIMIT
-#endif
-	   )
+	if (__ratelimit(&oom_rs))
 		dump_header(oc, victim);
 
 	/*
@@ -1043,8 +1057,6 @@ static void oom_kill_process(struct oom_control *oc, const char *message)
 	}
 }
 
-#define PANIC_ON_OOM_DEFER_TIMEOUT (5*HZ)
-#define PANIC_ON_OOM_DEFER_WINDOW  (20*HZ)
 /*
  * Determines whether the kernel must panic because of the panic_on_oom sysctl.
  */
@@ -1064,20 +1076,6 @@ static void check_panic_on_oom(struct oom_control *oc)
 	/* Do not panic for oom kills triggered by sysrq */
 	if (is_sysrq_oom(oc))
 		return;
-
-#ifdef CONFIG_PRIORITIZE_OOM_TASKS
-	if (!panic_on_oom_timeout ||
-	    time_after_eq(jiffies, panic_on_oom_timeout +
-			    PANIC_ON_OOM_DEFER_WINDOW)) {
-		panic_on_oom_timeout = jiffies + PANIC_ON_OOM_DEFER_TIMEOUT;
-		oc->chosen = (void *)-1UL;
-		return;
-	} else if (time_before_eq(jiffies, panic_on_oom_timeout)) {
-		oc->chosen = (void *)-1UL;
-		return;
-	}
-#endif
-
 	dump_header(oc, NULL);
 	panic("Out of memory: %s panic_on_oom is enabled\n",
 		sysctl_panic_on_oom == 2 ? "compulsory" : "system-wide");
@@ -1113,15 +1111,6 @@ bool out_of_memory(struct oom_control *oc)
 	if (oom_killer_disabled)
 		return false;
 
-	if (try_online_one_block(numa_node_id())) {
-		/* Got some memory back */
-		WARN(1, "OOM killer had to online a memory block\n");
-		return true;
-	}
-
-#ifdef CONFIG_PRIORITIZE_OOM_TASKS
-	oc->min_kill_adj = OOM_SCORE_ADJ_MIN;
-#endif
 	if (!is_memcg_oom(oc)) {
 		blocking_notifier_call_chain(&oom_notify_list, 0, &freed);
 		if (freed > 0)
@@ -1157,46 +1146,27 @@ bool out_of_memory(struct oom_control *oc)
 	oc->constraint = constrained_alloc(oc);
 	if (oc->constraint != CONSTRAINT_MEMORY_POLICY)
 		oc->nodemask = NULL;
+	check_panic_on_oom(oc);
 
 	if (!is_memcg_oom(oc) && sysctl_oom_kill_allocating_task &&
 	    current->mm && !oom_unkillable_task(current) &&
 	    oom_cpuset_eligible(current, oc) &&
 	    current->signal->oom_score_adj != OOM_SCORE_ADJ_MIN) {
-		check_panic_on_oom(oc);
 		get_task_struct(current);
 		oc->chosen = current;
 		oom_kill_process(oc, "Out of memory (oom_kill_allocating_task)");
 		return true;
 	}
 
-#ifdef CONFIG_PRIORITIZE_OOM_TASKS
-	if (oc->min_kill_adj < CONFIG_OOM_TASK_PRIORITY_ADJ_LIMIT) {
-		short prev_min_kill_adj = oc->min_kill_adj;
-
-		oc->min_kill_adj = CONFIG_OOM_TASK_PRIORITY_ADJ_LIMIT;
-		select_bad_process(oc);
-		if (!oc->chosen) {
-			pr_warn_ratelimited("Could not find task with adj >= %d\n",
-					CONFIG_OOM_TASK_PRIORITY_ADJ_LIMIT);
-			oc->min_kill_adj = prev_min_kill_adj;
-			oc->chosen_points = 0;
-			if (tsk_is_oom_victim(current)) {
-				pr_warn_ratelimited("current killed, retry\n");
-				return true;
-			}
-		}
-
-	}
-#endif
-
-	if (!oc->chosen)
-		check_panic_on_oom(oc);
-
-	if (!oc->chosen)
-		select_bad_process(oc);
-
+	select_bad_process(oc);
 	/* Found nothing?!?! */
 	if (!oc->chosen) {
+		int ret = false;
+
+		trace_android_vh_oom_check_panic(oc, &ret);
+		if (ret)
+			return true;
+
 		dump_header(oc, NULL);
 		pr_warn("Out of memory and no killable processes...\n");
 		/*
@@ -1224,9 +1194,6 @@ void pagefault_out_of_memory(void)
 	static DEFINE_RATELIMIT_STATE(pfoom_rs, DEFAULT_RATELIMIT_INTERVAL,
 				      DEFAULT_RATELIMIT_BURST);
 
-	if (IS_ENABLED(CONFIG_HAVE_USERSPACE_LOW_MEMORY_KILLER))
-		return;
-
 	if (mem_cgroup_oom_synchronize(true))
 		return;
 
@@ -1237,14 +1204,87 @@ void pagefault_out_of_memory(void)
 		pr_warn("Huh VM_FAULT_OOM leaked out to the #PF handler. Retrying PF\n");
 }
 
+SYSCALL_DEFINE2(process_mrelease, int, pidfd, unsigned int, flags)
+{
+#ifdef CONFIG_MMU
+	struct mm_struct *mm = NULL;
+	struct task_struct *task;
+	struct task_struct *p;
+	unsigned int f_flags;
+	bool reap = false;
+	struct pid *pid;
+	long ret = 0;
+
+	if (flags)
+		return -EINVAL;
+
+	pid = pidfd_get_pid(pidfd, &f_flags);
+	if (IS_ERR(pid))
+		return PTR_ERR(pid);
+
+	task = get_pid_task(pid, PIDTYPE_TGID);
+	if (!task) {
+		ret = -ESRCH;
+		goto put_pid;
+	}
+
+	/*
+	 * Make sure to choose a thread which still has a reference to mm
+	 * during the group exit
+	 */
+	p = find_lock_task_mm(task);
+	if (!p) {
+		ret = -ESRCH;
+		goto put_task;
+	}
+
+	mm = p->mm;
+	mmgrab(mm);
+
+	/*
+	 * If we are too late and exit_mmap already checked mm_is_oom_victim
+	 * then will block on mmap_read_lock until exit_mmap releases mmap_lock
+	 */
+	set_bit(MMF_OOM_VICTIM, &mm->flags);
+
+	if (task_will_free_mem(p))
+		reap = true;
+	else {
+		/* Error only if the work has not been done already */
+		if (!test_bit(MMF_OOM_SKIP, &mm->flags))
+			ret = -EINVAL;
+	}
+	task_unlock(p);
+
+	if (!reap)
+		goto drop_mm;
+
+	if (mmap_read_lock_killable(mm)) {
+		ret = -EINTR;
+		goto drop_mm;
+	}
+	/*
+	 * Check MMF_OOM_SKIP again under mmap_read_lock protection to ensure
+	 * possible change in exit_mmap is seen
+	 */
+	if (!test_bit(MMF_OOM_SKIP, &mm->flags) && !__oom_reap_task_mm(mm))
+		ret = -EAGAIN;
+	mmap_read_unlock(mm);
+
+drop_mm:
+	mmdrop(mm);
+put_task:
+	put_task_struct(task);
+put_pid:
+	put_pid(pid);
+	return ret;
+#else
+	return -ENOSYS;
+#endif /* CONFIG_MMU */
+}
+
 void add_to_oom_reaper(struct task_struct *p)
 {
-	static DEFINE_RATELIMIT_STATE(reaper_rs, DEFAULT_RATELIMIT_INTERVAL,
-						 DEFAULT_RATELIMIT_BURST);
-
-	if (!sysctl_reap_mem_on_sigkill)
-		return;
-
 	p = find_lock_task_mm(p);
 	if (!p)
 		return;
@@ -1252,33 +1292,8 @@ void add_to_oom_reaper(struct task_struct *p)
 	get_task_struct(p);
 	if (task_will_free_mem(p)) {
 		__mark_oom_victim(p);
-#ifdef CONFIG_PRIORITIZE_OOM_TASKS
-		panic_on_oom_timeout = 0;
-#endif
 		wake_oom_reaper(p);
 	}
 	task_unlock(p);
-
-	if (!strcmp(current->comm, ULMK_MAGIC) && __ratelimit(&reaper_rs)
-			&& p->signal->oom_score_adj == 0) {
-		show_mem(SHOW_MEM_FILTER_NODES, NULL);
-		show_mem_call_notifiers();
-	}
-
 	put_task_struct(p);
-}
-
-/*
- * Should be called prior to sending sigkill. To guarantee that the
- * process to-be-killed is still untouched.
- */
-void check_panic_on_foreground_kill(struct task_struct *p)
-{
-	if (unlikely(!strcmp(current->comm, ULMK_MAGIC)
-			&& p->signal->oom_score_adj == 0
-			&& panic_on_adj_zero)) {
-		show_mem(SHOW_MEM_FILTER_NODES, NULL);
-		show_mem_call_notifiers();
-		panic("Attempt to kill foreground task: %s", p->comm);
-	}
 }

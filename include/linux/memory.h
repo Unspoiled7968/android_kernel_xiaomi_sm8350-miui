@@ -26,22 +26,14 @@
 struct memory_block {
 	unsigned long start_section_nr;
 	unsigned long state;		/* serialized by the dev->lock */
-	int section_count;		/* serialized by mem_sysfs_mutex */
 	int online_type;		/* for passing data to online routine */
-	int phys_device;		/* to which fru does this belong? */
-	void *hw;			/* optional pointer to fw/hw data */
-	int (*phys_callback)(struct memory_block *);
-	struct device dev;
 	int nid;			/* NID for this memory block */
+	struct device dev;
 };
 
 int arch_get_memory_phys_device(unsigned long start_pfn);
 unsigned long memory_block_size_bytes(void);
 int set_memory_block_size_order(unsigned int order);
-
-#ifdef CONFIG_QCOM_MEM_OFFLINE
-unsigned long get_totalram_pages_count_inc_offlined(void);
-#endif
 
 /* These states are exposed to userspace as text strings in sysfs */
 #define	MEM_ONLINE		(1<<0) /* exposed to userspace */
@@ -57,19 +49,6 @@ struct memory_notify {
 	int status_change_nid_normal;
 	int status_change_nid_high;
 	int status_change_nid;
-};
-
-/*
- * During pageblock isolation, count the number of pages within the
- * range [start_pfn, start_pfn + nr_pages) which are owned by code
- * in the notifier chain.
- */
-#define MEM_ISOLATE_COUNT	(1<<0)
-
-struct memory_isolate_notify {
-	unsigned long start_pfn;	/* Start of range to check */
-	unsigned int nr_pages;		/* # pages in range to check */
-	unsigned int pages_found;	/* # pages owned found by callbacks */
 };
 
 struct notifier_block;
@@ -98,27 +77,13 @@ static inline int memory_notify(unsigned long val, void *v)
 {
 	return 0;
 }
-static inline int register_memory_isolate_notifier(struct notifier_block *nb)
-{
-	return 0;
-}
-static inline void unregister_memory_isolate_notifier(struct notifier_block *nb)
-{
-}
-static inline int memory_isolate_notify(unsigned long val, void *v)
-{
-	return 0;
-}
 #else
 extern int register_memory_notifier(struct notifier_block *nb);
 extern void unregister_memory_notifier(struct notifier_block *nb);
-extern int register_memory_isolate_notifier(struct notifier_block *nb);
-extern void unregister_memory_isolate_notifier(struct notifier_block *nb);
 int create_memory_block_devices(unsigned long start, unsigned long size);
 void remove_memory_block_devices(unsigned long start, unsigned long size);
 extern void memory_dev_init(void);
 extern int memory_notify(unsigned long val, void *v);
-extern int memory_isolate_notify(unsigned long val, void *v);
 extern struct memory_block *find_memory_block(struct mem_section *);
 typedef int (*walk_memory_blocks_func_t)(struct memory_block *, void *);
 extern int walk_memory_blocks(unsigned long start, unsigned long size,
@@ -135,13 +100,11 @@ extern int for_each_memory_block(void *arg, walk_memory_blocks_func_t func);
 })
 #define register_hotmemory_notifier(nb)		register_memory_notifier(nb)
 #define unregister_hotmemory_notifier(nb) 	unregister_memory_notifier(nb)
-extern unsigned long get_offlined_pages_count(void);
 #else
 #define hotplug_memory_notifier(fn, pri)	({ 0; })
 /* These aren't inline functions due to a GCC bug. */
 #define register_hotmemory_notifier(nb)    ({ (void)(nb); 0; })
 #define unregister_hotmemory_notifier(nb)  ({ (void)(nb); })
-static inline unsigned long get_offlined_pages_count(void) { return 0; }
 #endif
 
 /*

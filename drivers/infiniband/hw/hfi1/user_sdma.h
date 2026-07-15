@@ -1,6 +1,7 @@
 #ifndef _HFI1_USER_SDMA_H
 #define _HFI1_USER_SDMA_H
 /*
+ * Copyright(c) 2020 - Cornelis Networks, Inc.
  * Copyright(c) 2015 - 2018 Intel Corporation.
  *
  * This file is provided under a dual BSD/GPLv2 license.  When using or
@@ -52,6 +53,7 @@
 #include "common.h"
 #include "iowait.h"
 #include "user_exp_rcv.h"
+#include "mmu_rb.h"
 
 /* The maximum number of Data io vectors per message/request */
 #define MAX_VECTORS_PER_REQ 8
@@ -133,7 +135,6 @@ struct hfi1_user_sdma_pkt_q {
 	unsigned long unpinned;
 	struct mmu_rb_handler *handler;
 	atomic_t n_locked;
-	struct mm_struct *mm;
 };
 
 struct hfi1_user_sdma_comp_q {
@@ -144,7 +145,6 @@ struct hfi1_user_sdma_comp_q {
 struct sdma_mmu_node {
 	struct mmu_rb_node rb;
 	struct hfi1_user_sdma_pkt_q *pq;
-	atomic_t refcount;
 	struct page **pages;
 	unsigned int npages;
 };
@@ -152,16 +152,11 @@ struct sdma_mmu_node {
 struct user_sdma_iovec {
 	struct list_head list;
 	struct iovec iov;
-	/* number of pages in this vector */
-	unsigned int npages;
-	/* array of pinned pages for this vector */
-	struct page **pages;
 	/*
 	 * offset into the virtual address space of the vector at
 	 * which we last left off.
 	 */
 	u64 offset;
-	struct sdma_mmu_node *node;
 };
 
 /* evict operation argument */
@@ -249,5 +244,10 @@ int hfi1_user_sdma_free_queues(struct hfi1_filedata *fd,
 int hfi1_user_sdma_process_request(struct hfi1_filedata *fd,
 				   struct iovec *iovec, unsigned long dim,
 				   unsigned long *count);
+
+static inline struct mm_struct *mm_from_sdma_node(struct sdma_mmu_node *node)
+{
+	return node->rb.handler->mn.mm;
+}
 
 #endif /* _HFI1_USER_SDMA_H */

@@ -619,7 +619,7 @@ static int populate_attrs(struct config_item *item)
 				break;
 		}
 	}
-	if (t->ct_bin_attrs) {
+	if (!error && t->ct_bin_attrs) {
 		for (i = 0; (bin_attr = t->ct_bin_attrs[i]) != NULL; i++) {
 			error = configfs_create_bin_file(item, bin_attr);
 			if (error)
@@ -1178,7 +1178,7 @@ EXPORT_SYMBOL(configfs_depend_item);
 
 /*
  * Release the dependent linkage.  This is much simpler than
- * configfs_depend_item() because we know that that the client driver is
+ * configfs_depend_item() because we know that the client driver is
  * pinned, thus the subsystem is pinned, and therefore configfs is pinned.
  */
 void configfs_undepend_item(struct config_item *target)
@@ -1418,6 +1418,21 @@ static int configfs_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode
 		ret = configfs_attach_group(parent_item, item, dentry, frag);
 	else
 		ret = configfs_attach_item(parent_item, item, dentry, frag);
+
+	/* inherit uid/gid from process creating the directory */
+	if (!uid_eq(current_fsuid(), GLOBAL_ROOT_UID) ||
+	    !gid_eq(current_fsgid(), GLOBAL_ROOT_GID)) {
+		struct iattr ia = {
+			.ia_uid = current_fsuid(),
+			.ia_gid = current_fsgid(),
+			.ia_valid = ATTR_UID | ATTR_GID,
+		};
+		struct inode *inode = d_inode(dentry);
+		inode->i_uid = ia.ia_uid;
+		inode->i_gid = ia.ia_gid;
+		/* the above manual assignments skip the permission checks */
+		configfs_setattr(dentry, &ia);
+	}
 
 	spin_lock(&configfs_dirent_lock);
 	sd->s_type &= ~CONFIGFS_USET_IN_MKDIR;
@@ -1698,11 +1713,11 @@ static loff_t configfs_dir_lseek(struct file *file, loff_t offset, int whence)
 	switch (whence) {
 		case 1:
 			offset += file->f_pos;
-			/* fall through */
+			fallthrough;
 		case 0:
 			if (offset >= 0)
 				break;
-			/* fall through */
+			fallthrough;
 		default:
 			return -EINVAL;
 	}

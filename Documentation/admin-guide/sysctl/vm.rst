@@ -27,6 +27,7 @@ Currently, these files are in /proc/sys/vm:
 - admin_reserve_kbytes
 - block_dump
 - compact_memory
+- compaction_proactiveness
 - compact_unevictable_allowed
 - dirty_background_bytes
 - dirty_background_ratio
@@ -38,8 +39,8 @@ Currently, these files are in /proc/sys/vm:
 - drop_caches
 - extfrag_threshold
 - extra_free_kbytes
+- highmem_is_dirtyable
 - hugetlb_shm_group
-- kswapd_threads
 - laptop_mode
 - legacy_va_layout
 - lowmem_reserve_ratio
@@ -58,13 +59,11 @@ Currently, these files are in /proc/sys/vm:
 - nr_trim_pages         (only if CONFIG_MMU=n)
 - numa_zonelist_order
 - oom_dump_tasks
-- reap_mem_on_sigkill
 - oom_kill_allocating_task
 - overcommit_kbytes
 - overcommit_memory
 - overcommit_ratio
 - page-cluster
-- page_lock_unfairness
 - panic_on_oom
 - percpu_pagelist_fraction
 - stat_interval
@@ -77,7 +76,7 @@ Currently, these files are in /proc/sys/vm:
 - watermark_boost_factor
 - watermark_scale_factor
 - zone_reclaim_mode
-- want_old_faultaround_pte
+
 
 admin_reserve_kbytes
 ====================
@@ -123,6 +122,22 @@ all zones are compacted such that free memory is available in contiguous
 blocks where possible. This can be important for example in the allocation of
 huge pages although processes will also directly compact memory as required.
 
+compaction_proactiveness
+========================
+
+This tunable takes a value in the range [0, 100] with a default value of
+20. This tunable determines how aggressively compaction is done in the
+background. On write of non zero value to this tunable will immediately
+trigger the proactive compaction. Setting it to 0 disables proactive compaction.
+
+Note that compaction has a non-trivial system-wide impact as pages
+belonging to different processes are moved around, which could also lead
+to latency spikes in unsuspecting applications. The kernel employs
+various heuristics to avoid wasting CPU cycles if it detects that
+proactive compaction is not being effective.
+
+Be careful when setting it to extreme values like 100, as that may
+cause excessive background compaction activity.
 
 compact_unevictable_allowed
 ===========================
@@ -132,6 +147,9 @@ allowed to examine the unevictable lru (mlocked pages) for pages to compact.
 This should be used on systems where stalls for minor page faults are an
 acceptable trade for large contiguous free memory.  Set to 0 to prevent
 compaction from moving pages that are unevictable.  Default value is 1.
+On CONFIG_PREEMPT_RT the default value is 0 in order to avoid a page fault, due
+to compaction, which would block the task from becomming active until the fault
+is resolved.
 
 
 dirty_background_bytes
@@ -312,25 +330,6 @@ hugetlb_shm_group
 hugetlb_shm_group contains group id that is allowed to create SysV
 shared memory segment using hugetlb page.
 
-kswapd_threads
-==============
-kswapd_threads allows you to control the number of kswapd threads per node
-running on the system. This provides the ability to devote additional CPU
-resources toward proactive page replacement with the goal of reducing
-direct reclaims. When direct reclaims are prevented, the CPU consumed
-by them is prevented as well. Depending on the workload, the result can
-cause aggregate CPU usage on the system to go up, down or stay the same.
-
-More aggressive page replacement can reduce direct reclaims which cause
-latency for tasks and decrease throughput when doing filesystem IO through
-the pagecache. Direct reclaims are recorded using the allocstall counter
-in /proc/vmstat.
-
-The default value is 1 and the range of acceptible values are 1-16.
-Always start with lower values in the 2-6 range. Higher values should
-be justified with testing. If direct reclaims occur in spite of high
-values, the cost of direct reclaims (in latency) that occur can be
-higher due to increased lock contention.
 
 laptop_mode
 ===========
@@ -618,7 +617,7 @@ trimming of allocations is initiated.
 
 The default value is 1.
 
-See Documentation/nommu-mmap.txt for more information.
+See Documentation/admin-guide/mm/nommu-mmap.rst for more information.
 
 
 numa_zonelist_order
@@ -691,22 +690,6 @@ OOM killer actually kills a memory-hogging task.
 
 The default value is 1 (enabled).
 
-reap_mem_on_sigkill
-===================
-
-This enables or disables the memory reaping for a SIGKILL received
-process and that the sending process must have the CAP_KILL capabilities.
-
-If this is set to 1, when a process receives SIGKILL from a process
-that has the capability, CAP_KILL, the process is added into the oom_reaper
-queue which can be picked up by the oom_reaper thread to reap the memory of
-that process. This reaps for the process which received SIGKILL through
-either sys_kill from user or kill_pid from kernel.
-
-If this is set to 0, we are not reaping memory of a SIGKILL, sent through
-either sys_kill from user or kill_pid from kernel, received process.
-
-The default value is 0 (disabled).
 
 oom_kill_allocating_task
 ========================
@@ -795,14 +778,6 @@ extra faults and I/O delays for following faults if they would have been part of
 that consecutive pages readahead would have brought in.
 
 
-page_lock_unfairness
-====================
-
-This value determines the number of times that the page lock can be
-stolen from under a waiter. After the lock is stolen the number of times
-specified in this file (default is 5), the "fair lock handoff" semantics
-will apply, and the waiter will only be awakened if the lock can be taken.
-
 panic_on_oom
 ============
 
@@ -890,24 +865,42 @@ tooling to work, you can do::
 swappiness
 ==========
 
-This control is used to define how aggressive the kernel will swap
-memory pages.  Higher values will increase aggressiveness, lower values
-decrease the amount of swap.  A value of 0 instructs the kernel not to
-initiate swap until the amount of free and file-backed pages is less
-than the high water mark in a zone.
+This control is used to define the rough relative IO cost of swapping
+and filesystem paging, as a value between 0 and 200. At 100, the VM
+assumes equal IO cost and will thus apply memory pressure to the page
+cache and swap-backed pages equally; lower values signify more
+expensive swap IO, higher values indicates cheaper.
+
+Keep in mind that filesystem IO patterns under memory pressure tend to
+be more efficient than swap's random IO. An optimal value will require
+experimentation and will also be workload-dependent.
 
 The default value is 60.
+
+For in-memory swap, like zram or zswap, as well as hybrid setups that
+have swap on faster devices than the filesystem, values beyond 100 can
+be considered. For example, if the random IO against the swap device
+is on average 2x faster than IO from the filesystem, swappiness should
+be 133 (x + 2x = 200, 2x = 133.33).
+
+At 0, the kernel will not initiate swap until the amount of free and
+file-backed pages is less than the high watermark in a zone.
 
 
 unprivileged_userfaultfd
 ========================
 
-This flag controls whether unprivileged users can use the userfaultfd
-system calls.  Set this to 1 to allow unprivileged users to use the
-userfaultfd system calls, or set this to 0 to restrict userfaultfd to only
-privileged users (with SYS_CAP_PTRACE capability).
+This flag controls the mode in which unprivileged users can use the
+userfaultfd system calls. Set this to 0 to restrict unprivileged users
+to handle page faults in user mode only. In this case, users without
+SYS_CAP_PTRACE must pass UFFD_USER_MODE_ONLY in order for userfaultfd to
+succeed. Prohibiting use of userfaultfd for handling faults from kernel
+mode may make certain vulnerabilities more difficult to exploit.
 
-The default value is 1.
+Set this to 1 to allow unprivileged users to use the userfaultfd system
+calls without any restrictions.
+
+The default value is 0.
 
 
 user_reserve_kbytes
@@ -977,7 +970,7 @@ how much memory needs to be free before kswapd goes back to sleep.
 
 The unit is in fractions of 10,000. The default value of 10 means the
 distances between watermarks are 0.1% of the available memory in the
-node/system. The maximum value is 1000, or 10% of memory.
+node/system. The maximum value is 3000, or 30% of memory.
 
 A high rate of threads entering direct reclaim (allocstall) or kswapd
 going to sleep prematurely (kswapd_low_wmark_hit_quickly) can indicate
@@ -1007,11 +1000,11 @@ that benefit from having their data cached, zone_reclaim_mode should be
 left disabled as the caching effect is likely to be more important than
 data locality.
 
-zone_reclaim may be enabled if it's known that the workload is partitioned
-such that each partition fits within a NUMA node and that accessing remote
-memory would cause a measurable performance reduction.  The page allocator
-will then reclaim easily reusable pages (those page cache pages that are
-currently not used) before allocating off node pages.
+Consider enabling one or more zone_reclaim mode bits if it's known that the
+workload is partitioned such that each partition fits within a NUMA node
+and that accessing remote memory would cause a measurable performance
+reduction.  The page allocator will take additional actions before
+allocating off node pages.
 
 Allowing zone reclaim to write out pages stops processes that are
 writing large amounts of data from dirtying pages on other nodes. Zone
@@ -1024,24 +1017,3 @@ of other processes running on other nodes will not be affected.
 Allowing regular swap effectively restricts allocations to the local
 node unless explicitly overridden by memory policies or cpuset
 configurations.
-
-
-want_old_faultaround_pte:
-=========================
-
-By default faultaround code produces young pte. When want_old_faultaround_pte is
-set to 1, faultaround produces old ptes.
-
-During sparse file access faultaround gets more pages mapped and when all of
-them are young (default), under memory pressure, this makes vmscan swap out anon
-pages instead, or to drop other page cache pages which otherwise stay resident.
-Setting want_old_faultaround_pte to 1 avoids this.
-
-Making the faultaround ptes old can result in performance regression on some
-architectures. This is due to cycles spent in micro-faults which would take page
-walk to set young bit in the pte. One such known test that shows a regression on
-x86 is unixbench shell8. Set want_old_faultaround_pte to 1 on architectures
-which does not show this regression or if the workload shows overall performance
-benefit with old faultaround ptes.
-
-The default value is 0.

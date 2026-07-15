@@ -13,11 +13,6 @@
 
 #ifdef CONFIG_LOCKUP_DETECTOR
 void lockup_detector_init(void);
-#ifdef CONFIG_SCHED_WALT
-extern void watchdog_enable(unsigned int cpu);
-extern void watchdog_disable(unsigned int cpu);
-extern bool watchdog_configured(unsigned int cpu);
-#endif
 void lockup_detector_soft_poweroff(void);
 void lockup_detector_cleanup(void);
 bool is_hardlockup(void);
@@ -42,22 +37,6 @@ extern int sysctl_hardlockup_all_cpu_backtrace;
 static inline void lockup_detector_init(void) { }
 static inline void lockup_detector_soft_poweroff(void) { }
 static inline void lockup_detector_cleanup(void) { }
-#ifdef CONFIG_SCHED_WALT
-static inline void watchdog_enable(unsigned int cpu)
-{
-}
-static inline void watchdog_disable(unsigned int cpu)
-{
-}
-static inline bool watchdog_configured(unsigned int cpu)
-{
-	/*
-	 * Pretend the watchdog is always configured.
-	 * We will be waiting for the watchdog to be enabled in core isolation
-	 */
-	return true;
-}
-#endif
 #endif /* !CONFIG_LOCKUP_DETECTOR */
 
 #ifdef CONFIG_SOFTLOCKUP_DETECTOR
@@ -225,16 +204,11 @@ static inline void watchdog_update_hrtimer_threshold(u64 period) { }
 #endif
 
 struct ctl_table;
-extern int proc_watchdog(struct ctl_table *, int ,
-			 void __user *, size_t *, loff_t *);
-extern int proc_nmi_watchdog(struct ctl_table *, int ,
-			     void __user *, size_t *, loff_t *);
-extern int proc_soft_watchdog(struct ctl_table *, int ,
-			      void __user *, size_t *, loff_t *);
-extern int proc_watchdog_thresh(struct ctl_table *, int ,
-				void __user *, size_t *, loff_t *);
-extern int proc_watchdog_cpumask(struct ctl_table *, int,
-				 void __user *, size_t *, loff_t *);
+int proc_watchdog(struct ctl_table *, int, void *, size_t *, loff_t *);
+int proc_nmi_watchdog(struct ctl_table *, int , void *, size_t *, loff_t *);
+int proc_soft_watchdog(struct ctl_table *, int , void *, size_t *, loff_t *);
+int proc_watchdog_thresh(struct ctl_table *, int , void *, size_t *, loff_t *);
+int proc_watchdog_cpumask(struct ctl_table *, int, void *, size_t *, loff_t *);
 
 #ifdef CONFIG_HAVE_ACPI_APEI_NMI
 #include <asm/nmi.h>

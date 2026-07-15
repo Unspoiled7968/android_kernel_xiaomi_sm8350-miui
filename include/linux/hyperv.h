@@ -14,6 +14,7 @@
 
 #include <uapi/linux/hyperv.h>
 
+#include <linux/mm.h>
 #include <linux/types.h>
 #include <linux/scatterlist.h>
 #include <linux/list.h>
@@ -23,11 +24,54 @@
 #include <linux/mod_devicetable.h>
 #include <linux/interrupt.h>
 #include <linux/reciprocal_div.h>
+#include <asm/hyperv-tlfs.h>
 
 #define MAX_PAGE_BUFFER_COUNT				32
 #define MAX_MULTIPAGE_BUFFER_COUNT			32 /* 128K */
 
 #pragma pack(push, 1)
+
+/*
+ * Types for GPADL, decides is how GPADL header is created.
+ *
+ * It doesn't make much difference between BUFFER and RING if PAGE_SIZE is the
+ * same as HV_HYP_PAGE_SIZE.
+ *
+ * If PAGE_SIZE is bigger than HV_HYP_PAGE_SIZE, the headers of ring buffers
+ * will be of PAGE_SIZE, however, only the first HV_HYP_PAGE will be put
+ * into gpadl, therefore the number for HV_HYP_PAGE and the indexes of each
+ * HV_HYP_PAGE will be different between different types of GPADL, for example
+ * if PAGE_SIZE is 64K:
+ *
+ * BUFFER:
+ *
+ * gva:    |--       64k      --|--       64k      --| ... |
+ * gpa:    | 4k | 4k | ... | 4k | 4k | 4k | ... | 4k |
+ * index:  0    1    2     15   16   17   18 .. 31   32 ...
+ *         |    |    ...   |    |    |   ...    |   ...
+ *         v    V          V    V    V          V
+ * gpadl:  | 4k | 4k | ... | 4k | 4k | 4k | ... | 4k | ... |
+ * index:  0    1    2 ... 15   16   17   18 .. 31   32 ...
+ *
+ * RING:
+ *
+ *         | header  |           data           | header  |     data      |
+ * gva:    |-- 64k --|--       64k      --| ... |-- 64k --|-- 64k --| ... |
+ * gpa:    | 4k | .. | 4k | 4k | ... | 4k | ... | 4k | .. | 4k | .. | ... |
+ * index:  0    1    16   17   18    31   ...   n   n+1  n+16 ...         2n
+ *         |         /    /          /          |         /               /
+ *         |        /    /          /           |        /               /
+ *         |       /    /   ...    /    ...     |       /      ...      /
+ *         |      /    /          /             |      /               /
+ *         |     /    /          /              |     /               /
+ *         V    V    V          V               V    V               v
+ * gpadl:  | 4k | 4k |   ...    |    ...        | 4k | 4k |  ...     |
+ * index:  0    1    2   ...    16   ...       n-15 n-14 n-13  ...  2n-30
+ */
+enum hv_gpadl_type {
+	HV_GPADL_BUFFER,
+	HV_GPADL_RING
+};
 
 /* Single-page buffer */
 struct hv_page_buffer {
@@ -111,14 +155,38 @@ struct hv_ring_buffer {
 	} feature_bits;
 
 	/* Pad it to PAGE_SIZE so that data starts on page boundary */
-	u8	reserved2[4028];
+	u8	reserved2[PAGE_SIZE - 68];
 
 	/*
 	 * Ring data starts here + RingDataStartOffset
 	 * !!! DO NOT place any fields below this !!!
 	 */
-	u8 buffer[0];
+	u8 buffer[];
 } __packed;
+
+
+/*
+ * If the requested ring buffer size is at least 8 times the size of the
+ * header, steal space from the ring buffer for the header. Otherwise, add
+ * space for the header so that is doesn't take too much of the ring buffer
+ * space.
+ *
+ * The factor of 8 is somewhat arbitrary. The goal is to prevent adding a
+ * relatively small header (4 Kbytes on x86) to a large-ish power-of-2 ring
+ * buffer size (such as 128 Kbytes) and so end up making a nearly twice as
+ * large allocation that will be almost half wasted. As a contrasting example,
+ * on ARM64 with 64 Kbyte page size, we don't want to take 64 Kbytes for the
+ * header from a 128 Kbyte allocation, leaving only 64 Kbytes for the ring.
+ * In this latter case, we must add 64 Kbytes for the header and not worry
+ * about what's wasted.
+ */
+#define VMBUS_HEADER_ADJ(payload_sz) \
+	((payload_sz) >=  8 * sizeof(struct hv_ring_buffer) ? \
+	0 : sizeof(struct hv_ring_buffer))
+
+/* Calculate the proper size of a ringbuffer, it must be page-aligned */
+#define VMBUS_RING_SIZE(payload_sz) PAGE_ALIGN(VMBUS_HEADER_ADJ(payload_sz) + \
+					       (payload_sz))
 
 struct hv_ring_buffer_info {
 	struct hv_ring_buffer *ring_buffer;
@@ -182,19 +250,21 @@ static inline u32 hv_get_avail_to_write_percent(
  * 2 . 4  (Windows 8)
  * 3 . 0  (Windows 8 R2)
  * 4 . 0  (Windows 10)
+ * 4 . 1  (Windows 10 RS3)
  * 5 . 0  (Newer Windows 10)
+ * 5 . 1  (Windows 10 RS4)
+ * 5 . 2  (Windows Server 2019, RS5)
  */
 
 #define VERSION_WS2008  ((0 << 16) | (13))
 #define VERSION_WIN7    ((1 << 16) | (1))
 #define VERSION_WIN8    ((2 << 16) | (4))
 #define VERSION_WIN8_1    ((3 << 16) | (0))
-#define VERSION_WIN10	((4 << 16) | (0))
+#define VERSION_WIN10 ((4 << 16) | (0))
+#define VERSION_WIN10_V4_1 ((4 << 16) | (1))
 #define VERSION_WIN10_V5 ((5 << 16) | (0))
-
-#define VERSION_INVAL -1
-
-#define VERSION_CURRENT VERSION_WIN10_V5
+#define VERSION_WIN10_V5_1 ((5 << 16) | (1))
+#define VERSION_WIN10_V5_2 ((5 << 16) | (2))
 
 /* Make maximum size of pipe payload of 16K */
 #define MAX_PIPE_DATA_PAYLOAD		(sizeof(u8) * 16384)
@@ -311,7 +381,7 @@ struct vmadd_remove_transfer_page_set {
 struct gpa_range {
 	u32 byte_count;
 	u32 byte_offset;
-	u64 pfn_array[0];
+	u64 pfn_array[];
 };
 
 /*
@@ -423,7 +493,7 @@ enum vmbus_channel_message_type {
 	CHANNELMSG_19				= 19,
 	CHANNELMSG_20				= 20,
 	CHANNELMSG_TL_CONNECT_REQUEST		= 21,
-	CHANNELMSG_22				= 22,
+	CHANNELMSG_MODIFYCHANNEL		= 22,
 	CHANNELMSG_TL_CONNECT_RESULT		= 23,
 	CHANNELMSG_COUNT
 };
@@ -561,7 +631,7 @@ struct vmbus_channel_gpadl_header {
 	u32 gpadl;
 	u16 range_buflen;
 	u16 rangecount;
-	struct gpa_range range[0];
+	struct gpa_range range[];
 } __packed;
 
 /* This is the followup packet that contains more PFNs. */
@@ -569,7 +639,7 @@ struct vmbus_channel_gpadl_body {
 	struct vmbus_channel_message_header header;
 	u32 msgnumber;
 	u32 gpadl;
-	u64 pfn[0];
+	u64 pfn[];
 } __packed;
 
 struct vmbus_channel_gpadl_created {
@@ -616,6 +686,13 @@ struct vmbus_channel_tl_connect_request {
 	struct vmbus_channel_message_header header;
 	guid_t guest_endpoint_id;
 	guid_t host_service_id;
+} __packed;
+
+/* Modify Channel parameters, cf. vmbus_send_modifychannel() */
+struct vmbus_channel_modifychannel {
+	struct vmbus_channel_message_header header;
+	u32 child_relid;
+	u32 target_vp;
 } __packed;
 
 struct vmbus_channel_version_response {
@@ -670,7 +747,7 @@ struct vmbus_channel_msginfo {
 	 * The channel message that goes out on the "wire".
 	 * It will contain at minimum the VMBUS_CHANNEL_MESSAGE_HEADER header
 	 */
-	unsigned char msg[0];
+	unsigned char msg[];
 };
 
 struct vmbus_close_msg {
@@ -685,11 +762,6 @@ union hv_connection_id {
 		u32 id:24;
 		u32 reserved:8;
 	} u;
-};
-
-enum hv_numa_policy {
-	HV_BALANCED = 0,
-	HV_LOCALIZED,
 };
 
 enum vmbus_device_type {
@@ -712,7 +784,26 @@ enum vmbus_device_type {
 	HV_UNKNOWN,
 };
 
+/*
+ * Provides request ids for VMBus. Encapsulates guest memory
+ * addresses and stores the next available slot in req_arr
+ * to generate new ids in constant time.
+ */
+struct vmbus_requestor {
+	u64 *req_arr;
+	unsigned long *req_bitmap; /* is a given slot available? */
+	u32 size;
+	u64 next_request_id;
+	spinlock_t req_lock; /* provides atomicity */
+};
+
+#define VMBUS_NO_RQSTOR U64_MAX
+#define VMBUS_RQST_ERROR (U64_MAX - 1)
+#define VMBUS_RQST_ID_NO_RESPONSE (U64_MAX - 2)
+
 struct vmbus_device {
+	/* preferred ring buffer size in KB, 0 means no preferred size for this device */
+	size_t pref_ring_size;
 	u16  dev_type;
 	guid_t guid;
 	bool perf_device;
@@ -769,6 +860,15 @@ struct vmbus_channel {
 	void (*onchannel_callback)(void *context);
 	void *channel_callback_context;
 
+	void (*change_target_cpu_callback)(struct vmbus_channel *channel,
+			u32 old, u32 new);
+
+	/*
+	 * Synchronize channel scheduling and channel removal; see the inline
+	 * comments in vmbus_chan_sched() and vmbus_reset_channel_cb().
+	 */
+	spinlock_t sched_lock;
+
 	/*
 	 * A channel can be marked for one of three modes of reading:
 	 *   BATCHED - callback called from taslket and should read
@@ -790,21 +890,15 @@ struct vmbus_channel {
 	u64 sig_event;
 
 	/*
-	 * Starting with win8, this field will be used to specify
-	 * the target virtual processor on which to deliver the interrupt for
-	 * the host to guest communication.
-	 * Prior to win8, incoming channel interrupts would only
-	 * be delivered on cpu 0. Setting this value to 0 would
-	 * preserve the earlier behavior.
+	 * Starting with win8, this field will be used to specify the
+	 * target CPU on which to deliver the interrupt for the host
+	 * to guest communication.
+	 *
+	 * Prior to win8, incoming channel interrupts would only be
+	 * delivered on CPU 0. Setting this value to 0 would preserve
+	 * the earlier behavior.
 	 */
-	u32 target_vp;
-	/* The corresponding CPUID in the guest */
 	u32 target_cpu;
-	/*
-	 * State to manage the CPU affiliation of channels.
-	 */
-	struct cpumask alloced_cpus_in_node;
-	int numa_node;
 	/*
 	 * Support for sub-channels. For high performance devices,
 	 * it will be useful to have multiple sub-channels to support
@@ -834,12 +928,6 @@ struct vmbus_channel {
 	void (*chn_rescind_callback)(struct vmbus_channel *channel);
 
 	/*
-	 * The spinlock to protect the structure. It is being used to protect
-	 * test-and-set access to various attributes of the structure as well
-	 * as all sc_list operations.
-	 */
-	spinlock_t lock;
-	/*
 	 * All Sub-channels of a primary channel are linked here.
 	 */
 	struct list_head sc_list;
@@ -852,11 +940,6 @@ struct vmbus_channel {
 	 * Support per-channel state for use by vmbus drivers.
 	 */
 	void *per_channel_state;
-	/*
-	 * To support per-cpu lookup mapping of relid to channel,
-	 * link up channels based on their CPU affinity.
-	 */
-	struct list_head percpu_list;
 
 	/*
 	 * Defer freeing channel until after all cpu's have
@@ -895,19 +978,14 @@ struct vmbus_channel {
 	 */
 	bool low_latency;
 
-	/*
-	 * NUMA distribution policy:
-	 * We support two policies:
-	 * 1) Balanced: Here all performance critical channels are
-	 *    distributed evenly amongst all the NUMA nodes.
-	 *    This policy will be the default policy.
-	 * 2) Localized: All channels of a given instance of a
-	 *    performance critical service will be assigned CPUs
-	 *    within a selected NUMA node.
-	 */
-	enum hv_numa_policy affinity_policy;
-
 	bool probe_done;
+
+	/*
+	 * Cache the device ID here for easy access; this is useful, in
+	 * particular, in situations where the channel's device_obj has
+	 * not been allocated/initialized yet.
+	 */
+	u16 device_id;
 
 	/*
 	 * We must offload the handling of the primary/sub channels
@@ -934,7 +1012,28 @@ struct vmbus_channel {
 	 * full outbound ring buffer.
 	 */
 	u64 out_full_first;
+
+	/* enabling/disabling fuzz testing on the channel (default is false)*/
+	bool fuzz_testing_state;
+
+	/*
+	 * Interrupt delay will delay the guest from emptying the ring buffer
+	 * for a specific amount of time. The delay is in microseconds and will
+	 * be between 1 to a maximum of 1000, its default is 0 (no delay).
+	 * The  Message delay will delay guest reading on a per message basis
+	 * in microseconds between 1 to 1000 with the default being 0
+	 * (no delay).
+	 */
+	u32 fuzz_testing_interrupt_delay;
+	u32 fuzz_testing_message_delay;
+
+	/* request/transaction ids for VMBus */
+	struct vmbus_requestor requestor;
+	u32 rqstor_size;
 };
+
+u64 vmbus_next_request_id(struct vmbus_requestor *rqstor, u64 rqst_addr);
+u64 vmbus_request_addr(struct vmbus_requestor *rqstor, u64 trans_id);
 
 static inline bool is_hvsock_channel(const struct vmbus_channel *c)
 {
@@ -945,12 +1044,6 @@ static inline bool is_hvsock_channel(const struct vmbus_channel *c)
 static inline bool is_sub_channel(const struct vmbus_channel *c)
 {
 	return c->offermsg.offer.sub_channel_index != 0;
-}
-
-static inline void set_channel_affinity_state(struct vmbus_channel *c,
-					      enum hv_numa_policy policy)
-{
-	c->affinity_policy = policy;
 }
 
 static inline void set_channel_read_mode(struct vmbus_channel *c,
@@ -1000,7 +1093,7 @@ static inline void clear_low_latency_mode(struct vmbus_channel *c)
 	c->low_latency = false;
 }
 
-void vmbus_onmessage(void *context);
+void vmbus_onmessage(struct vmbus_channel_message_header *hdr);
 
 int vmbus_request_offers(void);
 
@@ -1182,6 +1275,10 @@ struct hv_device {
 
 	struct vmbus_channel *channel;
 	struct kset	     *channels_kset;
+
+	/* place holder to keep track of the dir for hv device in debugfs */
+	struct dentry *debug_dir;
+
 };
 
 
@@ -1216,6 +1313,8 @@ struct hv_ring_buffer_debug_info {
 
 int hv_ringbuffer_get_debuginfo(struct hv_ring_buffer_info *ring_info,
 				struct hv_ring_buffer_debug_info *debug_info);
+
+bool hv_ringbuffer_spinlock_busy(struct vmbus_channel *channel);
 
 /* Vmbus interface */
 #define vmbus_driver_register(driver)	\
@@ -1413,7 +1512,10 @@ struct hv_util_service {
 	void *channel;
 	void (*util_cb)(void *);
 	int (*util_init)(struct hv_util_service *);
+	int (*util_init_transport)(void);
 	void (*util_deinit)(void);
+	int (*util_pre_suspend)(void);
+	int (*util_pre_resume)(void);
 };
 
 struct vmbuspipe_hdr {
@@ -1508,6 +1610,7 @@ extern __u32 vmbus_proto_version;
 
 int vmbus_send_tl_connect_request(const guid_t *shv_guest_servie_id,
 				  const guid_t *shv_host_servie_id);
+int vmbus_send_modifychannel(u32 child_relid, u32 target_vp);
 void vmbus_set_event(struct vmbus_channel *channel);
 
 /* Get the start of the ring buffer. */
@@ -1622,5 +1725,23 @@ struct hyperv_pci_block_ops {
 };
 
 extern struct hyperv_pci_block_ops hvpci_block_ops;
+
+static inline unsigned long virt_to_hvpfn(void *addr)
+{
+	phys_addr_t paddr;
+
+	if (is_vmalloc_addr(addr))
+		paddr = page_to_phys(vmalloc_to_page(addr)) +
+				     offset_in_page(addr);
+	else
+		paddr = __pa(addr);
+
+	return  paddr >> HV_HYP_PAGE_SHIFT;
+}
+
+#define NR_HV_HYP_PAGES_IN_PAGE	(PAGE_SIZE / HV_HYP_PAGE_SIZE)
+#define offset_in_hvpage(ptr)	((unsigned long)(ptr) & ~HV_HYP_PAGE_MASK)
+#define HVPFN_UP(x)	(((x) + HV_HYP_PAGE_SIZE-1) >> HV_HYP_PAGE_SHIFT)
+#define page_to_hvpfn(page)	(page_to_pfn(page) * NR_HV_HYP_PAGES_IN_PAGE)
 
 #endif /* _HYPERV_H */

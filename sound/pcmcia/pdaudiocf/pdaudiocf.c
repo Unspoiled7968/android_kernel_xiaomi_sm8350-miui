@@ -82,7 +82,7 @@ static int snd_pdacf_probe(struct pcmcia_device *link)
 	int i, err;
 	struct snd_pdacf *pdacf;
 	struct snd_card *card;
-	static struct snd_device_ops ops = {
+	static const struct snd_device_ops ops = {
 		.dev_free =	snd_pdacf_dev_free,
 	};
 
@@ -133,12 +133,19 @@ static int snd_pdacf_probe(struct pcmcia_device *link)
 	link->config_index = 1;
 	link->config_regs = PRESENT_OPTION;
 
-	return pdacf_config(link);
+	err = pdacf_config(link);
+	if (err < 0) {
+		card_list[i] = NULL;
+		snd_card_free(card);
+		return err;
+	}
+	return 0;
 }
 
 
 /**
  * snd_pdacf_assign_resources - initialize the hardware and card instance.
+ * @pdacf: context
  * @port: i/o port for the card
  * @irq: irq number for the card
  *
@@ -224,6 +231,7 @@ static int pdacf_config(struct pcmcia_device *link)
 					link->irq) < 0)
 		goto failed;
 
+	pdacf->card->sync_irq = link->irq;
 	return 0;
 
  failed:

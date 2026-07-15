@@ -1,6 +1,5 @@
 /* SPDX-License-Identifier: MIT
  * Copyright (C) 2018 Intel Corp.
- * Copyright (C) 2021 XiaoMi, Inc.
  *
  * Authors:
  * Manasi Navare <manasi.d.navare@intel.com>
@@ -247,10 +246,6 @@ struct drm_dsc_config {
 	 * @dsc_version_major: DSC major version
 	 */
 	u8 dsc_version_major;
-	/**
-	 * @dsc_panel_id: panel vendor
-	 */
-	u64 dsc_panel_id;
 	/**
 	 * @native_422: True if Native 4:2:2 supported, else false
 	 */
@@ -593,7 +588,7 @@ struct drm_dsc_picture_parameter_set {
  * This structure represents the DSC PPS infoframe required to send the Picture
  * Parameter Set metadata required before enabling VESA Display Stream
  * Compression. This is based on the DP Secondary Data Packet structure and
- * comprises of SDP Header as defined &struct struct dp_sdp_header in drm_dp_helper.h
+ * comprises of SDP Header as defined &struct dp_sdp_header in drm_dp_helper.h
  * and PPS payload defined in &struct drm_dsc_picture_parameter_set.
  *
  * @pps_header: Header for PPS as per DP SDP header format of type

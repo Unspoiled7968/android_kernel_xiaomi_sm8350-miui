@@ -561,7 +561,7 @@
 	transpose_4x4(x0, x1, x2, x3, t0, t1, t2)
 
 .align 8
-__serpent_enc_blk16:
+SYM_FUNC_START_LOCAL(__serpent_enc_blk16)
 	/* input:
 	 *	%rdi: ctx, CTX
 	 *	RA1, RB1, RC1, RD1, RA2, RB2, RC2, RD2: plaintext
@@ -611,11 +611,11 @@ __serpent_enc_blk16:
 	write_blocks(RA1, RB1, RC1, RD1, RK0, RK1, RK2);
 	write_blocks(RA2, RB2, RC2, RD2, RK0, RK1, RK2);
 
-	ret;
-ENDPROC(__serpent_enc_blk16)
+	RET;
+SYM_FUNC_END(__serpent_enc_blk16)
 
 .align 8
-__serpent_dec_blk16:
+SYM_FUNC_START_LOCAL(__serpent_dec_blk16)
 	/* input:
 	 *	%rdi: ctx, CTX
 	 *	RA1, RB1, RC1, RD1, RA2, RB2, RC2, RD2: ciphertext
@@ -665,10 +665,10 @@ __serpent_dec_blk16:
 	write_blocks(RC1, RD1, RB1, RE1, RK0, RK1, RK2);
 	write_blocks(RC2, RD2, RB2, RE2, RK0, RK1, RK2);
 
-	ret;
-ENDPROC(__serpent_dec_blk16)
+	RET;
+SYM_FUNC_END(__serpent_dec_blk16)
 
-ENTRY(serpent_ecb_enc_16way)
+SYM_FUNC_START(serpent_ecb_enc_16way)
 	/* input:
 	 *	%rdi: ctx, CTX
 	 *	%rsi: dst
@@ -687,10 +687,10 @@ ENTRY(serpent_ecb_enc_16way)
 	vzeroupper;
 
 	FRAME_END
-	ret;
-ENDPROC(serpent_ecb_enc_16way)
+	RET;
+SYM_FUNC_END(serpent_ecb_enc_16way)
 
-ENTRY(serpent_ecb_dec_16way)
+SYM_FUNC_START(serpent_ecb_dec_16way)
 	/* input:
 	 *	%rdi: ctx, CTX
 	 *	%rsi: dst
@@ -709,10 +709,10 @@ ENTRY(serpent_ecb_dec_16way)
 	vzeroupper;
 
 	FRAME_END
-	ret;
-ENDPROC(serpent_ecb_dec_16way)
+	RET;
+SYM_FUNC_END(serpent_ecb_dec_16way)
 
-ENTRY(serpent_cbc_dec_16way)
+SYM_FUNC_START(serpent_cbc_dec_16way)
 	/* input:
 	 *	%rdi: ctx, CTX
 	 *	%rsi: dst
@@ -732,10 +732,10 @@ ENTRY(serpent_cbc_dec_16way)
 	vzeroupper;
 
 	FRAME_END
-	ret;
-ENDPROC(serpent_cbc_dec_16way)
+	RET;
+SYM_FUNC_END(serpent_cbc_dec_16way)
 
-ENTRY(serpent_ctr_16way)
+SYM_FUNC_START(serpent_ctr_16way)
 	/* input:
 	 *	%rdi: ctx, CTX
 	 *	%rsi: dst (16 blocks)
@@ -757,10 +757,10 @@ ENTRY(serpent_ctr_16way)
 	vzeroupper;
 
 	FRAME_END
-	ret;
-ENDPROC(serpent_ctr_16way)
+	RET;
+SYM_FUNC_END(serpent_ctr_16way)
 
-ENTRY(serpent_xts_enc_16way)
+SYM_FUNC_START(serpent_xts_enc_16way)
 	/* input:
 	 *	%rdi: ctx, CTX
 	 *	%rsi: dst (16 blocks)
@@ -783,10 +783,10 @@ ENTRY(serpent_xts_enc_16way)
 	vzeroupper;
 
 	FRAME_END
-	ret;
-ENDPROC(serpent_xts_enc_16way)
+	RET;
+SYM_FUNC_END(serpent_xts_enc_16way)
 
-ENTRY(serpent_xts_dec_16way)
+SYM_FUNC_START(serpent_xts_dec_16way)
 	/* input:
 	 *	%rdi: ctx, CTX
 	 *	%rsi: dst (16 blocks)
@@ -809,5 +809,5 @@ ENTRY(serpent_xts_dec_16way)
 	vzeroupper;
 
 	FRAME_END
-	ret;
-ENDPROC(serpent_xts_dec_16way)
+	RET;
+SYM_FUNC_END(serpent_xts_dec_16way)

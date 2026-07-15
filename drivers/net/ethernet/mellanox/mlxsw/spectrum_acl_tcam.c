@@ -29,70 +29,6 @@ size_t mlxsw_sp_acl_tcam_priv_size(struct mlxsw_sp *mlxsw_sp)
 #define MLXSW_SP_ACL_TCAM_VREGION_REHASH_INTRVL_MIN 3000 /* ms */
 #define MLXSW_SP_ACL_TCAM_VREGION_REHASH_CREDITS 100 /* number of entries */
 
-int mlxsw_sp_acl_tcam_init(struct mlxsw_sp *mlxsw_sp,
-			   struct mlxsw_sp_acl_tcam *tcam)
-{
-	const struct mlxsw_sp_acl_tcam_ops *ops = mlxsw_sp->acl_tcam_ops;
-	u64 max_tcam_regions;
-	u64 max_regions;
-	u64 max_groups;
-	size_t alloc_size;
-	int err;
-
-	mutex_init(&tcam->lock);
-	tcam->vregion_rehash_intrvl =
-			MLXSW_SP_ACL_TCAM_VREGION_REHASH_INTRVL_DFLT;
-	INIT_LIST_HEAD(&tcam->vregion_list);
-
-	max_tcam_regions = MLXSW_CORE_RES_GET(mlxsw_sp->core,
-					      ACL_MAX_TCAM_REGIONS);
-	max_regions = MLXSW_CORE_RES_GET(mlxsw_sp->core, ACL_MAX_REGIONS);
-
-	/* Use 1:1 mapping between ACL region and TCAM region */
-	if (max_tcam_regions < max_regions)
-		max_regions = max_tcam_regions;
-
-	alloc_size = sizeof(tcam->used_regions[0]) * BITS_TO_LONGS(max_regions);
-	tcam->used_regions = kzalloc(alloc_size, GFP_KERNEL);
-	if (!tcam->used_regions)
-		return -ENOMEM;
-	tcam->max_regions = max_regions;
-
-	max_groups = MLXSW_CORE_RES_GET(mlxsw_sp->core, ACL_MAX_GROUPS);
-	alloc_size = sizeof(tcam->used_groups[0]) * BITS_TO_LONGS(max_groups);
-	tcam->used_groups = kzalloc(alloc_size, GFP_KERNEL);
-	if (!tcam->used_groups) {
-		err = -ENOMEM;
-		goto err_alloc_used_groups;
-	}
-	tcam->max_groups = max_groups;
-	tcam->max_group_size = MLXSW_CORE_RES_GET(mlxsw_sp->core,
-						 ACL_MAX_GROUP_SIZE);
-
-	err = ops->init(mlxsw_sp, tcam->priv, tcam);
-	if (err)
-		goto err_tcam_init;
-
-	return 0;
-
-err_tcam_init:
-	kfree(tcam->used_groups);
-err_alloc_used_groups:
-	kfree(tcam->used_regions);
-	return err;
-}
-
-void mlxsw_sp_acl_tcam_fini(struct mlxsw_sp *mlxsw_sp,
-			    struct mlxsw_sp_acl_tcam *tcam)
-{
-	const struct mlxsw_sp_acl_tcam_ops *ops = mlxsw_sp->acl_tcam_ops;
-
-	mutex_destroy(&tcam->lock);
-	ops->fini(mlxsw_sp, tcam->priv);
-	kfree(tcam->used_groups);
-	kfree(tcam->used_regions);
-}
-
 int mlxsw_sp_acl_tcam_priority_get(struct mlxsw_sp *mlxsw_sp,
 				   struct mlxsw_sp_acl_rule_info *rulei,
 				   u32 *priority, bool fillup_priority)
@@ -179,6 +115,8 @@ struct mlxsw_sp_acl_tcam_vgroup {
 	bool tmplt_elusage_set;
 	struct mlxsw_afk_element_usage tmplt_elusage;
 	bool vregion_rehash_enabled;
+	unsigned int *p_min_prio;
+	unsigned int *p_max_prio;
 };
 
 struct mlxsw_sp_acl_tcam_rehash_ctx {
@@ -224,7 +162,7 @@ struct mlxsw_sp_acl_tcam_vchunk;
 struct mlxsw_sp_acl_tcam_chunk {
 	struct mlxsw_sp_acl_tcam_vchunk *vchunk;
 	struct mlxsw_sp_acl_tcam_region *region;
-	unsigned long priv[0];
+	unsigned long priv[];
 	/* priv has to be always the last item */
 };
 
@@ -243,7 +181,7 @@ struct mlxsw_sp_acl_tcam_vchunk {
 struct mlxsw_sp_acl_tcam_entry {
 	struct mlxsw_sp_acl_tcam_ventry *ventry;
 	struct mlxsw_sp_acl_tcam_chunk *chunk;
-	unsigned long priv[0];
+	unsigned long priv[];
 	/* priv has to be always the last item */
 };
 
@@ -317,13 +255,17 @@ mlxsw_sp_acl_tcam_vgroup_add(struct mlxsw_sp *mlxsw_sp,
 			     const struct mlxsw_sp_acl_tcam_pattern *patterns,
 			     unsigned int patterns_count,
 			     struct mlxsw_afk_element_usage *tmplt_elusage,
-			     bool vregion_rehash_enabled)
+			     bool vregion_rehash_enabled,
+			     unsigned int *p_min_prio,
+			     unsigned int *p_max_prio)
 {
 	int err;
 
 	vgroup->patterns = patterns;
 	vgroup->patterns_count = patterns_count;
 	vgroup->vregion_rehash_enabled = vregion_rehash_enabled;
+	vgroup->p_min_prio = p_min_prio;
+	vgroup->p_max_prio = p_max_prio;
 
 	if (tmplt_elusage) {
 		vgroup->tmplt_elusage_set = true;
@@ -415,6 +357,21 @@ mlxsw_sp_acl_tcam_vregion_max_prio(struct mlxsw_sp_acl_tcam_vregion *vregion)
 	vchunk = list_last_entry(&vregion->vchunk_list,
 				 typeof(*vchunk), list);
 	return vchunk->priority;
+}
+
+static void
+mlxsw_sp_acl_tcam_vgroup_prio_update(struct mlxsw_sp_acl_tcam_vgroup *vgroup)
+{
+	struct mlxsw_sp_acl_tcam_vregion *vregion;
+
+	if (list_empty(&vgroup->vregion_list))
+		return;
+	vregion = list_first_entry(&vgroup->vregion_list,
+				   typeof(*vregion), list);
+	*vgroup->p_min_prio = mlxsw_sp_acl_tcam_vregion_prio(vregion);
+	vregion = list_last_entry(&vgroup->vregion_list,
+				  typeof(*vregion), list);
+	*vgroup->p_max_prio = mlxsw_sp_acl_tcam_vregion_max_prio(vregion);
 }
 
 static int
@@ -1053,6 +1010,7 @@ mlxsw_sp_acl_tcam_vchunk_create(struct mlxsw_sp *mlxsw_sp,
 	}
 	list_add_tail(&vchunk->list, pos);
 	mutex_unlock(&vregion->lock);
+	mlxsw_sp_acl_tcam_vgroup_prio_update(vgroup);
 
 	return vchunk;
 
@@ -1084,6 +1042,7 @@ mlxsw_sp_acl_tcam_vchunk_destroy(struct mlxsw_sp *mlxsw_sp,
 			       mlxsw_sp_acl_tcam_vchunk_ht_params);
 	mlxsw_sp_acl_tcam_vregion_put(mlxsw_sp, vchunk->vregion);
 	kfree(vchunk);
+	mlxsw_sp_acl_tcam_vgroup_prio_update(vgroup);
 }
 
 static struct mlxsw_sp_acl_tcam_vchunk *
@@ -1558,6 +1517,73 @@ mlxsw_sp_acl_tcam_vregion_rehash(struct mlxsw_sp *mlxsw_sp,
 		mlxsw_sp_acl_tcam_vregion_rehash_end(mlxsw_sp, vregion, ctx);
 }
 
+int mlxsw_sp_acl_tcam_init(struct mlxsw_sp *mlxsw_sp,
+			   struct mlxsw_sp_acl_tcam *tcam)
+{
+	const struct mlxsw_sp_acl_tcam_ops *ops = mlxsw_sp->acl_tcam_ops;
+	u64 max_tcam_regions;
+	u64 max_regions;
+	u64 max_groups;
+	int err;
+
+	mutex_init(&tcam->lock);
+	tcam->vregion_rehash_intrvl =
+			MLXSW_SP_ACL_TCAM_VREGION_REHASH_INTRVL_DFLT;
+	INIT_LIST_HEAD(&tcam->vregion_list);
+
+	max_tcam_regions = MLXSW_CORE_RES_GET(mlxsw_sp->core,
+					      ACL_MAX_TCAM_REGIONS);
+	max_regions = MLXSW_CORE_RES_GET(mlxsw_sp->core, ACL_MAX_REGIONS);
+
+	/* Use 1:1 mapping between ACL region and TCAM region */
+	if (max_tcam_regions < max_regions)
+		max_regions = max_tcam_regions;
+
+	tcam->used_regions = bitmap_zalloc(max_regions, GFP_KERNEL);
+	if (!tcam->used_regions) {
+		err = -ENOMEM;
+		goto err_alloc_used_regions;
+	}
+	tcam->max_regions = max_regions;
+
+	max_groups = MLXSW_CORE_RES_GET(mlxsw_sp->core, ACL_MAX_GROUPS);
+	tcam->used_groups = bitmap_zalloc(max_groups, GFP_KERNEL);
+	if (!tcam->used_groups) {
+		err = -ENOMEM;
+		goto err_alloc_used_groups;
+	}
+	tcam->max_groups = max_groups;
+	tcam->max_group_size = MLXSW_CORE_RES_GET(mlxsw_sp->core,
+						  ACL_MAX_GROUP_SIZE);
+	tcam->max_group_size = min_t(unsigned int, tcam->max_group_size,
+				     MLXSW_REG_PAGT_ACL_MAX_NUM);
+
+	err = ops->init(mlxsw_sp, tcam->priv, tcam);
+	if (err)
+		goto err_tcam_init;
+
+	return 0;
+
+err_tcam_init:
+	bitmap_free(tcam->used_groups);
+err_alloc_used_groups:
+	bitmap_free(tcam->used_regions);
+err_alloc_used_regions:
+	mutex_destroy(&tcam->lock);
+	return err;
+}
+
+void mlxsw_sp_acl_tcam_fini(struct mlxsw_sp *mlxsw_sp,
+			    struct mlxsw_sp_acl_tcam *tcam)
+{
+	const struct mlxsw_sp_acl_tcam_ops *ops = mlxsw_sp->acl_tcam_ops;
+
+	ops->fini(mlxsw_sp, tcam->priv);
+	bitmap_free(tcam->used_groups);
+	bitmap_free(tcam->used_regions);
+	mutex_destroy(&tcam->lock);
+}
+
 static const enum mlxsw_afk_element mlxsw_sp_acl_tcam_pattern_ipv4[] = {
 	MLXSW_AFK_ELEMENT_SRC_SYS_PORT,
 	MLXSW_AFK_ELEMENT_DMAC_32_47,
@@ -1619,14 +1645,17 @@ static int
 mlxsw_sp_acl_tcam_flower_ruleset_add(struct mlxsw_sp *mlxsw_sp,
 				     struct mlxsw_sp_acl_tcam *tcam,
 				     void *ruleset_priv,
-				     struct mlxsw_afk_element_usage *tmplt_elusage)
+				     struct mlxsw_afk_element_usage *tmplt_elusage,
+				     unsigned int *p_min_prio,
+				     unsigned int *p_max_prio)
 {
 	struct mlxsw_sp_acl_tcam_flower_ruleset *ruleset = ruleset_priv;
 
 	return mlxsw_sp_acl_tcam_vgroup_add(mlxsw_sp, tcam, &ruleset->vgroup,
 					    mlxsw_sp_acl_tcam_patterns,
 					    MLXSW_SP_ACL_TCAM_PATTERNS_COUNT,
-					    tmplt_elusage, true);
+					    tmplt_elusage, true,
+					    p_min_prio, p_max_prio);
 }
 
 static void
@@ -1735,7 +1764,9 @@ static int
 mlxsw_sp_acl_tcam_mr_ruleset_add(struct mlxsw_sp *mlxsw_sp,
 				 struct mlxsw_sp_acl_tcam *tcam,
 				 void *ruleset_priv,
-				 struct mlxsw_afk_element_usage *tmplt_elusage)
+				 struct mlxsw_afk_element_usage *tmplt_elusage,
+				 unsigned int *p_min_prio,
+				 unsigned int *p_max_prio)
 {
 	struct mlxsw_sp_acl_tcam_mr_ruleset *ruleset = ruleset_priv;
 	int err;
@@ -1743,7 +1774,8 @@ mlxsw_sp_acl_tcam_mr_ruleset_add(struct mlxsw_sp *mlxsw_sp,
 	err = mlxsw_sp_acl_tcam_vgroup_add(mlxsw_sp, tcam, &ruleset->vgroup,
 					   mlxsw_sp_acl_tcam_patterns,
 					   MLXSW_SP_ACL_TCAM_PATTERNS_COUNT,
-					   tmplt_elusage, false);
+					   tmplt_elusage, false,
+					   p_min_prio, p_max_prio);
 	if (err)
 		return err;
 

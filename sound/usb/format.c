@@ -61,6 +61,8 @@ static u64 parse_audio_format_i_type(struct snd_usb_audio *chip,
 			pcm_formats |= SNDRV_PCM_FMTBIT_SPECIAL;
 			/* flag potentially raw DSD capable altsettings */
 			fp->dsd_raw = true;
+			/* clear special format bit to avoid "unsupported format" msg below */
+			format &= ~UAC2_FORMAT_TYPE_I_RAW_DATA;
 		}
 
 		format <<= 1;
@@ -72,8 +74,11 @@ static u64 parse_audio_format_i_type(struct snd_usb_audio *chip,
 		sample_width = as->bBitResolution;
 		sample_bytes = as->bSubslotSize;
 
-		if (format & UAC3_FORMAT_TYPE_I_RAW_DATA)
+		if (format & UAC3_FORMAT_TYPE_I_RAW_DATA) {
 			pcm_formats |= SNDRV_PCM_FMTBIT_SPECIAL;
+			/* clear special format bit to avoid "unsupported format" msg below */
+			format &= ~UAC3_FORMAT_TYPE_I_RAW_DATA;
+		}
 
 		format <<= 1;
 		break;
@@ -157,6 +162,19 @@ static u64 parse_audio_format_i_type(struct snd_usb_audio *chip,
 	return pcm_formats;
 }
 
+static int set_fixed_rate(struct audioformat *fp, int rate, int rate_bits)
+{
+	kfree(fp->rate_table);
+	fp->rate_table = kmalloc(sizeof(int), GFP_KERNEL);
+	if (!fp->rate_table)
+		return -ENOMEM;
+	fp->nr_rates = 1;
+	fp->rate_min = rate;
+	fp->rate_max = rate;
+	fp->rates = rate_bits;
+	fp->rate_table[0] = rate;
+	return 0;
+}
 
 /*
  * parse the format descriptor and stores the possible sample rates
@@ -231,7 +249,46 @@ static int parse_audio_format_rates_v1(struct snd_usb_audio *chip, struct audiof
 		fp->rate_min = combine_triple(&fmt[offset + 1]);
 		fp->rate_max = combine_triple(&fmt[offset + 4]);
 	}
+
+	/* Jabra Evolve 65 headset */
+	if (chip->usb_id == USB_ID(0x0b0e, 0x030b) ||
+	    chip->usb_id == USB_ID(0x0b0e, 0x030c)) {
+		/* only 48kHz for playback while keeping 16kHz for capture */
+		if (fp->nr_rates != 1)
+			return set_fixed_rate(fp, 48000, SNDRV_PCM_RATE_48000);
+	}
+
 	return 0;
+}
+
+
+/*
+ * Presonus Studio 1810c supports a limited set of sampling
+ * rates per altsetting but reports the full set each time.
+ * If we don't filter out the unsupported rates and attempt
+ * to configure the card, it will hang refusing to do any
+ * further audio I/O until a hard reset is performed.
+ *
+ * The list of supported rates per altsetting (set of available
+ * I/O channels) is described in the owner's manual, section 2.2.
+ */
+static bool s1810c_valid_sample_rate(struct audioformat *fp,
+				     unsigned int rate)
+{
+	switch (fp->altsetting) {
+	case 1:
+		/* All ADAT ports available */
+		return rate <= 48000;
+	case 2:
+		/* Half of ADAT ports available */
+		return (rate == 88200 || rate == 96000);
+	case 3:
+		/* Analog I/O only (no S/PDIF nor ADAT) */
+		return rate >= 176400;
+	default:
+		return false;
+	}
+	return false;
 }
 
 /*
@@ -316,6 +373,12 @@ static int parse_uac2_sample_rate_range(struct snd_usb_audio *chip,
 		}
 
 		for (rate = min; rate <= max; rate += res) {
+
+			/* Filter out invalid rates on Presonus Studio 1810c */
+			if (chip->usb_id == USB_ID(0x194f, 0x010c) &&
+			    !s1810c_valid_sample_rate(fp, rate))
+				goto skip_rate;
+
 			/* Filter out invalid rates on Focusrite devices */
 			if (USB_ID_VENDOR(chip->usb_id) == 0x1235 &&
 			    !focusrite_valid_sample_rate(chip, fp, rate))
@@ -332,7 +395,7 @@ static int parse_uac2_sample_rate_range(struct snd_usb_audio *chip,
 			nr_rates++;
 			if (nr_rates >= MAX_NR_RATES) {
 				usb_audio_err(chip, "invalid uac2 rates\n");
-				break;
+				return nr_rates;
 			}
 
 skip_rate:
@@ -345,31 +408,26 @@ skip_rate:
 	return nr_rates;
 }
 
-/* Line6 Helix series don't support the UAC2_CS_RANGE usb function
- * call. Return a static table of known clock rates.
+/* Line6 Helix series and the Rode Rodecaster Pro don't support the
+ * UAC2_CS_RANGE usb function call. Return a static table of known
+ * clock rates.
  */
 static int line6_parse_audio_format_rates_quirk(struct snd_usb_audio *chip,
 						struct audioformat *fp)
 {
 	switch (chip->usb_id) {
-	case USB_ID(0x0E41, 0x4241): /* Line6 Helix */
-	case USB_ID(0x0E41, 0x4242): /* Line6 Helix Rack */
-	case USB_ID(0x0E41, 0x4244): /* Line6 Helix LT */
-	case USB_ID(0x0E41, 0x4246): /* Line6 HX-Stomp */
-	case USB_ID(0x0E41, 0x4248): /* Line6 Helix >= fw 2.82 */
-	case USB_ID(0x0E41, 0x4249): /* Line6 Helix Rack >= fw 2.82 */
-	case USB_ID(0x0E41, 0x424a): /* Line6 Helix LT >= fw 2.82 */
-		/* supported rates: 48Khz */
-		kfree(fp->rate_table);
-		fp->rate_table = kmalloc(sizeof(int), GFP_KERNEL);
-		if (!fp->rate_table)
-			return -ENOMEM;
-		fp->nr_rates = 1;
-		fp->rate_min = 48000;
-		fp->rate_max = 48000;
-		fp->rates = SNDRV_PCM_RATE_48000;
-		fp->rate_table[0] = 48000;
-		return 0;
+	case USB_ID(0x0e41, 0x4241): /* Line6 Helix */
+	case USB_ID(0x0e41, 0x4242): /* Line6 Helix Rack */
+	case USB_ID(0x0e41, 0x4244): /* Line6 Helix LT */
+	case USB_ID(0x0e41, 0x4246): /* Line6 HX-Stomp */
+	case USB_ID(0x0e41, 0x4253): /* Line6 HX-Stomp XL */
+	case USB_ID(0x0e41, 0x4247): /* Line6 Pod Go */
+	case USB_ID(0x0e41, 0x4248): /* Line6 Helix >= fw 2.82 */
+	case USB_ID(0x0e41, 0x4249): /* Line6 Helix Rack >= fw 2.82 */
+	case USB_ID(0x0e41, 0x424a): /* Line6 Helix LT >= fw 2.82 */
+	case USB_ID(0x0e41, 0x424b): /* Line6 Pod Go */
+	case USB_ID(0x19f7, 0x0011): /* Rode Rodecaster Pro */
+		return set_fixed_rate(fp, 48000, SNDRV_PCM_RATE_48000);
 	}
 
 	return -ENODEV;

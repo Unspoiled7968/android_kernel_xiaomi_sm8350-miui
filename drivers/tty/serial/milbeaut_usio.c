@@ -3,10 +3,6 @@
  * Copyright (C) 2018 Socionext Inc.
  */
 
-#if defined(CONFIG_SERIAL_MILBEAUT_USIO_CONSOLE) && defined(CONFIG_MAGIC_SYSRQ)
-#define SUPPORT_SYSRQ
-#endif
-
 #include <linux/clk.h>
 #include <linux/console.h>
 #include <linux/module.h>
@@ -527,7 +523,10 @@ static int mlb_usio_probe(struct platform_device *pdev)
 	}
 	port->membase = devm_ioremap(&pdev->dev, res->start,
 				resource_size(res));
-
+	if (!port->membase) {
+		ret = -ENOMEM;
+		goto failed;
+	}
 	ret = platform_get_irq_byname(pdev, "rx");
 	mlb_usio_irq[index][RX] = ret;
 
@@ -537,6 +536,7 @@ static int mlb_usio_probe(struct platform_device *pdev)
 	port->irq = mlb_usio_irq[index][RX];
 	port->uartclk = clk_get_rate(clk);
 	port->fifosize = 128;
+	port->has_sysrq = IS_ENABLED(CONFIG_SERIAL_MILBEAUT_USIO_CONSOLE);
 	port->iotype = UPIO_MEM32;
 	port->flags = UPF_BOOT_AUTOCONF | UPF_SPD_VHI;
 	port->line = index;

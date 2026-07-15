@@ -9,6 +9,7 @@
 #include <linux/kvm.h>
 #include <linux/kvm_host.h>
 #include <linux/kernel.h>
+#include <asm/lppaca.h>
 #include <asm/opal.h>
 #include <asm/mce.h>
 #include <asm/machdep.h>
@@ -244,7 +245,7 @@ long kvmppc_realmode_hmi_handler(void)
 {
 	bool resync_req;
 
-	__this_cpu_inc(irq_stat.hmi_exceptions);
+	local_paca->hmi_irqs++;
 
 	if (hmi_handle_debugtrig(NULL) >= 0)
 		return 1;

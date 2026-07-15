@@ -17,6 +17,7 @@
 #include <linux/tty.h>
 #include <linux/mutex.h>
 #include <linux/sysrq.h>
+#include <linux/android_kabi.h>
 #include <uapi/linux/serial_core.h>
 
 #ifdef CONFIG_SERIAL_CORE_CONSOLE
@@ -29,6 +30,7 @@
 struct uart_port;
 struct serial_struct;
 struct device;
+struct gpio_desc;
 
 /*
  * This structure describes all the operations that can be done on the
@@ -79,6 +81,9 @@ struct uart_ops {
 	void		(*poll_put_char)(struct uart_port *, unsigned char);
 	int		(*poll_get_char)(struct uart_port *);
 #endif
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
 };
 
 #define NO_POLL_CHAR		0x00ff0000
@@ -161,11 +166,6 @@ struct uart_port {
 	struct uart_icount	icount;			/* statistics */
 
 	struct console		*cons;			/* struct console, if any */
-#if defined(CONFIG_SERIAL_CORE_CONSOLE) || defined(SUPPORT_SYSRQ)
-	unsigned long		sysrq;			/* sysrq timeout */
-	unsigned int		sysrq_ch;		/* char for sysrq */
-#endif
-
 	/* flags must be updated while holding port mutex */
 	upf_t			flags;
 
@@ -244,15 +244,25 @@ struct uart_port {
 	resource_size_t		mapbase;		/* for ioremap */
 	resource_size_t		mapsize;
 	struct device		*dev;			/* parent device */
+
+	unsigned long		sysrq;			/* sysrq timeout */
+	unsigned int		sysrq_ch;		/* char for sysrq */
+	unsigned char		has_sysrq;
+	unsigned char		sysrq_seq;		/* index in sysrq_toggle_seq */
+
 	unsigned char		hub6;			/* this should be in the 8250 driver */
 	unsigned char		suspended;
-	unsigned char		unused[2];
+	unsigned char		console_reinit;
 	const char		*name;			/* port name */
 	struct attribute_group	*attr_group;		/* port specific attributes */
 	const struct attribute_group **tty_groups;	/* all attributes (serial core use only) */
 	struct serial_rs485     rs485;
+	struct gpio_desc	*rs485_term_gpio;	/* enable RS485 bus termination */
 	struct serial_iso7816   iso7816;
 	void			*private_data;		/* generic platform data pointer */
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
 };
 
 /**
@@ -411,6 +421,8 @@ struct uart_driver {
 	 */
 	struct uart_state	*state;
 	struct tty_driver	*tty_driver;
+
+	ANDROID_KABI_RESERVE(1);
 };
 
 void uart_write_wakeup(struct uart_port *port);
@@ -466,7 +478,7 @@ extern const struct earlycon_id *__earlycon_table_end[];
 		    .compatible = compat,				\
 		    .setup = fn  };					\
 	static const struct earlycon_id EARLYCON_USED_OR_UNUSED		\
-		__section(__earlycon_table)				\
+		__section("__earlycon_table")				\
 		* const __PASTE(__p, unique_id) = &unique_id
 
 #define OF_EARLYCON_DECLARE(_name, compat, fn)				\
@@ -486,6 +498,11 @@ int setup_earlycon(char *buf);
 static const bool earlycon_acpi_spcr_enable EARLYCON_USED_OR_UNUSED;
 static inline int setup_earlycon(char *buf) { return 0; }
 #endif
+
+static inline bool uart_console_enabled(struct uart_port *port)
+{
+	return uart_console(port) && (port->cons->flags & CON_ENABLED);
+}
 
 struct uart_port *uart_get_console(struct uart_port *ports, int nr,
 				   struct console *c);
@@ -556,37 +573,59 @@ extern void uart_handle_cts_change(struct uart_port *uport,
 extern void uart_insert_char(struct uart_port *port, unsigned int status,
 		 unsigned int overrun, unsigned int ch, unsigned int flag);
 
-#if defined(SUPPORT_SYSRQ) && defined(CONFIG_MAGIC_SYSRQ_SERIAL)
-static inline int
-uart_handle_sysrq_char(struct uart_port *port, unsigned int ch)
+void uart_xchar_out(struct uart_port *uport, int offset);
+
+#ifdef CONFIG_MAGIC_SYSRQ_SERIAL
+#define SYSRQ_TIMEOUT	(HZ * 5)
+
+bool uart_try_toggle_sysrq(struct uart_port *port, unsigned int ch);
+
+static inline int uart_handle_sysrq_char(struct uart_port *port, unsigned int ch)
 {
-	if (port->sysrq) {
-		if (ch && time_before(jiffies, port->sysrq)) {
+	if (!port->sysrq)
+		return 0;
+
+	if (ch && time_before(jiffies, port->sysrq)) {
+		if (sysrq_mask()) {
 			handle_sysrq(ch);
 			port->sysrq = 0;
 			return 1;
 		}
-		port->sysrq = 0;
+		if (uart_try_toggle_sysrq(port, ch))
+			return 1;
 	}
+	port->sysrq = 0;
+
 	return 0;
 }
-static inline int
-uart_prepare_sysrq_char(struct uart_port *port, unsigned int ch)
+
+static inline int uart_prepare_sysrq_char(struct uart_port *port, unsigned int ch)
 {
-	if (port->sysrq) {
-		if (ch && time_before(jiffies, port->sysrq)) {
+	if (!port->sysrq)
+		return 0;
+
+	if (ch && time_before(jiffies, port->sysrq)) {
+		if (sysrq_mask()) {
 			port->sysrq_ch = ch;
 			port->sysrq = 0;
 			return 1;
 		}
-		port->sysrq = 0;
+		if (uart_try_toggle_sysrq(port, ch))
+			return 1;
 	}
+	port->sysrq = 0;
+
 	return 0;
 }
-static inline void
-uart_unlock_and_check_sysrq(struct uart_port *port, unsigned long irqflags)
+
+static inline void uart_unlock_and_check_sysrq(struct uart_port *port, unsigned long irqflags)
 {
 	int sysrq_ch;
+
+	if (!port->has_sysrq) {
+		spin_unlock_irqrestore(&port->lock, irqflags);
+		return;
+	}
 
 	sysrq_ch = port->sysrq_ch;
 	port->sysrq_ch = 0;
@@ -596,17 +635,20 @@ uart_unlock_and_check_sysrq(struct uart_port *port, unsigned long irqflags)
 	if (sysrq_ch)
 		handle_sysrq(sysrq_ch);
 }
-#else
-static inline int
-uart_handle_sysrq_char(struct uart_port *port, unsigned int ch) { return 0; }
-static inline int
-uart_prepare_sysrq_char(struct uart_port *port, unsigned int ch) { return 0; }
-static inline void
-uart_unlock_and_check_sysrq(struct uart_port *port, unsigned long irqflags)
+#else	/* CONFIG_MAGIC_SYSRQ_SERIAL */
+static inline int uart_handle_sysrq_char(struct uart_port *port, unsigned int ch)
+{
+	return 0;
+}
+static inline int uart_prepare_sysrq_char(struct uart_port *port, unsigned int ch)
+{
+	return 0;
+}
+static inline void uart_unlock_and_check_sysrq(struct uart_port *port, unsigned long irqflags)
 {
 	spin_unlock_irqrestore(&port->lock, irqflags);
 }
-#endif
+#endif	/* CONFIG_MAGIC_SYSRQ_SERIAL */
 
 /*
  * We do the SysRQ and SAK checking like this...
@@ -618,10 +660,10 @@ static inline int uart_handle_break(struct uart_port *port)
 	if (port->handle_break)
 		port->handle_break(port);
 
-#ifdef SUPPORT_SYSRQ
-	if (port->cons && port->cons->index == port->line) {
+#ifdef CONFIG_MAGIC_SYSRQ_SERIAL
+	if (port->has_sysrq && uart_console(port)) {
 		if (!port->sysrq) {
-			port->sysrq = jiffies + HZ*5;
+			port->sysrq = jiffies + SYSRQ_TIMEOUT;
 			return 1;
 		}
 		port->sysrq = 0;
@@ -639,5 +681,5 @@ static inline int uart_handle_break(struct uart_port *port)
 					 (cflag) & CRTSCTS || \
 					 !((cflag) & CLOCAL))
 
-void uart_get_rs485_mode(struct device *dev, struct serial_rs485 *rs485conf);
+int uart_get_rs485_mode(struct uart_port *port);
 #endif /* LINUX_SERIAL_CORE_H */

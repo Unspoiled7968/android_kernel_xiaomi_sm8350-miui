@@ -101,6 +101,7 @@ struct regulator_state {
  * @system_load: Load that isn't captured by any consumer requests.
  *
  * @max_spread: Max possible spread between coupled regulators
+ * @max_uV_step: Max possible step change in voltage
  * @valid_modes_mask: Mask of modes which may be configured by consumers.
  * @valid_ops_mask: Operations which may be performed by consumers.
  *
@@ -249,14 +250,6 @@ struct regulator_init_data {
 void regulator_has_full_constraints(void);
 #else
 static inline void regulator_has_full_constraints(void)
-{
-}
-#endif
-
-#ifdef CONFIG_REGULATOR_QTI_DEBUG
-void regulator_debug_print_enabled(void);
-#else
-static inline void regulator_debug_print_enabled(void)
 {
 }
 #endif

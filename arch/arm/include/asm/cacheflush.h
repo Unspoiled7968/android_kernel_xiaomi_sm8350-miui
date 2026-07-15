@@ -156,14 +156,8 @@ extern void __cpuc_flush_dcache_area(void *, size_t);
  * is visible to DMA, or data written by DMA to system memory is
  * visible to the CPU.
  */
-extern void __dma_map_area(const void *addr, size_t size, int dir);
-extern void __dma_unmap_area(const void *addr, size_t size, int dir);
 extern void dmac_flush_range(const void *, const void *);
 
-static inline void __dma_flush_area(const void *start, size_t len)
-{
-	dmac_flush_range(start, start + len);
-}
 #endif
 
 /*
@@ -264,11 +258,11 @@ extern void flush_cache_page(struct vm_area_struct *vma, unsigned long user_addr
 #define flush_cache_dup_mm(mm) flush_cache_mm(mm)
 
 /*
- * flush_cache_user_range is used when we want to ensure that the
+ * flush_icache_user_range is used when we want to ensure that the
  * Harvard caches are synchronised for the user space address range.
  * This is used for the ARM private sys_cacheflush system call.
  */
-#define flush_cache_user_range(s,e)	__cpuc_coherent_user_range(s,e)
+#define flush_icache_user_range(s,e)	__cpuc_coherent_user_range(s,e)
 
 /*
  * Perform necessary cache operations to ensure that data previously
@@ -323,9 +317,6 @@ extern void flush_kernel_dcache_page(struct page *);
 
 #define flush_dcache_mmap_lock(mapping)		xa_lock_irq(&mapping->i_pages)
 #define flush_dcache_mmap_unlock(mapping)	xa_unlock_irq(&mapping->i_pages)
-
-#define flush_icache_user_range(vma,page,addr,len) \
-	flush_dcache_page(page)
 
 /*
  * We don't appear to need to do anything here.  In fact, if we did, we'd

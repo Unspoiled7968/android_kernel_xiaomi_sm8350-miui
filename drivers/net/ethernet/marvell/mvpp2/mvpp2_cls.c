@@ -318,7 +318,7 @@ static const struct mvpp2_cls_flow cls_flows[MVPP2_N_PRS_FLOWS] = {
 		       MVPP2_PRS_RI_VLAN_MASK),
 	/* Non IP flow, with vlan tag */
 	MVPP2_DEF_FLOW(MVPP22_FLOW_ETHERNET, MVPP2_FL_NON_IP_TAG,
-		       MVPP22_CLS_HEK_OPT_VLAN,
+		       MVPP22_CLS_HEK_TAGGED,
 		       0, 0),
 };
 
@@ -1082,6 +1082,9 @@ static int mvpp2_port_c2_tcam_rule_add(struct mvpp2_port *port,
 	u8 qh, ql, pmap;
 	int index, ctx;
 
+	if (!flow_action_basic_hw_stats_check(&rule->flow->action, NULL))
+		return -EOPNOTSUPP;
+
 	memset(&c2, 0, sizeof(c2));
 
 	index = mvpp2_cls_c2_port_flow_index(port, rule->loc);
@@ -1305,6 +1308,9 @@ static int mvpp2_cls_rfs_parse_rule(struct mvpp2_rfs_rule *rule)
 	struct flow_rule *flow = rule->flow;
 	struct flow_action_entry *act;
 
+	if (!flow_action_basic_hw_stats_check(&rule->flow->action, NULL))
+		return -EOPNOTSUPP;
+
 	act = &flow->action.entries[0];
 	if (act->id != FLOW_ACTION_QUEUE && act->id != FLOW_ACTION_DROP)
 		return -EOPNOTSUPP;
@@ -1377,7 +1383,7 @@ int mvpp2_ethtool_cls_rule_ins(struct mvpp2_port *port,
 	efs->rule.flow_type = mvpp2_cls_ethtool_flow_to_type(info->fs.flow_type);
 	if (efs->rule.flow_type < 0) {
 		ret = efs->rule.flow_type;
-		goto clean_rule;
+		goto clean_eth_rule;
 	}
 
 	ret = mvpp2_cls_rfs_parse_rule(&efs->rule);
@@ -1632,7 +1638,7 @@ int mvpp2_ethtool_rxfh_set(struct mvpp2_port *port, struct ethtool_rxnfc *info)
 			hash_opts |= MVPP22_CLS_HEK_OPT_L4SIP;
 		if (info->data & RXH_L4_B_2_3)
 			hash_opts |= MVPP22_CLS_HEK_OPT_L4DIP;
-		/* Fallthrough */
+		fallthrough;
 	case MVPP22_FLOW_IP4:
 	case MVPP22_FLOW_IP6:
 		if (info->data & RXH_L2DA)

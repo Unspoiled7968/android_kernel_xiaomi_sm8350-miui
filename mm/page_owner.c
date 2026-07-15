@@ -10,12 +10,8 @@
 #include <linux/migrate.h>
 #include <linux/stackdepot.h>
 #include <linux/seq_file.h>
-#include <linux/sched.h>
 #include <linux/sched/clock.h>
-#ifdef CONFIG_QCOM_MINIDUMP_PANIC_DUMP
-#include <soc/qcom/minidump.h>
-#include <linux/ctype.h>
-#endif
+
 #include "internal.h"
 
 /*
@@ -30,13 +26,14 @@ struct page_owner {
 	gfp_t gfp_mask;
 	depot_stack_handle_t handle;
 	depot_stack_handle_t free_handle;
-	int pid;
 	u64 ts_nsec;
 	u64 free_ts_nsec;
+	pid_t pid;
 };
 
-static bool page_owner_enabled = IS_ENABLED(CONFIG_PAGE_OWNER_ENABLE_DEFAULT);
+bool page_owner_enabled;
 DEFINE_STATIC_KEY_FALSE(page_owner_inited);
+EXPORT_SYMBOL_GPL(page_owner_inited);
 
 static depot_stack_handle_t dummy_handle;
 static depot_stack_handle_t failure_handle;
@@ -51,9 +48,6 @@ static int __init early_page_owner_param(char *buf)
 
 	if (strcmp(buf, "on") == 0)
 		page_owner_enabled = true;
-
-	if (strcmp(buf, "off") == 0)
-		page_owner_enabled = false;
 
 	return 0;
 }
@@ -106,10 +100,30 @@ struct page_ext_operations page_owner_ops = {
 	.init = init_page_owner,
 };
 
-static inline struct page_owner *get_page_owner(struct page_ext *page_ext)
+struct page_owner *get_page_owner(struct page_ext *page_ext)
 {
 	return (void *)page_ext + page_owner_ops.offset;
 }
+EXPORT_SYMBOL_GPL(get_page_owner);
+
+depot_stack_handle_t get_page_owner_handle(struct page_ext *page_ext, unsigned long pfn)
+{
+	struct page_owner *page_owner;
+	depot_stack_handle_t handle;
+
+	if (!page_owner_enabled)
+		return 0;
+
+	page_owner = get_page_owner(page_ext);
+
+	/* skip handle for tail pages of higher order allocations */
+	if (!IS_ALIGNED(pfn, 1 << page_owner->order))
+		return 0;
+
+	handle = READ_ONCE(page_owner->handle);
+	return handle;
+}
+EXPORT_SYMBOL_GPL(get_page_owner_handle);
 
 static inline bool check_recursive_alloc(unsigned long *entries,
 					 unsigned int nr_entries,
@@ -160,19 +174,17 @@ void __reset_page_owner(struct page *page, unsigned int order)
 
 	handle = save_stack(GFP_NOWAIT | __GFP_NOWARN);
 
-	page_ext = lookup_page_ext(page);
+	page_ext = page_ext_get(page);
 	if (unlikely(!page_ext))
 		return;
 	for (i = 0; i < (1 << order); i++) {
 		__clear_bit(PAGE_EXT_OWNER_ALLOCATED, &page_ext->flags);
-#ifdef CONFIG_PAGE_EXTENSION_PAGE_FREE
-		__set_bit(PAGE_EXT_PG_FREE, &page_ext->flags);
-#endif
 		page_owner = get_page_owner(page_ext);
 		page_owner->free_handle = handle;
 		page_owner->free_ts_nsec = free_ts_nsec;
 		page_ext = page_ext_next(page_ext);
 	}
+	page_ext_put(page_ext);
 }
 
 static inline void __set_page_owner_handle(struct page *page,
@@ -190,13 +202,8 @@ static inline void __set_page_owner_handle(struct page *page,
 		page_owner->last_migrate_reason = -1;
 		page_owner->pid = current->pid;
 		page_owner->ts_nsec = local_clock();
-		page_owner->free_ts_nsec = 0;
-
 		__set_bit(PAGE_EXT_OWNER, &page_ext->flags);
 		__set_bit(PAGE_EXT_OWNER_ALLOCATED, &page_ext->flags);
-#ifdef CONFIG_PAGE_EXTENSION_PAGE_FREE
-		__clear_bit(PAGE_EXT_PG_FREE, &page_ext->flags);
-#endif
 
 		page_ext = page_ext_next(page_ext);
 	}
@@ -205,19 +212,22 @@ static inline void __set_page_owner_handle(struct page *page,
 noinline void __set_page_owner(struct page *page, unsigned int order,
 					gfp_t gfp_mask)
 {
-	struct page_ext *page_ext = lookup_page_ext(page);
+	struct page_ext *page_ext;
 	depot_stack_handle_t handle;
 
+	handle = save_stack(gfp_mask);
+
+	page_ext = page_ext_get(page);
 	if (unlikely(!page_ext))
 		return;
-
-	handle = save_stack(gfp_mask);
 	__set_page_owner_handle(page, page_ext, handle, order, gfp_mask);
+	page_ext_put(page_ext);
 }
+EXPORT_SYMBOL_GPL(__set_page_owner);
 
 void __set_page_owner_migrate_reason(struct page *page, int reason)
 {
-	struct page_ext *page_ext = lookup_page_ext(page);
+	struct page_ext *page_ext = page_ext_get(page);
 	struct page_owner *page_owner;
 
 	if (unlikely(!page_ext))
@@ -225,12 +235,13 @@ void __set_page_owner_migrate_reason(struct page *page, int reason)
 
 	page_owner = get_page_owner(page_ext);
 	page_owner->last_migrate_reason = reason;
+	page_ext_put(page_ext);
 }
 
 void __split_page_owner(struct page *page, unsigned int nr)
 {
 	int i;
-	struct page_ext *page_ext = lookup_page_ext(page);
+	struct page_ext *page_ext = page_ext_get(page);
 	struct page_owner *page_owner;
 
 	if (unlikely(!page_ext))
@@ -241,16 +252,24 @@ void __split_page_owner(struct page *page, unsigned int nr)
 		page_owner->order = 0;
 		page_ext = page_ext_next(page_ext);
 	}
+	page_ext_put(page_ext);
 }
 
 void __copy_page_owner(struct page *oldpage, struct page *newpage)
 {
-	struct page_ext *old_ext = lookup_page_ext(oldpage);
-	struct page_ext *new_ext = lookup_page_ext(newpage);
+	struct page_ext *old_ext;
+	struct page_ext *new_ext;
 	struct page_owner *old_page_owner, *new_page_owner;
 
-	if (unlikely(!old_ext || !new_ext))
+	old_ext = page_ext_get(oldpage);
+	if (unlikely(!old_ext))
 		return;
+
+	new_ext = page_ext_get(newpage);
+	if (unlikely(!new_ext)) {
+		page_ext_put(old_ext);
+		return;
+	}
 
 	old_page_owner = get_page_owner(old_ext);
 	new_page_owner = get_page_owner(new_ext);
@@ -274,6 +293,8 @@ void __copy_page_owner(struct page *oldpage, struct page *newpage)
 	 */
 	__set_bit(PAGE_EXT_OWNER, &new_ext->flags);
 	__set_bit(PAGE_EXT_OWNER_ALLOCATED, &new_ext->flags);
+	page_ext_put(new_ext);
+	page_ext_put(old_ext);
 }
 
 void pagetypeinfo_showmixedcount_print(struct seq_file *m,
@@ -321,7 +342,7 @@ void pagetypeinfo_showmixedcount_print(struct seq_file *m,
 			if (PageBuddy(page)) {
 				unsigned long freepage_order;
 
-				freepage_order = page_order_unsafe(page);
+				freepage_order = buddy_order_unsafe(page);
 				if (freepage_order < MAX_ORDER)
 					pfn += (1UL << freepage_order) - 1;
 				continue;
@@ -330,16 +351,15 @@ void pagetypeinfo_showmixedcount_print(struct seq_file *m,
 			if (PageReserved(page))
 				continue;
 
-			page_ext = lookup_page_ext(page);
+			page_ext = page_ext_get(page);
 			if (unlikely(!page_ext))
 				continue;
 
 			if (!test_bit(PAGE_EXT_OWNER_ALLOCATED, &page_ext->flags))
-				continue;
+				goto ext_put_continue;
 
 			page_owner = get_page_owner(page_ext);
-			page_mt = gfpflags_to_migratetype(
-					page_owner->gfp_mask);
+			page_mt = gfp_migratetype(page_owner->gfp_mask);
 			if (pageblock_mt != page_mt) {
 				if (is_migrate_cma(pageblock_mt))
 					count[MIGRATE_MOVABLE]++;
@@ -347,9 +367,12 @@ void pagetypeinfo_showmixedcount_print(struct seq_file *m,
 					count[pageblock_mt]++;
 
 				pfn = block_end_pfn;
+				page_ext_put(page_ext);
 				break;
 			}
 			pfn += (1UL << page_owner->order) - 1;
+ext_put_continue:
+			page_ext_put(page_ext);
 		}
 	}
 
@@ -376,17 +399,17 @@ print_page_owner(char __user *buf, size_t count, unsigned long pfn,
 		return -ENOMEM;
 
 	ret = snprintf(kbuf, count,
-			"Page allocated via order %u, mask %#x(%pGg), pid %d, ts %llu ns\n",
+			"Page allocated via order %u, mask %#x(%pGg), pid %d, ts %llu ns, free_ts %llu ns\n",
 			page_owner->order, page_owner->gfp_mask,
 			&page_owner->gfp_mask, page_owner->pid,
-			page_owner->ts_nsec);
+			page_owner->ts_nsec, page_owner->free_ts_nsec);
 
 	if (ret >= count)
 		goto err;
 
 	/* Print information relevant to grouping pages by mobility */
 	pageblock_mt = get_pageblock_migratetype(page);
-	page_mt  = gfpflags_to_migratetype(page_owner->gfp_mask);
+	page_mt  = gfp_migratetype(page_owner->gfp_mask);
 	ret += snprintf(kbuf + ret, count - ret,
 			"PFN %lu type %s Block %lu type %s Flags %#lx(%pGp)\n",
 			pfn,
@@ -426,148 +449,9 @@ err:
 	return -ENOMEM;
 }
 
-#ifdef CONFIG_QCOM_MINIDUMP_PANIC_DUMP
-
-static unsigned long page_owner_filter = 0xF;
-static unsigned long page_owner_handles_size =  SZ_16K;
-static int nr_handles;
-static LIST_HEAD(accounted_call_site_list);
-static DEFINE_MUTEX(accounted_call_site_lock);
-struct accounted_call_site {
-	struct list_head list;
-	char name[50];
-};
-
-bool is_page_owner_enabled(void)
-{
-	return page_owner_enabled;
-}
-
-static bool found_stack(depot_stack_handle_t handle,
-		 char *md_pageowner_dump_addr, char *cur)
-{
-	int *handles, i;
-
-	handles = (int *) (md_pageowner_dump_addr +
-			md_pageowner_dump_size - page_owner_handles_size);
-
-	for (i = 0; i < nr_handles; i++)
-		if (handle == handles[i])
-			return true;
-
-	if ((handles + nr_handles)
-		< (int *)(md_pageowner_dump_addr +
-			md_pageowner_dump_size)) {
-		handles[nr_handles] = handle;
-		nr_handles += 1;
-	} else {
-		pr_err_ratelimited("Can't stores handles increase page_owner_handles_size\n");
-	}
-	return false;
-}
-
-static bool check_unaccounted(char *buf, ssize_t count,
-		struct page *page, depot_stack_handle_t handle)
-{
-	int i, ret = 0;
-	unsigned long *entries;
-	unsigned int nr_entries;
-	struct accounted_call_site *call_site;
-
-	if ((page->flags &
-		((1UL << PG_lru) | (1UL << PG_slab) | (1UL << PG_swapbacked))))
-		return false;
-
-	nr_entries = stack_depot_fetch(handle, &entries);
-	for (i = 0; i < nr_entries; i++) {
-		ret = scnprintf(buf, count, "%pS\n",
-				(void *)entries[i]);
-		if (ret == count)
-			return false;
-
-		mutex_lock(&accounted_call_site_lock);
-		list_for_each_entry(call_site,
-				&accounted_call_site_list, list) {
-			if (strnstr(buf, call_site->name,
-					strlen(buf))) {
-				mutex_unlock(&accounted_call_site_lock);
-				return false;
-			}
-		}
-		mutex_unlock(&accounted_call_site_lock);
-	}
-	return true;
-}
-
-static ssize_t
-dump_page_owner_md(char *buf, size_t count, unsigned long pfn,
-		struct page *page, struct page_owner *page_owner,
-		depot_stack_handle_t handle)
-{
-	int i, bit, ret = 0;
-	unsigned long *entries;
-	unsigned int nr_entries;
-
-	if (page_owner_filter == 0xF)
-		goto dump;
-
-	for (bit = 1; page_owner_filter >= bit; bit *= 2) {
-		if (page_owner_filter & bit) {
-			switch (bit) {
-			case 0x1:
-				if (check_unaccounted(buf, count, page, handle))
-					goto dump;
-				break;
-			case 0x2:
-				if (page->flags & (1UL << PG_slab))
-					goto dump;
-				break;
-			case 0x4:
-				if (page->flags & (1UL << PG_swapbacked))
-					goto dump;
-				break;
-			case 0x8:
-				if ((page->flags & (1UL << PG_lru)) &&
-					~(page->flags & (1UL << PG_swapbacked)))
-					goto dump;
-				break;
-			default:
-				break;
-			}
-		}
-		if (bit >= 0x8)
-			return ret;
-	}
-
-	if (bit > page_owner_filter)
-		return ret;
-dump:
-	nr_entries = stack_depot_fetch(handle, &entries);
-	if ((buf > (md_pageowner_dump_addr +
-			md_pageowner_dump_size - page_owner_handles_size))
-			|| !found_stack(handle, md_pageowner_dump_addr, buf)) {
-		ret = scnprintf(buf, count, "%lu %u %u\n",
-				pfn, handle, nr_entries);
-		if (ret == count)
-			goto err;
-
-		for (i = 0; i < nr_entries; i++) {
-			ret += scnprintf(buf + ret, count - ret,
-					"%p\n", (void *)entries[i]);
-			if (ret == count)
-				goto err;
-		}
-	} else {
-		ret = scnprintf(buf, count, "%lu %u %u\n",  pfn, handle, 0);
-	}
-err:
-	return ret;
-}
-#endif
-
 void __dump_page_owner(struct page *page)
 {
-	struct page_ext *page_ext = lookup_page_ext(page);
+	struct page_ext *page_ext = page_ext_get((void *)page);
 	struct page_owner *page_owner;
 	depot_stack_handle_t handle;
 	unsigned long *entries;
@@ -582,10 +466,11 @@ void __dump_page_owner(struct page *page)
 
 	page_owner = get_page_owner(page_ext);
 	gfp_mask = page_owner->gfp_mask;
-	mt = gfpflags_to_migratetype(gfp_mask);
+	mt = gfp_migratetype(gfp_mask);
 
 	if (!test_bit(PAGE_EXT_OWNER, &page_ext->flags)) {
 		pr_alert("page_owner info is not present (never set?)\n");
+		page_ext_put(page_ext);
 		return;
 	}
 
@@ -594,9 +479,9 @@ void __dump_page_owner(struct page *page)
 	else
 		pr_alert("page_owner tracks the page as freed\n");
 
-	pr_alert("page last allocated via order %u, migratetype %s, gfp_mask %#x(%pGg), pid %d, ts %llu ns\n",
+	pr_alert("page last allocated via order %u, migratetype %s, gfp_mask %#x(%pGg), pid %d, ts %llu, free_ts %llu\n",
 		 page_owner->order, migratetype_names[mt], gfp_mask, &gfp_mask,
-		 page_owner->pid, page_owner->ts_nsec);
+		 page_owner->pid, page_owner->ts_nsec, page_owner->free_ts_nsec);
 
 	handle = READ_ONCE(page_owner->handle);
 	if (!handle) {
@@ -618,6 +503,7 @@ void __dump_page_owner(struct page *page)
 	if (page_owner->last_migrate_reason != -1)
 		pr_alert("page has been migrated, last migrate reason: %s\n",
 			migrate_reason_names[page_owner->last_migrate_reason]);
+	page_ext_put(page_ext);
 }
 
 static ssize_t
@@ -629,12 +515,6 @@ read_page_owner(struct file *file, char __user *buf, size_t count, loff_t *ppos)
 	struct page_owner *page_owner;
 	depot_stack_handle_t handle;
 
-#ifdef CONFIG_QCOM_MINIDUMP_PANIC_DUMP
-	char *addr;
-	ssize_t size;
-
-	addr = md_pageowner_dump_addr;
-#endif
 	if (!static_branch_unlikely(&page_owner_inited))
 		return -EINVAL;
 
@@ -645,11 +525,18 @@ read_page_owner(struct file *file, char __user *buf, size_t count, loff_t *ppos)
 	while (!pfn_valid(pfn) && (pfn & (MAX_ORDER_NR_PAGES - 1)) != 0)
 		pfn++;
 
-	if (file)
-		drain_all_pages(NULL);
+	drain_all_pages(NULL);
 
 	/* Find an allocated page */
 	for (; pfn < max_pfn; pfn++) {
+		/*
+		 * This temporary page_owner is required so
+		 * that we can avoid the context switches while holding
+		 * the rcu lock and copying the page owner information to
+		 * user through copy_to_user() or GFP_KERNEL allocations.
+		 */
+		struct page_owner page_owner_tmp;
+
 		/*
 		 * If the new page is in a new MAX_ORDER_NR_PAGES area,
 		 * validate the area as existing, skip it if not
@@ -665,14 +552,14 @@ read_page_owner(struct file *file, char __user *buf, size_t count, loff_t *ppos)
 
 		page = pfn_to_page(pfn);
 		if (PageBuddy(page)) {
-			unsigned long freepage_order = page_order_unsafe(page);
+			unsigned long freepage_order = buddy_order_unsafe(page);
 
 			if (freepage_order < MAX_ORDER)
 				pfn += (1UL << freepage_order) - 1;
 			continue;
 		}
 
-		page_ext = lookup_page_ext(page);
+		page_ext = page_ext_get(page);
 		if (unlikely(!page_ext))
 			continue;
 
@@ -681,14 +568,14 @@ read_page_owner(struct file *file, char __user *buf, size_t count, loff_t *ppos)
 		 * because we don't hold the zone lock.
 		 */
 		if (!test_bit(PAGE_EXT_OWNER, &page_ext->flags))
-			continue;
+			goto ext_put_continue;
 
 		/*
 		 * Although we do have the info about past allocation of free
 		 * pages, it's not relevant for current memory usage.
 		 */
 		if (!test_bit(PAGE_EXT_OWNER_ALLOCATED, &page_ext->flags))
-			continue;
+			goto ext_put_continue;
 
 		page_owner = get_page_owner(page_ext);
 
@@ -697,7 +584,7 @@ read_page_owner(struct file *file, char __user *buf, size_t count, loff_t *ppos)
 		 * would inflate the stats.
 		 */
 		if (!IS_ALIGNED(pfn, 1 << page_owner->order))
-			continue;
+			goto ext_put_continue;
 
 		/*
 		 * Access to page_ext->handle isn't synchronous so we should
@@ -705,38 +592,21 @@ read_page_owner(struct file *file, char __user *buf, size_t count, loff_t *ppos)
 		 */
 		handle = READ_ONCE(page_owner->handle);
 		if (!handle)
-			continue;
+			goto ext_put_continue;
 
 		/* Record the next PFN to read in the file offset */
 		*ppos = (pfn - min_low_pfn) + 1;
 
-		if (file) {
-			return print_page_owner(buf, count, pfn, page,
-				page_owner, handle);
-		} else {
-#ifdef CONFIG_QCOM_MINIDUMP_PANIC_DUMP
-			size = dump_page_owner_md(addr, count, pfn, page,
-				page_owner, handle);
-			if (size == count) {
-				pr_err("pageowner minidump region exhausted\n");
-				return 0;
-			}
-			count -= size;
-			addr += size;
-#endif
-		}
+		page_owner_tmp = *page_owner;
+		page_ext_put(page_ext);
+		return print_page_owner(buf, count, pfn, page,
+				&page_owner_tmp, handle);
+ext_put_continue:
+		page_ext_put(page_ext);
 	}
+
 	return 0;
 }
-
-#ifdef CONFIG_QCOM_MINIDUMP_PANIC_DUMP
-void md_dump_pageowner(void)
-{
-	loff_t k = 0;
-
-	read_page_owner(NULL, NULL, md_pageowner_dump_size, &k);
-}
-#endif
 
 static void init_pages_in_zone(pg_data_t *pgdat, struct zone *zone)
 {
@@ -780,7 +650,7 @@ static void init_pages_in_zone(pg_data_t *pgdat, struct zone *zone)
 			 * heavy lock contention.
 			 */
 			if (PageBuddy(page)) {
-				unsigned long order = page_order_unsafe(page);
+				unsigned long order = buddy_order_unsafe(page);
 
 				if (order > 0 && order < MAX_ORDER)
 					pfn += (1UL << order) - 1;
@@ -790,18 +660,20 @@ static void init_pages_in_zone(pg_data_t *pgdat, struct zone *zone)
 			if (PageReserved(page))
 				continue;
 
-			page_ext = lookup_page_ext(page);
+			page_ext = page_ext_get(page);
 			if (unlikely(!page_ext))
 				continue;
 
 			/* Maybe overlapping zone */
 			if (test_bit(PAGE_EXT_OWNER, &page_ext->flags))
-				continue;
+				goto ext_put_continue;
 
 			/* Found early allocated page */
 			__set_page_owner_handle(page, page_ext, early_handle,
 						0, 0);
 			count++;
+ext_put_continue:
+			page_ext_put(page_ext);
 		}
 		cond_resched();
 	}
@@ -835,158 +707,6 @@ static const struct file_operations proc_page_owner_operations = {
 	.read		= read_page_owner,
 };
 
-#ifdef CONFIG_QCOM_MINIDUMP_PANIC_DUMP
-static ssize_t page_owner_filter_write(struct file *file,
-					  const char __user *ubuf,
-					  size_t count, loff_t *offset)
-{
-	unsigned long filter;
-
-	if (kstrtoul_from_user(ubuf, count, 0, &filter)) {
-		pr_err_ratelimited("Invalid format for filter\n");
-		return -EINVAL;
-	}
-
-	if (filter & (~0xF)) {
-		pr_err_ratelimited("Invalid filter : use following filters or any combinations of these\n"
-				"0x1 - unaccounted\n"
-				"0x2 - slab\n"
-				"0x4 - Anon\n"
-				"0x8 - File\n");
-		return -EINVAL;
-	}
-	page_owner_filter = filter;
-	return count;
-}
-
-static ssize_t page_owner_filter_read(struct file *file, char __user *ubuf,
-				       size_t count, loff_t *offset)
-{
-	char buf[64];
-
-	snprintf(buf, sizeof(buf), "0x%lx\n", page_owner_filter);
-	return simple_read_from_buffer(ubuf, count, offset, buf, strlen(buf));
-}
-
-static const struct file_operations proc_page_owner_filter_ops = {
-	.open	= simple_open,
-	.write	= page_owner_filter_write,
-	.read	= page_owner_filter_read,
-};
-
-static ssize_t page_owner_handle_write(struct file *file,
-					  const char __user *ubuf,
-					  size_t count, loff_t *offset)
-{
-	unsigned long size;
-
-	if (kstrtoul_from_user(ubuf, count, 0, &size)) {
-		pr_err_ratelimited("Invalid format for handle size\n");
-		return -EINVAL;
-	}
-
-	if (size) {
-		if (size > (md_pageowner_dump_size / SZ_16K)) {
-			pr_err_ratelimited("size : %lu KB exceeds max size : %lu KB\n",
-				size, (md_pageowner_dump_size / SZ_16K));
-			goto err;
-		}
-		page_owner_handles_size = size * SZ_1K;
-	}
-err:
-	return count;
-}
-
-static ssize_t page_owner_handle_read(struct file *file, char __user *ubuf,
-				       size_t count, loff_t *offset)
-{
-	char buf[64];
-
-	snprintf(buf, sizeof(buf), "%lu KB\n",
-			(page_owner_handles_size / SZ_1K));
-	return simple_read_from_buffer(ubuf, count, offset, buf, strlen(buf));
-}
-
-static const struct file_operations proc_page_owner_handle_ops = {
-	.open	= simple_open,
-	.write	= page_owner_handle_write,
-	.read	= page_owner_handle_read,
-};
-
-static ssize_t page_owner_call_site_write(struct file *file,
-					  const char __user *ubuf,
-					  size_t count, loff_t *offset)
-{
-	struct accounted_call_site *call_site;
-	char buf[50];
-
-	if (count >= 50) {
-		pr_err_ratelimited("Input string size too large\n");
-		return -EINVAL;
-	}
-
-	memset(buf, 0, 50);
-
-	if (copy_from_user(buf, ubuf, count)) {
-		pr_err_ratelimited("Couldn't copy from user\n");
-		return -EFAULT;
-	}
-
-	if (!isalpha(buf[0]) && buf[0] != '_') {
-		pr_err_ratelimited("Invalid call site name\n");
-		return -EINVAL;
-	}
-
-	call_site = kzalloc(sizeof(*call_site), GFP_KERNEL);
-	if (!call_site)
-		return -ENOMEM;
-
-	strlcpy(call_site->name, buf, strlen(buf));
-	mutex_lock(&accounted_call_site_lock);
-	list_add_tail(&call_site->list, &accounted_call_site_list);
-	mutex_unlock(&accounted_call_site_lock);
-
-	return count;
-}
-
-static ssize_t page_owner_call_site_read(struct file *file, char __user *ubuf,
-				       size_t count, loff_t *offset)
-{
-	char *kbuf;
-	struct accounted_call_site *call_site;
-	int i = 1, ret = 0;
-	size_t size = PAGE_SIZE;
-
-	kbuf = kmalloc(size, GFP_KERNEL);
-	if (!kbuf)
-		return -ENOMEM;
-
-	ret = scnprintf(kbuf, count, "%s\n", "Accounted call sites:");
-	mutex_lock(&accounted_call_site_lock);
-	list_for_each_entry(call_site, &accounted_call_site_list, list) {
-		ret += scnprintf(kbuf + ret, size - ret,
-			"%d. %s\n", i, call_site->name);
-		i += 1;
-		if (ret == size) {
-			ret = -ENOMEM;
-			mutex_unlock(&accounted_call_site_lock);
-			goto err;
-		}
-	}
-	mutex_unlock(&accounted_call_site_lock);
-	ret = simple_read_from_buffer(ubuf, count, offset, kbuf, strlen(kbuf));
-err:
-	kfree(kbuf);
-	return ret;
-}
-
-static const struct file_operations proc_page_owner_call_site_ops = {
-	.open	= simple_open,
-	.write	= page_owner_call_site_write,
-	.read	= page_owner_call_site_read,
-};
-#endif
-
 static int __init pageowner_init(void)
 {
 	if (!static_branch_unlikely(&page_owner_inited)) {
@@ -997,14 +717,6 @@ static int __init pageowner_init(void)
 	debugfs_create_file("page_owner", 0400, NULL, NULL,
 			    &proc_page_owner_operations);
 
-#ifdef CONFIG_QCOM_MINIDUMP_PANIC_DUMP
-	debugfs_create_file("page_owner_filter", 0400, NULL, NULL,
-			    &proc_page_owner_filter_ops);
-	debugfs_create_file("page_owner_handles_size_kb", 0400, NULL, NULL,
-			    &proc_page_owner_handle_ops);
-	debugfs_create_file("page_owner_call_sites", 0400, NULL, NULL,
-			    &proc_page_owner_call_site_ops);
-#endif
 	return 0;
 }
 late_initcall(pageowner_init)

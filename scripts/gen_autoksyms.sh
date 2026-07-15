@@ -19,20 +19,34 @@ esac
 # We need access to CONFIG_ symbols
 . include/config/auto.conf
 
-ksym_wl=/dev/null
+needed_symbols=
+
+# Special case for modversions (see modpost.c)
+if [ -n "$CONFIG_MODVERSIONS" ]; then
+	needed_symbols="$needed_symbols module_layout"
+fi
+
+# With CONFIG_LTO_CLANG, LLVM bitcode has not yet been compiled into a binary
+# when the .mod files are generated, which means they don't yet contain
+# references to certain symbols that will be present in the final binaries.
+if [ -n "$CONFIG_LTO_CLANG" ]; then
+	# intrinsic functions
+	needed_symbols="$needed_symbols memcpy memmove memset"
+	# ftrace
+	needed_symbols="$needed_symbols _mcount"
+	# stack protector symbols
+	needed_symbols="$needed_symbols __stack_chk_fail __stack_chk_guard"
+fi
+
+ksym_wl=
 if [ -n "$CONFIG_UNUSED_KSYMS_WHITELIST" ]; then
-	for UNUSED_KSYMS_WHITELIST_FILE in $CONFIG_UNUSED_KSYMS_WHITELIST; do
-		# Use 'eval' to expand the whitelist path and
-		# check if it is relative
-		eval ksym_wl="$UNUSED_KSYMS_WHITELIST_FILE"
-		[ "${ksym_wl}" != "${ksym_wl#/}" ] ||
-		ksym_wl="$abs_srctree/$ksym_wl"
-		if [ ! -f "$ksym_wl" ] || [ ! -r "$ksym_wl" ]; then
-			echo "ERROR: '$ksym_wl' whitelist file not found" >&2
-			exit 1
-		fi
-		ksym_wls="$ksym_wls $ksym_wl"
-	done
+	# Use 'eval' to expand the whitelist path and check if it is relative
+	eval ksym_wl="$CONFIG_UNUSED_KSYMS_WHITELIST"
+	[ "${ksym_wl}" != "${ksym_wl#/}" ] || ksym_wl="$abs_srctree/$ksym_wl"
+	if [ ! -f "$ksym_wl" ] || [ ! -r "$ksym_wl" ]; then
+		echo "ERROR: '$ksym_wl' whitelist file not found" >&2
+		exit 1
+	fi
 fi
 
 # Generate a new ksym list file with symbols needed by the current
@@ -45,38 +59,14 @@ cat > "$output_file" << EOT
 EOT
 
 [ -f modules.order ] && modlist=modules.order || modlist=/dev/null
-sed 's/ko$/mod/' $modlist |
-xargs -n1 sed -n -e '2{s/ /\n/g;/^$/!p;}' -- |
-cat - $ksym_wls |
-sed 's/^#.*//;s/^ *//;/[[abi_symbol_list]]/g' |
+
+{
+	sed 's/ko$/mod/' $modlist | xargs -n1 sed -n -e '2p'
+	echo "$needed_symbols"
+	[ -n "$ksym_wl" ] && cat "$ksym_wl"
+} | sed -e 's/ /\n/g' | sed -n -e '/^$/!p' |
+# Remove the dot prefix for ppc64; symbol names with a dot (.) hold entry
+# point addresses.
+sed -e 's/^\.//' |
 sort -u |
 sed -e 's/\(.*\)/#define __KSYM_\1 1/' >> "$output_file"
-
-# Special case for modversions (see modpost.c)
-if [ -n "$CONFIG_MODVERSIONS" ]; then
-	echo "#define __KSYM_module_layout 1" >> "$output_file"
-fi
-
-if [ -n "$CONFIG_UNUSED_KSYMS_WHITELIST_ONLY" ] && [ -f "vmlinux" ] ; then
-	syms_from_whitelist="$(mktemp)"
-	syms_from_vmlinux="$(mktemp)"
-
-	cat $ksym_wls |
-	sed 's/^#.*//;s/^ *//;/[[abi_symbol_list]]/g' |
-	sort -u > "$syms_from_whitelist"
-
-	$NM --defined-only vmlinux |
-	grep "__ksymtab_" |
-	sed 's/^.*__ksymtab_//' |
-	sort -u > "$syms_from_vmlinux"
-
-	# Forcefully unexport the symbols that are not declared in the whitelist
-	syms_to_unexport=$(comm -13 "$syms_from_whitelist" "$syms_from_vmlinux")
-
-	for sym_to_unexport in $syms_to_unexport; do
-		sed -i "/^#define __KSYM_${sym_to_unexport} 1/d" \
-							"$output_file"
-	done
-
-	rm -f "$syms_from_whitelist" "$syms_from_vmlinux"
-fi

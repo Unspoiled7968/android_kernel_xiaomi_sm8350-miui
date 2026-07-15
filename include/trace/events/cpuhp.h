@@ -6,7 +6,6 @@
 #define _TRACE_CPUHP_H
 
 #include <linux/tracepoint.h>
-#include <linux/sched/clock.h>
 
 TRACE_EVENT(cpuhp_enter,
 
@@ -90,34 +89,28 @@ TRACE_EVENT(cpuhp_exit,
 		  __entry->cpu, __entry->state, __entry->idx,  __entry->ret)
 );
 
-TRACE_EVENT(cpuhp_latency,
+TRACE_EVENT(cpuhp_pause,
+	TP_PROTO(struct cpumask *cpus, u64 start_time, unsigned char pause),
 
-	TP_PROTO(unsigned int cpu, unsigned int state,
-		 u64 start_time,  int ret),
-
-	TP_ARGS(cpu, state, start_time, ret),
+	TP_ARGS(cpus, start_time, pause),
 
 	TP_STRUCT__entry(
-		__field(unsigned int,	cpu)
-		__field(unsigned int,	state)
-		__field(u64,		time)
-		__field(int,		ret)
+		__field( unsigned int,	cpus		)
+		__field( unsigned int,	active_cpus	)
+		__field( unsigned int,	time		)
+		__field( unsigned char,	pause		)
 	),
 
 	TP_fast_assign(
-		__entry->cpu	= cpu;
-		__entry->state	= state;
-		__entry->time	= div64_u64(sched_clock() - start_time, 1000);
-		__entry->ret	= ret;
+		__entry->cpus	     = cpumask_bits(cpus)[0];
+		__entry->active_cpus = cpumask_bits(cpu_active_mask)[0];
+		__entry->time        = div64_u64(sched_clock() - start_time, 1000);
+		__entry->pause	     = pause;
 	),
 
-	TP_printk(" cpu:%d state:%s latency:%llu USEC ret: %d",
-		__entry->cpu, __entry->state ? "online" : "offline",
-		__entry->time, __entry->ret)
+	TP_printk("req_cpus=0x%x act_cpus=0x%x time=%u us paused=%d",
+		  __entry->cpus, __entry->active_cpus, __entry->time, __entry->pause)
 );
-
-
-
 #endif
 
 /* This part must be outside protection */

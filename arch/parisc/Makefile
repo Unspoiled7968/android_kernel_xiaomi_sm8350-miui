@@ -26,8 +26,6 @@ endif
 
 NM		= sh $(srctree)/arch/parisc/nm
 CHECKFLAGS	+= -D__hppa__=1
-LIBGCC		= $(shell $(CC) $(KBUILD_CFLAGS) -print-libgcc-file-name)
-export LIBGCC
 
 ifdef CONFIG_64BIT
 UTS_MACHINE	:= parisc64
@@ -37,6 +35,13 @@ LD_BFD		:= elf64-hppa-linux
 else # 32-bit
 CC_ARCHES	= hppa hppa2.0 hppa1.1
 LD_BFD		:= elf32-hppa-linux
+endif
+
+# select defconfig based on actual architecture
+ifeq ($(shell uname -m),parisc64)
+	KBUILD_DEFCONFIG := generic-64bit_defconfig
+else
+	KBUILD_DEFCONFIG := generic-32bit_defconfig
 endif
 
 export LD_BFD
@@ -108,6 +113,8 @@ cflags-$(CONFIG_PA8X00)		+= -march=2.0 -mschedule=8000
 head-y			:= arch/parisc/kernel/head.o 
 
 KBUILD_CFLAGS	+= $(cflags-y)
+LIBGCC		:= $(shell $(CC) -print-libgcc-file-name)
+export LIBGCC
 
 kernel-y			:= mm/ kernel/ math-emu/
 
@@ -134,7 +141,7 @@ palo lifimage: vmlinuz
 	fi
 	@if test ! -f "$(PALOCONF)"; then \
 		cp $(srctree)/arch/parisc/defpalo.conf $(objtree)/palo.conf; \
-		echo 'A generic palo config file ($(objree)/palo.conf) has been created for you.'; \
+		echo 'A generic palo config file ($(objtree)/palo.conf) has been created for you.'; \
 		echo 'You should check it and re-run "make palo".'; \
 		echo 'WARNING: the "lifimage" file is now placed in this directory by default!'; \
 		false; \

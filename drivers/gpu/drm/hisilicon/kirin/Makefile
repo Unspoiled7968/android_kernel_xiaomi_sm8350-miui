@@ -2,7 +2,6 @@
 EXTRA_CFLAGS += \
 		-Iinclude/drm
 
-
 kirin-drm-y := kirin_drm_drv.o
 kirin-drm-$(CONFIG_DRM_HISI_KIRIN620) += kirin_drm_ade.o
 kirin-drm-$(CONFIG_DRM_HISI_KIRIN960) += kirin_drm_dpe.o

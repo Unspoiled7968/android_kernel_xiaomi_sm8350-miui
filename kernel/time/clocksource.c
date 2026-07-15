@@ -14,6 +14,8 @@
 #include <linux/sched.h> /* for spin_unlock_irq() using preempt_count() m68k */
 #include <linux/tick.h>
 #include <linux/kthread.h>
+#include <linux/prandom.h>
+#include <linux/cpu.h>
 
 #include "tick-internal.h"
 #include "timekeeping_internal.h"
@@ -95,7 +97,7 @@ static u64 suspend_start;
 
 #ifdef CONFIG_CLOCKSOURCE_WATCHDOG
 static void clocksource_watchdog_work(struct work_struct *work);
-static void clocksource_select(bool force);
+static void clocksource_select(void);
 
 static LIST_HEAD(watchdog_list);
 static struct clocksource *watchdog;
@@ -193,6 +195,8 @@ void clocksource_mark_unstable(struct clocksource *cs)
 
 static ulong max_cswd_read_retries = 3;
 module_param(max_cswd_read_retries, ulong, 0644);
+static int verify_n_cpus = 8;
+module_param(verify_n_cpus, int, 0644);
 
 static bool cs_watchdog_read(struct clocksource *cs, u64 *csnow, u64 *wdnow)
 {
@@ -222,6 +226,123 @@ static bool cs_watchdog_read(struct clocksource *cs, u64 *csnow, u64 *wdnow)
 	pr_warn("timekeeping watchdog on CPU%d: %s read-back delay of %lldns, attempt %d, marking unstable\n",
 		smp_processor_id(), watchdog->name, wd_delay, nretries);
 	return false;
+}
+
+static u64 csnow_mid;
+static cpumask_t cpus_ahead;
+static cpumask_t cpus_behind;
+static cpumask_t cpus_chosen;
+
+static void clocksource_verify_choose_cpus(void)
+{
+	int cpu, i, n = verify_n_cpus;
+
+	if (n < 0 || n >= num_online_cpus()) {
+		/* Check all of the CPUs. */
+		cpumask_copy(&cpus_chosen, cpu_online_mask);
+		cpumask_clear_cpu(smp_processor_id(), &cpus_chosen);
+		return;
+	}
+
+	/* If no checking desired, or no other CPU to check, leave. */
+	cpumask_clear(&cpus_chosen);
+	if (n == 0 || num_online_cpus() <= 1)
+		return;
+
+	/* Make sure to select at least one CPU other than the current CPU. */
+	cpu = cpumask_next(-1, cpu_online_mask);
+	if (cpu == smp_processor_id())
+		cpu = cpumask_next(cpu, cpu_online_mask);
+	if (WARN_ON_ONCE(cpu >= nr_cpu_ids))
+		return;
+	cpumask_set_cpu(cpu, &cpus_chosen);
+
+	/* Force a sane value for the boot parameter. */
+	if (n > nr_cpu_ids)
+		n = nr_cpu_ids;
+
+	/*
+	 * Randomly select the specified number of CPUs.  If the same
+	 * CPU is selected multiple times, that CPU is checked only once,
+	 * and no replacement CPU is selected.  This gracefully handles
+	 * situations where verify_n_cpus is greater than the number of
+	 * CPUs that are currently online.
+	 */
+	for (i = 1; i < n; i++) {
+		cpu = prandom_u32() % nr_cpu_ids;
+		cpu = cpumask_next(cpu - 1, cpu_online_mask);
+		if (cpu >= nr_cpu_ids)
+			cpu = cpumask_next(-1, cpu_online_mask);
+		if (!WARN_ON_ONCE(cpu >= nr_cpu_ids))
+			cpumask_set_cpu(cpu, &cpus_chosen);
+	}
+
+	/* Don't verify ourselves. */
+	cpumask_clear_cpu(smp_processor_id(), &cpus_chosen);
+}
+
+static void clocksource_verify_one_cpu(void *csin)
+{
+	struct clocksource *cs = (struct clocksource *)csin;
+
+	csnow_mid = cs->read(cs);
+}
+
+static void clocksource_verify_percpu(struct clocksource *cs)
+{
+	int64_t cs_nsec, cs_nsec_max = 0, cs_nsec_min = LLONG_MAX;
+	u64 csnow_begin, csnow_end;
+	int cpu, testcpu;
+	s64 delta;
+
+	if (verify_n_cpus == 0)
+		return;
+	cpumask_clear(&cpus_ahead);
+	cpumask_clear(&cpus_behind);
+	cpus_read_lock();
+	migrate_disable();
+	clocksource_verify_choose_cpus();
+	if (cpumask_empty(&cpus_chosen)) {
+		migrate_enable();
+		cpus_read_unlock();
+		pr_warn("Not enough CPUs to check clocksource '%s'.\n", cs->name);
+		return;
+	}
+	testcpu = smp_processor_id();
+	pr_info("Checking clocksource %s synchronization from CPU %d to CPUs %*pbl.\n",
+		cs->name, testcpu, cpumask_pr_args(&cpus_chosen));
+	preempt_disable();
+	for_each_cpu(cpu, &cpus_chosen) {
+		if (cpu == testcpu)
+			continue;
+		csnow_begin = cs->read(cs);
+		smp_call_function_single(cpu, clocksource_verify_one_cpu, cs, 1);
+		csnow_end = cs->read(cs);
+		delta = (s64)((csnow_mid - csnow_begin) & cs->mask);
+		if (delta < 0)
+			cpumask_set_cpu(cpu, &cpus_behind);
+		delta = (csnow_end - csnow_mid) & cs->mask;
+		if (delta < 0)
+			cpumask_set_cpu(cpu, &cpus_ahead);
+		delta = clocksource_delta(csnow_end, csnow_begin, cs->mask);
+		cs_nsec = clocksource_cyc2ns(delta, cs->mult, cs->shift);
+		if (cs_nsec > cs_nsec_max)
+			cs_nsec_max = cs_nsec;
+		if (cs_nsec < cs_nsec_min)
+			cs_nsec_min = cs_nsec;
+	}
+	preempt_enable();
+	migrate_enable();
+	cpus_read_unlock();
+	if (!cpumask_empty(&cpus_ahead))
+		pr_warn("        CPUs %*pbl ahead of CPU %d for clocksource %s.\n",
+			cpumask_pr_args(&cpus_ahead), testcpu, cs->name);
+	if (!cpumask_empty(&cpus_behind))
+		pr_warn("        CPUs %*pbl behind CPU %d for clocksource %s.\n",
+			cpumask_pr_args(&cpus_behind), testcpu, cs->name);
+	if (!cpumask_empty(&cpus_ahead) || !cpumask_empty(&cpus_behind))
+		pr_warn("        CPU %d check durations %lldns - %lldns for clocksource %s.\n",
+			testcpu, cs_nsec_min, cs_nsec_max, cs->name);
 }
 
 static void clocksource_watchdog(struct timer_list *unused)
@@ -283,6 +404,12 @@ static void clocksource_watchdog(struct timer_list *unused)
 				watchdog->name, wdnow, wdlast, watchdog->mask);
 			pr_warn("                      '%s' cs_now: %llx cs_last: %llx mask: %llx\n",
 				cs->name, csnow, cslast, cs->mask);
+			if (curr_clocksource == cs)
+				pr_warn("                      '%s' is current clocksource.\n", cs->name);
+			else if (curr_clocksource)
+				pr_warn("                      '%s' (not '%s') is current clocksource.\n", curr_clocksource->name, cs->name);
+			else
+				pr_warn("                      No current clocksource.\n");
 			__clocksource_unstable(cs);
 			continue;
 		}
@@ -447,6 +574,12 @@ static int __clocksource_watchdog_kthread(void)
 	struct clocksource *cs, *tmp;
 	unsigned long flags;
 	int select = 0;
+
+	/* Do any required per-CPU skew verification. */
+	if (curr_clocksource &&
+	    curr_clocksource->flags & CLOCK_SOURCE_UNSTABLE &&
+	    curr_clocksource->flags & CLOCK_SOURCE_VERIFY_PERCPU)
+		clocksource_verify_percpu(curr_clocksource);
 
 	spin_lock_irqsave(&watchdog_lock, flags);
 	list_for_each_entry_safe(cs, tmp, &watchdog_list, wd_list) {
@@ -748,12 +881,11 @@ static inline void clocksource_update_max_deferment(struct clocksource *cs)
 
 #ifndef CONFIG_ARCH_USES_GETTIMEOFFSET
 
-static struct clocksource *clocksource_find_best(bool oneshot, bool skipcur,
-						bool force)
+static struct clocksource *clocksource_find_best(bool oneshot, bool skipcur)
 {
 	struct clocksource *cs;
 
-	if ((!finished_booting && !force) || list_empty(&clocksource_list))
+	if (!finished_booting || list_empty(&clocksource_list))
 		return NULL;
 
 	/*
@@ -771,13 +903,13 @@ static struct clocksource *clocksource_find_best(bool oneshot, bool skipcur,
 	return NULL;
 }
 
-static void __clocksource_select(bool skipcur, bool force)
+static void __clocksource_select(bool skipcur)
 {
 	bool oneshot = tick_oneshot_mode_active();
 	struct clocksource *best, *cs;
 
 	/* Find the best suitable clocksource */
-	best = clocksource_find_best(oneshot, skipcur, force);
+	best = clocksource_find_best(oneshot, skipcur);
 	if (!best)
 		return;
 
@@ -830,39 +962,21 @@ found:
  * Select the clocksource with the best rating, or the clocksource,
  * which is selected by userspace override.
  */
-static void clocksource_select(bool force)
+static void clocksource_select(void)
 {
-	return __clocksource_select(false, force);
+	__clocksource_select(false);
 }
 
 static void clocksource_select_fallback(void)
 {
-	__clocksource_select(true, false);
+	__clocksource_select(true);
 }
 
 #else /* !CONFIG_ARCH_USES_GETTIMEOFFSET */
-
-static inline void clocksource_select(bool force) { }
+static inline void clocksource_select(void) { }
 static inline void clocksource_select_fallback(void) { }
 
 #endif
-
-/**
- * clocksource_select_force - Force re-selection of the best clocksource
- *				among registered clocksources
- *
- * clocksource_select() can't select the best clocksource before
- * calling clocksource_done_booting() and since clocksource_select()
- * should be called with clocksource_mutex held, provide a new API
- * can be called from other files to select best clockrouce irrespective
- * of finished_booting flag.
- */
-void clocksource_select_force(void)
-{
-	mutex_lock(&clocksource_mutex);
-	clocksource_select(true);
-	mutex_unlock(&clocksource_mutex);
-}
 
 /*
  * clocksource_done_booting - Called near the end of core bootup
@@ -880,7 +994,7 @@ static int __init clocksource_done_booting(void)
 	 * Run the watchdog first to eliminate unstable clock sources
 	 */
 	__clocksource_watchdog_kthread();
-	clocksource_select(false);
+	clocksource_select();
 	mutex_unlock(&clocksource_mutex);
 	return 0;
 }
@@ -971,7 +1085,6 @@ void __clocksource_update_freq_scale(struct clocksource *cs, u32 scale, u32 freq
 }
 EXPORT_SYMBOL_GPL(__clocksource_update_freq_scale);
 
-
 /**
  * __clocksource_register_scale - Used to install new clocksources
  * @cs:		clocksource to be registered
@@ -989,6 +1102,13 @@ int __clocksource_register_scale(struct clocksource *cs, u32 scale, u32 freq)
 
 	clocksource_arch_init(cs);
 
+	if (cs->vdso_clock_mode < 0 ||
+	    cs->vdso_clock_mode >= VDSO_CLOCKMODE_MAX) {
+		pr_warn("clocksource %s registered with invalid VDSO mode %d. Disabling VDSO support.\n",
+			cs->name, cs->vdso_clock_mode);
+		cs->vdso_clock_mode = VDSO_CLOCKMODE_NONE;
+	}
+
 	/* Initialize mult/shift and max_idle_ns */
 	__clocksource_update_freq_scale(cs, scale, freq);
 
@@ -1000,7 +1120,7 @@ int __clocksource_register_scale(struct clocksource *cs, u32 scale, u32 freq)
 	clocksource_enqueue_watchdog(cs);
 	clocksource_watchdog_unlock(&flags);
 
-	clocksource_select(false);
+	clocksource_select();
 	clocksource_select_watchdog(false);
 	__clocksource_suspend_select(cs);
 	mutex_unlock(&clocksource_mutex);
@@ -1029,7 +1149,7 @@ void clocksource_change_rating(struct clocksource *cs, int rating)
 	__clocksource_change_rating(cs, rating);
 	clocksource_watchdog_unlock(&flags);
 
-	clocksource_select(false);
+	clocksource_select();
 	clocksource_select_watchdog(false);
 	clocksource_suspend_select(false);
 	mutex_unlock(&clocksource_mutex);
@@ -1149,7 +1269,7 @@ static ssize_t current_clocksource_store(struct device *dev,
 
 	ret = sysfs_get_uname(buf, override_name, count);
 	if (ret >= 0)
-		clocksource_select(false);
+		clocksource_select();
 
 	mutex_unlock(&clocksource_mutex);
 

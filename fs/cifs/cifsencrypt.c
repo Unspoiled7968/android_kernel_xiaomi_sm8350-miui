@@ -36,6 +36,7 @@
 #include <linux/fips.h>
 #include <crypto/arc4.h>
 #include <crypto/aead.h>
+#include <crypto/algapi.h>
 
 int __cifs_calc_signature(struct smb_rqst *rqst,
 			struct TCP_Server_Info *server, char *signature,
@@ -255,7 +256,7 @@ int cifs_verify_signature(struct smb_rqst *rqst,
 /*	cifs_dump_mem("what we think it should be: ",
 		      what_we_think_sig_should_be, 16); */
 
-	if (memcmp(server_response_sig, what_we_think_sig_should_be, 8))
+	if (crypto_memneq(server_response_sig, what_we_think_sig_should_be, 8))
 		return -EACCES;
 	else
 		return 0;
@@ -520,7 +521,7 @@ static int calc_ntlmv2_hash(struct cifs_ses *ses, char *ntlmv2_hash,
 
 	rc = crypto_shash_init(&ses->server->secmech.sdeschmacmd5->shash);
 	if (rc) {
-		cifs_dbg(VFS, "%s: could not init hmacmd5\n", __func__);
+		cifs_dbg(VFS, "%s: Could not init hmacmd5\n", __func__);
 		return rc;
 	}
 
@@ -624,7 +625,7 @@ CalcNTLMv2_response(const struct cifs_ses *ses, char *ntlmv2_hash)
 
 	rc = crypto_shash_init(&ses->server->secmech.sdeschmacmd5->shash);
 	if (rc) {
-		cifs_dbg(VFS, "%s: could not init hmacmd5\n", __func__);
+		cifs_dbg(VFS, "%s: Could not init hmacmd5\n", __func__);
 		return rc;
 	}
 
@@ -723,7 +724,7 @@ setup_ntlmv2_rsp(struct cifs_ses *ses, const struct nls_table *nls_cp)
 	/* calculate ntlmv2_hash */
 	rc = calc_ntlmv2_hash(ses, ntlmv2_hash, nls_cp);
 	if (rc) {
-		cifs_dbg(VFS, "could not get v2 hash rc %d\n", rc);
+		cifs_dbg(VFS, "Could not get v2 hash rc %d\n", rc);
 		goto unlock;
 	}
 
@@ -783,7 +784,7 @@ calc_seckey(struct cifs_ses *ses)
 
 	ctx_arc4 = kmalloc(sizeof(*ctx_arc4), GFP_KERNEL);
 	if (!ctx_arc4) {
-		cifs_dbg(VFS, "could not allocate arc4 context\n");
+		cifs_dbg(VFS, "Could not allocate arc4 context\n");
 		return -ENOMEM;
 	}
 
@@ -797,7 +798,7 @@ calc_seckey(struct cifs_ses *ses)
 	ses->auth_key.len = CIFS_SESS_KEY_SIZE;
 
 	memzero_explicit(sec_key, CIFS_SESS_KEY_SIZE);
-	kzfree(ctx_arc4);
+	kfree_sensitive(ctx_arc4);
 	return 0;
 }
 

@@ -59,6 +59,19 @@ SECTIONS
 	BOOT_DATA_PRESERVED
 
 	/*
+	 * This is the BSS section of the decompressor and not of the decompressed Linux kernel.
+	 * It will consume place in the decompressor's image.
+	 */
+	. = ALIGN(8);
+	.bss : {
+		_bss = . ;
+		*(.bss)
+		*(.bss.*)
+		*(COMMON)
+		_ebss = .;
+	}
+
+	/*
 	 * uncompressed image info used by the decompressor it should match
 	 * struct vmlinux_info. It comes from .vmlinux.info section of
 	 * uncompressed vmlinux in a form of info.o
@@ -78,17 +91,17 @@ SECTIONS
 		_compressed_start = .;
 		*(.vmlinux.bin.compressed)
 		_compressed_end = .;
-		FILL(0xff);
-		. = ALIGN(4096);
 	}
-	. = ALIGN(256);
-	.bss : {
-		_bss = . ;
-		*(.bss)
-		*(.bss.*)
-		*(COMMON)
-		. = ALIGN(8);	/* For convenience during zeroing */
-		_ebss = .;
+
+#define SB_TRAILER_SIZE 32
+	/* Trailer needed for Secure Boot */
+	. += SB_TRAILER_SIZE; /* make sure .sb.trailer does not overwrite the previous section */
+	. = ALIGN(4096) - SB_TRAILER_SIZE;
+	.sb.trailer : {
+		QUAD(0)
+		QUAD(0)
+		QUAD(0)
+		QUAD(0x000000207a49504c)
 	}
 	_end = .;
 

@@ -14,9 +14,6 @@
 struct mmc_host;
 struct mmc_card;
 struct mmc_request;
-#if defined(CONFIG_SDC_QTI)
-struct mmc_queue;
-#endif
 
 #define MMC_CMD_RETRIES        3
 
@@ -32,9 +29,9 @@ struct mmc_bus_ops {
 	int (*shutdown)(struct mmc_host *);
 	int (*hw_reset)(struct mmc_host *);
 	int (*sw_reset)(struct mmc_host *);
-#if defined(CONFIG_SDC_QTI)
-	int (*change_bus_speed)(struct mmc_host *host, unsigned long *freq);
-#endif
+	bool (*cache_enabled)(struct mmc_host *);
+
+	ANDROID_VENDOR_DATA_ARRAY(1, 2);
 };
 
 void mmc_attach_bus(struct mmc_host *host, const struct mmc_bus_ops *ops);
@@ -46,7 +43,7 @@ struct device_node *mmc_of_find_child_device(struct mmc_host *host,
 void mmc_init_erase(struct mmc_card *card);
 
 void mmc_set_chip_select(struct mmc_host *host, int mode);
-void mmc_set_clock(struct mmc_host *host, unsigned int hz);
+extern void mmc_set_clock(struct mmc_host *host, unsigned int hz);
 void mmc_set_bus_mode(struct mmc_host *host, unsigned int mode);
 void mmc_set_bus_width(struct mmc_host *host, unsigned int width);
 u32 mmc_select_voltage(struct mmc_host *host, u32 ocr);
@@ -63,10 +60,7 @@ void mmc_power_off(struct mmc_host *host);
 void mmc_power_cycle(struct mmc_host *host, u32 ocr);
 void mmc_set_initial_state(struct mmc_host *host);
 u32 mmc_vddrange_to_ocrmask(int vdd_min, int vdd_max);
-#if defined(CONFIG_SDC_QTI)
-int mmc_clk_update_freq(struct mmc_host *host,
-		unsigned long freq, enum mmc_load state);
-#endif
+
 static inline void mmc_delay(unsigned int ms)
 {
 	if (ms <= 20)
@@ -99,19 +93,6 @@ void mmc_remove_host_debugfs(struct mmc_host *host);
 void mmc_add_card_debugfs(struct mmc_card *card);
 void mmc_remove_card_debugfs(struct mmc_card *card);
 
-#if defined(CONFIG_SDC_QTI)
-extern bool mmc_can_scale_clk(struct mmc_host *host);
-extern int mmc_init_clk_scaling(struct mmc_host *host);
-extern int mmc_suspend_clk_scaling(struct mmc_host *host);
-extern int mmc_resume_clk_scaling(struct mmc_host *host);
-extern int mmc_exit_clk_scaling(struct mmc_host *host);
-extern void mmc_deferred_scaling(struct mmc_host *host);
-extern unsigned long mmc_get_max_frequency(struct mmc_host *host);
-extern void mmc_cqe_clk_scaling_start_busy(struct mmc_queue *mq,
-	struct mmc_host *host, bool lock_needed);
-extern void mmc_cqe_clk_scaling_stop_busy(struct mmc_host *host,
-			bool lock_needed, bool is_cqe_dcmd);
-#endif
 int mmc_execute_tuning(struct mmc_card *card);
 int mmc_hs200_to_hs400(struct mmc_card *card);
 int mmc_hs400_to_hs200(struct mmc_card *card);
@@ -136,10 +117,6 @@ int mmc_set_blocklen(struct mmc_card *card, unsigned int blocklen);
 
 int __mmc_claim_host(struct mmc_host *host, struct mmc_ctx *ctx,
 		     atomic_t *abort);
-#if defined(CONFIG_SDC_QTI)
-int mmc_try_claim_host(struct mmc_host *host, struct mmc_ctx *ctx,
-		unsigned int delay_ms);
-#endif
 void mmc_release_host(struct mmc_host *host);
 void mmc_get_card(struct mmc_card *card, struct mmc_ctx *ctx);
 void mmc_put_card(struct mmc_card *card, struct mmc_ctx *ctx);
@@ -188,6 +165,14 @@ static inline void mmc_post_req(struct mmc_host *host, struct mmc_request *mrq,
 {
 	if (host->ops->post_req)
 		host->ops->post_req(host, mrq, err);
+}
+
+static inline bool mmc_cache_enabled(struct mmc_host *host)
+{
+	if (host->bus_ops->cache_enabled)
+		return host->bus_ops->cache_enabled(host);
+
+	return false;
 }
 
 #endif

@@ -18,7 +18,7 @@
 #include <linux/highmem.h>
 #include <linux/gfp.h>
 #include <linux/memblock.h>
-#include <linux/dma-contiguous.h>
+#include <linux/dma-map-ops.h>
 #include <linux/sizes.h>
 #include <linux/stop_machine.h>
 #include <linux/swiotlb.h>
@@ -30,6 +30,7 @@
 #include <asm/prom.h>
 #include <asm/sections.h>
 #include <asm/setup.h>
+#include <asm/set_memory.h>
 #include <asm/system_info.h>
 #include <asm/tlb.h>
 #include <asm/fixmap.h>
@@ -91,18 +92,6 @@ EXPORT_SYMBOL(arm_dma_zone_size);
  */
 phys_addr_t arm_dma_limit;
 unsigned long arm_dma_pfn_limit;
-
-static void __init arm_adjust_dma_zone(unsigned long *size, unsigned long *hole,
-	unsigned long dma_size)
-{
-	if (size[0] <= dma_size)
-		return;
-
-	size[ZONE_NORMAL] = size[0] - dma_size;
-	size[ZONE_DMA] = dma_size;
-	hole[ZONE_NORMAL] = hole[0];
-	hole[ZONE_DMA] = 0;
-}
 #endif
 
 void __init setup_dma_zone(const struct machine_desc *mdesc)
@@ -120,67 +109,38 @@ void __init setup_dma_zone(const struct machine_desc *mdesc)
 static void __init zone_sizes_init(unsigned long min, unsigned long max_low,
 	unsigned long max_high)
 {
-	unsigned long zone_size[MAX_NR_ZONES], zhole_size[MAX_NR_ZONES];
-	struct memblock_region *reg;
-
-	/*
-	 * initialise the zones.
-	 */
-	memset(zone_size, 0, sizeof(zone_size));
-
-	/*
-	 * The memory size has already been determined.  If we need
-	 * to do anything fancy with the allocation of this memory
-	 * to the zones, now is the time to do it.
-	 */
-	zone_size[0] = max_low - min;
-#ifdef CONFIG_HIGHMEM
-	zone_size[ZONE_HIGHMEM] = max_high - max_low;
-#endif
-
-	/*
-	 * Calculate the size of the holes.
-	 *  holes = node_size - sum(bank_sizes)
-	 */
-	memcpy(zhole_size, zone_size, sizeof(zhole_size));
-	for_each_memblock(memory, reg) {
-		unsigned long start = memblock_region_memory_base_pfn(reg);
-		unsigned long end = memblock_region_memory_end_pfn(reg);
-
-		if (start < max_low) {
-			unsigned long low_end = min(end, max_low);
-			zhole_size[0] -= low_end - start;
-		}
-#ifdef CONFIG_HIGHMEM
-		if (end > max_low) {
-			unsigned long high_start = max(start, max_low);
-			zhole_size[ZONE_HIGHMEM] -= end - high_start;
-		}
-#endif
-	}
+	unsigned long max_zone_pfn[MAX_NR_ZONES] = { 0 };
 
 #ifdef CONFIG_ZONE_DMA
-	/*
-	 * Adjust the sizes according to any special requirements for
-	 * this machine type.
-	 */
-	if (arm_dma_zone_size)
-		arm_adjust_dma_zone(zone_size, zhole_size,
-			arm_dma_zone_size >> PAGE_SHIFT);
+	max_zone_pfn[ZONE_DMA] = min(arm_dma_pfn_limit, max_low);
 #endif
-
-	free_area_init_node(0, zone_size, min, zhole_size);
+	max_zone_pfn[ZONE_NORMAL] = max_low;
+#ifdef CONFIG_HIGHMEM
+	max_zone_pfn[ZONE_HIGHMEM] = max_high;
+#endif
+	free_area_init(max_zone_pfn);
 }
 
 #ifdef CONFIG_HAVE_ARCH_PFN_VALID
 int pfn_valid(unsigned long pfn)
 {
 	phys_addr_t addr = __pfn_to_phys(pfn);
+	unsigned long pageblock_size = PAGE_SIZE * pageblock_nr_pages;
 
 	if (__phys_to_pfn(addr) != pfn)
 		return 0;
 
-	return memblock_is_map_memory(__pfn_to_phys(pfn));
+	/*
+	 * If address less than pageblock_size bytes away from a present
+	 * memory chunk there still will be a memory map entry for it
+	 * because we round freed memory map to the pageblock boundaries.
+	 */
+	if (memblock_overlaps_region(&memblock.memory,
+				     ALIGN_DOWN(addr, pageblock_size),
+				     pageblock_size))
+		return 1;
+
+	return 0;
 }
 EXPORT_SYMBOL(pfn_valid);
 #endif
@@ -293,18 +253,13 @@ void __init bootmem_init(void)
 		      (phys_addr_t)max_low_pfn << PAGE_SHIFT);
 
 	/*
-	 * Sparsemem tries to allocate bootmem in memory_present(),
-	 * so must be done after the fixed reservations
-	 */
-	memblocks_present();
-
-	/*
-	 * sparse_init() needs the bootmem allocator up and running.
+	 * sparse_init() tries to allocate memory from memblock, so must be
+	 * done after the fixed reservations
 	 */
 	sparse_init();
 
 	/*
-	 * Now free the memory - free_area_init_node needs
+	 * Now free the memory - free_area_init needs
 	 * the sparse mem_map arrays initialized by sparse_init()
 	 * for memmap_init_zone(), otherwise all PFNs are invalid.
 	 */
@@ -354,16 +309,14 @@ free_memmap(unsigned long start_pfn, unsigned long end_pfn)
  */
 static void __init free_unused_memmap(void)
 {
-	unsigned long start, prev_end = 0;
-	struct memblock_region *reg;
+	unsigned long start, end, prev_end = 0;
+	int i;
 
 	/*
 	 * This relies on each bank being in address order.
 	 * The banks are sorted previously in bootmem_init().
 	 */
-	for_each_memblock(memory, reg) {
-		start = memblock_region_memory_base_pfn(reg);
-
+	for_each_mem_pfn_range(i, MAX_NUMNODES, &start, &end, NULL) {
 #ifdef CONFIG_SPARSEMEM
 		/*
 		 * Take care not to free memmap entries that don't exist
@@ -391,127 +344,44 @@ static void __init free_unused_memmap(void)
 		 * presume that there are no holes in the memory map inside
 		 * a pageblock
 		 */
-		prev_end = ALIGN(memblock_region_memory_end_pfn(reg),
-				 pageblock_nr_pages);
+		prev_end = ALIGN(end, pageblock_nr_pages);
 	}
 
 #ifdef CONFIG_SPARSEMEM
 	if (!IS_ALIGNED(prev_end, PAGES_PER_SECTION)) {
-		prev_end = ALIGN(prev_end, pageblock_nr_pages);
+		prev_end = ALIGN(end, pageblock_nr_pages);
 		free_memmap(prev_end,
 			    ALIGN(prev_end, PAGES_PER_SECTION));
 	}
 #endif
 }
 
-#ifdef CONFIG_HIGHMEM
-static inline void free_area_high(unsigned long pfn, unsigned long end)
-{
-	for (; pfn < end; pfn++)
-		free_highmem_page(pfn_to_page(pfn));
-}
-#endif
-
 static void __init free_highpages(void)
 {
 #ifdef CONFIG_HIGHMEM
 	unsigned long max_low = max_low_pfn;
-	struct memblock_region *mem, *res;
+	phys_addr_t range_start, range_end;
+	u64 i;
 
 	/* set highmem page free */
-	for_each_memblock(memory, mem) {
-		unsigned long start = memblock_region_memory_base_pfn(mem);
-		unsigned long end = memblock_region_memory_end_pfn(mem);
+	for_each_free_mem_range(i, NUMA_NO_NODE, MEMBLOCK_NONE,
+				&range_start, &range_end, NULL) {
+		unsigned long start = PFN_UP(range_start);
+		unsigned long end = PFN_DOWN(range_end);
 
 		/* Ignore complete lowmem entries */
 		if (end <= max_low)
-			continue;
-
-		if (memblock_is_nomap(mem))
 			continue;
 
 		/* Truncate partial highmem entries */
 		if (start < max_low)
 			start = max_low;
 
-		/* Find and exclude any reserved regions */
-		for_each_memblock(reserved, res) {
-			unsigned long res_start, res_end;
-
-			res_start = memblock_region_reserved_base_pfn(res);
-			res_end = memblock_region_reserved_end_pfn(res);
-
-			if (res_end < start)
-				continue;
-			if (res_start < start)
-				res_start = start;
-			if (res_start > end)
-				res_start = end;
-			if (res_end > end)
-				res_end = end;
-			if (res_start != start)
-				free_area_high(start, res_start);
-			start = res_end;
-			if (start == end)
-				break;
-		}
-
-		/* And now free anything which remains */
-		if (start < end)
-			free_area_high(start, end);
+		for (; start < end; start++)
+			free_highmem_page(pfn_to_page(start));
 	}
 #endif
 }
-
-#define MLK(b, t) (b), (t), (((t) - (b)) >> 10)
-#define MLM(b, t) (b), (t), (((t) - (b)) >> 20)
-#define MLK_ROUNDUP(b, t) (b), (t), (DIV_ROUND_UP(((t) - (b)), SZ_1K))
-
-#ifdef CONFIG_ENABLE_VMALLOC_SAVING
-static void print_vmalloc_lowmem_info(void)
-{
-	struct memblock_region *reg, *prev_reg = NULL;
-
-	pr_notice(
-		"	   vmalloc : 0x%08lx - 0x%08lx   (%4ld MB)\n",
-		MLM((unsigned long)high_memory, VMALLOC_END));
-
-	for_each_memblock_rev(memory, reg) {
-		phys_addr_t start_phys = reg->base;
-		phys_addr_t end_phys = reg->base + reg->size;
-
-		if (start_phys > arm_lowmem_limit)
-			continue;
-
-		if (end_phys > arm_lowmem_limit)
-			end_phys = arm_lowmem_limit;
-
-		if (prev_reg == NULL) {
-			prev_reg = reg;
-
-			pr_notice(
-			"	   lowmem  : 0x%08lx - 0x%08lx   (%4ld MB)\n",
-			MLM((unsigned long)__va(start_phys),
-			(unsigned long)__va(end_phys)));
-
-			continue;
-		}
-
-		pr_notice(
-		"	   vmalloc : 0x%08lx - 0x%08lx   (%4ld MB)\n",
-		MLM((unsigned long)__va(end_phys),
-		(unsigned long)__va(prev_reg->base)));
-
-
-		pr_notice(
-		"	   lowmem  : 0x%08lx - 0x%08lx   (%4ld MB)\n",
-		MLM((unsigned long)__va(start_phys),
-		(unsigned long)__va(end_phys)));
-
-		prev_reg = reg;
-	}
-}
-#endif
 
 /*
  * mem_init() marks the free areas in the mem_map and tells us how much
@@ -543,52 +413,6 @@ void __init mem_init(void)
 
 	mem_init_print_info(NULL);
 
-	pr_notice("Virtual kernel memory layout:\n"
-			"    vector  : 0x%08lx - 0x%08lx   (%4ld kB)\n"
-#ifdef CONFIG_HAVE_TCM
-			"    DTCM    : 0x%08lx - 0x%08lx   (%4ld kB)\n"
-			"    ITCM    : 0x%08lx - 0x%08lx   (%4ld kB)\n"
-#endif
-			"    fixmap  : 0x%08lx - 0x%08lx   (%4ld kB)\n",
-			MLK(VECTORS_BASE, VECTORS_BASE + PAGE_SIZE),
-#ifdef CONFIG_HAVE_TCM
-			MLK(DTCM_OFFSET, (unsigned long) dtcm_end),
-			MLK(ITCM_OFFSET, (unsigned long) itcm_end),
-#endif
-			MLK(FIXADDR_START, FIXADDR_END));
-#ifdef CONFIG_ENABLE_VMALLOC_SAVING
-	print_vmalloc_lowmem_info();
-#else
-	pr_notice(
-		   "    vmalloc : 0x%08lx - 0x%08lx   (%4ld MB)\n"
-		   "    lowmem  : 0x%08lx - 0x%08lx   (%4ld MB)\n",
-			MLM(VMALLOC_START, VMALLOC_END),
-			MLM(PAGE_OFFSET, (unsigned long)high_memory));
-#endif
-	pr_notice(
-#ifdef CONFIG_HIGHMEM
-		   "    pkmap   : 0x%08lx - 0x%08lx   (%4ld MB)\n"
-#endif
-#ifdef CONFIG_MODULES
-		   "    modules : 0x%08lx - 0x%08lx   (%4ld MB)\n"
-#endif
-		   "      .text : 0x%pK - 0x%pK   (%4d kB)\n"
-		   "      .init : 0x%pK - 0x%pK   (%4d kB)\n"
-		   "      .data : 0x%pK - 0x%pK   (%4d kB)\n"
-		   "       .bss : 0x%pK - 0x%pK   (%4d kB)\n",
-#ifdef CONFIG_HIGHMEM
-			MLM(PKMAP_BASE, (PKMAP_BASE) + (LAST_PKMAP) *
-				(PAGE_SIZE)),
-#endif
-#ifdef CONFIG_MODULES
-			MLM(MODULES_VADDR, MODULES_END),
-#endif
-
-			MLK_ROUNDUP(_text, _etext),
-			MLK_ROUNDUP(__init_begin, __init_end),
-			MLK_ROUNDUP(_sdata, _edata),
-			MLK_ROUNDUP(__bss_start, __bss_stop));
-
 	/*
 	 * Check boundaries twice: Some fundamental inconsistencies can
 	 * be detected at build time already.
@@ -604,10 +428,6 @@ void __init mem_init(void)
 #endif
 }
 
-#undef MLK
-#undef MLM
-#undef MLK_ROUNDUP
-
 #ifdef CONFIG_STRICT_KERNEL_RWX
 struct section_perm {
 	const char *name;
@@ -616,9 +436,6 @@ struct section_perm {
 	pmdval_t mask;
 	pmdval_t prot;
 	pmdval_t clear;
-	pteval_t ptemask;
-	pteval_t pteprot;
-	pteval_t pteclear;
 };
 
 /* First section-aligned location at or after __start_rodata. */
@@ -632,8 +449,6 @@ static struct section_perm nx_perms[] = {
 		.end	= (unsigned long)_stext,
 		.mask	= ~PMD_SECT_XN,
 		.prot	= PMD_SECT_XN,
-		.ptemask = ~L_PTE_XN,
-		.pteprot = L_PTE_XN,
 	},
 	/* Make init RW (set NX). */
 	{
@@ -642,8 +457,6 @@ static struct section_perm nx_perms[] = {
 		.end	= (unsigned long)_sdata,
 		.mask	= ~PMD_SECT_XN,
 		.prot	= PMD_SECT_XN,
-		.ptemask = ~L_PTE_XN,
-		.pteprot = L_PTE_XN,
 	},
 	/* Make rodata NX (set RO in ro_perms below). */
 	{
@@ -652,8 +465,6 @@ static struct section_perm nx_perms[] = {
 		.end    = (unsigned long)__init_begin,
 		.mask   = ~PMD_SECT_XN,
 		.prot   = PMD_SECT_XN,
-		.ptemask = ~L_PTE_XN,
-		.pteprot = L_PTE_XN,
 	},
 };
 
@@ -671,8 +482,6 @@ static struct section_perm ro_perms[] = {
 		.prot   = PMD_SECT_APX | PMD_SECT_AP_WRITE,
 		.clear  = PMD_SECT_AP_WRITE,
 #endif
-		.ptemask = ~L_PTE_RDONLY,
-		.pteprot = L_PTE_RDONLY,
 	},
 };
 
@@ -681,40 +490,12 @@ static struct section_perm ro_perms[] = {
  * copied into each mm). During startup, this is the init_mm. Is only
  * safe to be called with preemption disabled, as under stop_machine().
  */
-struct pte_data {
-	pteval_t mask;
-	pteval_t val;
-};
-
-static int __pte_update(pte_t *ptep, unsigned long addr, void *d)
-{
-	struct pte_data *data = d;
-	pte_t pte = *ptep;
-
-	pte = __pte((pte_val(*ptep) & data->mask) | data->val);
-	set_pte_ext(ptep, pte, 0);
-
-	return 0;
-}
-
-static inline void pte_update(unsigned long addr, pteval_t mask,
-				  pteval_t prot, struct mm_struct *mm)
-{
-	struct pte_data data;
-
-	data.mask = mask;
-	data.val = prot;
-
-	apply_to_page_range(mm, addr, SECTION_SIZE, __pte_update, &data);
-	flush_tlb_kernel_range(addr, addr + SECTION_SIZE);
-}
-
 static inline void section_update(unsigned long addr, pmdval_t mask,
 				  pmdval_t prot, struct mm_struct *mm)
 {
 	pmd_t *pmd;
 
-	pmd = pmd_offset(pud_offset(pgd_offset(mm, addr), addr), addr);
+	pmd = pmd_offset(pud_offset(p4d_offset(pgd_offset(mm, addr), addr), addr), addr);
 
 #ifdef CONFIG_ARM_LPAE
 	pmd[0] = __pmd((pmd_val(pmd[0]) & mask) | prot);
@@ -737,8 +518,8 @@ static inline bool arch_has_strict_perms(void)
 	return !!(get_cr() & CR_XP);
 }
 
-void set_section_perms(struct section_perm *perms, int n, bool set,
-			struct mm_struct *mm)
+static void set_section_perms(struct section_perm *perms, int n, bool set,
+			      struct mm_struct *mm)
 {
 	size_t i;
 	unsigned long addr;
@@ -757,21 +538,11 @@ void set_section_perms(struct section_perm *perms, int n, bool set,
 
 		for (addr = perms[i].start;
 		     addr < perms[i].end;
-		     addr += SECTION_SIZE) {
-			pmd_t *pmd;
-
-			pmd = pmd_offset(pud_offset(pgd_offset(mm, addr),
-						addr), addr);
-			if (pmd_bad(*pmd))
-				section_update(addr, perms[i].mask,
-					set ? perms[i].prot : perms[i].clear,
-					mm);
-			else
-				pte_update(addr, perms[i].ptemask,
-				     set ? perms[i].pteprot : perms[i].pteclear,
-				     mm);
-		}
+		     addr += SECTION_SIZE)
+			section_update(addr, perms[i].mask,
+				set ? perms[i].prot : perms[i].clear, mm);
 	}
+
 }
 
 /**

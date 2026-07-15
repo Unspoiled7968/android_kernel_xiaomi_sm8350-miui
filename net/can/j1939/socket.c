@@ -12,6 +12,7 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
+#include <linux/can/can-ml.h>
 #include <linux/can/core.h>
 #include <linux/can/skb.h>
 #include <linux/errqueue.h>
@@ -471,6 +472,7 @@ static int j1939_sk_bind(struct socket *sock, struct sockaddr *uaddr, int len)
 		j1939_jsk_del(priv, jsk);
 		j1939_local_ecu_put(priv, jsk->addr.src_name, jsk->addr.sa);
 	} else {
+		struct can_ml_priv *can_ml;
 		struct net_device *ndev;
 
 		ndev = dev_get_by_index(net, addr->can_ifindex);
@@ -479,15 +481,8 @@ static int j1939_sk_bind(struct socket *sock, struct sockaddr *uaddr, int len)
 			goto out_release_sock;
 		}
 
-		if (ndev->type != ARPHRD_CAN) {
-			dev_put(ndev);
-			ret = -ENODEV;
-			goto out_release_sock;
-		}
-
-		if (!ndev->ml_priv) {
-			netdev_warn_once(ndev,
-					 "No CAN mid layer private allocated, please fix your driver and use alloc_candev()!\n");
+		can_ml = can_get_ml_priv(ndev);
+		if (!can_ml) {
 			dev_put(ndev);
 			ret = -ENODEV;
 			goto out_release_sock;
@@ -525,6 +520,9 @@ static int j1939_sk_bind(struct socket *sock, struct sockaddr *uaddr, int len)
 	ret = j1939_local_ecu_get(priv, jsk->addr.src_name, jsk->addr.sa);
 	if (ret) {
 		j1939_netdev_stop(priv);
+		jsk->priv = NULL;
+		synchronize_rcu();
+		j1939_priv_put(priv);
 		goto out_release_sock;
 	}
 
@@ -665,14 +663,14 @@ static int j1939_sk_release(struct socket *sock)
 	return 0;
 }
 
-static int j1939_sk_setsockopt_flag(struct j1939_sock *jsk, char __user *optval,
+static int j1939_sk_setsockopt_flag(struct j1939_sock *jsk, sockptr_t optval,
 				    unsigned int optlen, int flag)
 {
 	int tmp;
 
 	if (optlen != sizeof(tmp))
 		return -EINVAL;
-	if (copy_from_user(&tmp, optval, optlen))
+	if (copy_from_sockptr(&tmp, optval, optlen))
 		return -EFAULT;
 	lock_sock(&jsk->sk);
 	if (tmp)
@@ -684,7 +682,7 @@ static int j1939_sk_setsockopt_flag(struct j1939_sock *jsk, char __user *optval,
 }
 
 static int j1939_sk_setsockopt(struct socket *sock, int level, int optname,
-			       char __user *optval, unsigned int optlen)
+			       sockptr_t optval, unsigned int optlen)
 {
 	struct sock *sk = sock->sk;
 	struct j1939_sock *jsk = j1939_sk(sk);
@@ -696,7 +694,7 @@ static int j1939_sk_setsockopt(struct socket *sock, int level, int optname,
 
 	switch (optname) {
 	case SO_J1939_FILTER:
-		if (optval) {
+		if (!sockptr_is_null(optval) && optlen != 0) {
 			struct j1939_filter *f;
 			int c;
 
@@ -708,7 +706,7 @@ static int j1939_sk_setsockopt(struct socket *sock, int level, int optname,
 				return -EINVAL;
 
 			count = optlen / sizeof(*filters);
-			filters = memdup_user(optval, optlen);
+			filters = memdup_sockptr(optval, optlen);
 			if (IS_ERR(filters))
 				return PTR_ERR(filters);
 
@@ -743,7 +741,7 @@ static int j1939_sk_setsockopt(struct socket *sock, int level, int optname,
 	case SO_J1939_SEND_PRIO:
 		if (optlen != sizeof(tmp))
 			return -EINVAL;
-		if (copy_from_user(&tmp, optval, optlen))
+		if (copy_from_sockptr(&tmp, optval, optlen))
 			return -EFAULT;
 		if (tmp < 0 || tmp > 7)
 			return -EDOM;
@@ -1060,7 +1058,7 @@ static int j1939_sk_send_loop(struct j1939_priv *priv,  struct sock *sk,
 
 	todo_size = size;
 
-	while (todo_size) {
+	do {
 		struct j1939_sk_buff_cb *skcb;
 
 		segment_size = min_t(size_t, J1939_MAX_TP_PACKET_SIZE,
@@ -1105,7 +1103,7 @@ static int j1939_sk_send_loop(struct j1939_priv *priv,  struct sock *sk,
 
 		todo_size -= segment_size;
 		session->total_queued_size += segment_size;
-	}
+	} while (todo_size);
 
 	switch (ret) {
 	case 0: /* OK */
@@ -1117,7 +1115,7 @@ static int j1939_sk_send_loop(struct j1939_priv *priv,  struct sock *sk,
 		break;
 	case -ERESTARTSYS:
 		ret = -EINTR;
-		/* fall through */
+		fallthrough;
 	case -EAGAIN: /* OK */
 		if (todo_size != size)
 			ret = size - todo_size;

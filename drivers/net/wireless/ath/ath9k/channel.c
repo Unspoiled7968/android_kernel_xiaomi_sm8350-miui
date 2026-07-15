@@ -706,7 +706,7 @@ void ath_chanctx_event(struct ath_softc *sc, struct ieee80211_vif *vif,
 			"Move chanctx state from FORCE_ACTIVE to IDLE\n");
 
 		sc->sched.state = ATH_CHANCTX_STATE_IDLE;
-		/* fall through */
+		fallthrough;
 	case ATH_CHANCTX_EVENT_SWITCH:
 		if (!test_bit(ATH_OP_MULTI_CHANNEL, &common->op_flags) ||
 		    sc->sched.state == ATH_CHANCTX_STATE_FORCE_ACTIVE ||
@@ -1011,7 +1011,7 @@ static void ath_scan_send_probe(struct ath_softc *sc,
 	skb_set_queue_mapping(skb, IEEE80211_AC_VO);
 
 	if (!ieee80211_tx_prepare_skb(sc->hw, vif, skb, band, NULL))
-		goto error;
+		return;
 
 	txctl.txq = sc->tx.txq_map[IEEE80211_AC_VO];
 	if (ath_tx_start(sc->hw, skb, &txctl))
@@ -1080,7 +1080,7 @@ static void ath_offchannel_timer(struct timer_list *t)
 			mod_timer(&sc->offchannel.timer, jiffies + HZ / 10);
 			break;
 		}
-		/* fall through */
+		fallthrough;
 	case ATH_OFFCHANNEL_SUSPEND:
 		if (!sc->offchannel.scan_req)
 			return;
@@ -1124,10 +1124,8 @@ ath_chanctx_send_vif_ps_frame(struct ath_softc *sc, struct ath_vif *avp,
 
 		skb->priority = 7;
 		skb_set_queue_mapping(skb, IEEE80211_AC_VO);
-		if (!ieee80211_tx_prepare_skb(sc->hw, vif, skb, band, &sta)) {
-			dev_kfree_skb_any(skb);
+		if (!ieee80211_tx_prepare_skb(sc->hw, vif, skb, band, &sta))
 			return false;
-		}
 		break;
 	default:
 		return false;

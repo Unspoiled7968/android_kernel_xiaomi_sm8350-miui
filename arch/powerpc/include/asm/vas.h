@@ -52,7 +52,7 @@ enum vas_cop_type {
  * Receive window attributes specified by the (in-kernel) owner of window.
  */
 struct vas_rx_win_attr {
-	void *rx_fifo;
+	u64 rx_fifo;
 	int rx_fifo_size;
 	int wcreds_max;
 
@@ -86,7 +86,6 @@ struct vas_tx_win_attr {
 	int wcreds_max;
 	int lpid;
 	int pidr;		/* hardware PID (from SPRN_PID) */
-	int pid;		/* linux process id */
 	int pswid;
 	int rsvd_txbuf_count;
 	int tc_mode;
@@ -162,5 +161,20 @@ int vas_copy_crb(void *crb, int offset);
  * assumed to be true for NX windows.
  */
 int vas_paste_crb(struct vas_window *win, int offset, bool re);
+
+void vas_win_paste_addr(struct vas_window *window, u64 *addr,
+			int *len);
+
+/*
+ * Register / unregister coprocessor type to VAS API which will be exported
+ * to user space. Applications can use this API to open / close window
+ * which can be used to send / receive requests directly to cooprcessor.
+ *
+ * Only NX GZIP coprocessor type is supported now, but this API can be
+ * used for others in future.
+ */
+int vas_register_coproc_api(struct module *mod, enum vas_cop_type cop_type,
+				const char *name);
+void vas_unregister_coproc_api(void);
 
 #endif /* __ASM_POWERPC_VAS_H */

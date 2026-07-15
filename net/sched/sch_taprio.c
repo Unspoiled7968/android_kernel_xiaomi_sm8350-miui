@@ -1123,11 +1123,10 @@ static void setup_txtime(struct taprio_sched *q,
 
 static struct tc_taprio_qopt_offload *taprio_offload_alloc(int num_entries)
 {
-	size_t size = sizeof(struct tc_taprio_sched_entry) * num_entries +
-		      sizeof(struct __tc_taprio_qopt_offload);
 	struct __tc_taprio_qopt_offload *__offload;
 
-	__offload = kzalloc(size, GFP_KERNEL);
+	__offload = kzalloc(struct_size(__offload, offload.entries, num_entries),
+			    GFP_KERNEL);
 	if (!__offload)
 		return NULL;
 
@@ -1578,7 +1577,9 @@ static int taprio_change(struct Qdisc *sch, struct nlattr *opt,
 			goto unlock;
 		}
 
-		rcu_assign_pointer(q->admin_sched, new_admin);
+		/* Not going to race against advance_sched(), but still */
+		admin = rcu_replace_pointer(q->admin_sched, new_admin,
+					    lockdep_rtnl_is_held());
 		if (admin)
 			call_rcu(&admin->rcu, taprio_free_sched_cb);
 	} else {
@@ -1589,7 +1590,8 @@ static int taprio_change(struct Qdisc *sch, struct nlattr *opt,
 
 		taprio_start_sched(sch, start, new_admin);
 
-		rcu_assign_pointer(q->admin_sched, new_admin);
+		admin = rcu_replace_pointer(q->admin_sched, new_admin,
+					    lockdep_rtnl_is_held());
 		if (admin)
 			call_rcu(&admin->rcu, taprio_free_sched_cb);
 
@@ -1621,11 +1623,10 @@ static void taprio_reset(struct Qdisc *sch)
 	hrtimer_cancel(&q->advance_timer);
 
 	if (q->qdiscs) {
-		for (i = 0; i < dev->num_tx_queues && q->qdiscs[i]; i++)
-			qdisc_reset(q->qdiscs[i]);
+		for (i = 0; i < dev->num_tx_queues; i++)
+			if (q->qdiscs[i])
+				qdisc_reset(q->qdiscs[i]);
 	}
-	sch->qstats.backlog = 0;
-	sch->q.qlen = 0;
 }
 
 static void taprio_destroy(struct Qdisc *sch)

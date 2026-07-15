@@ -35,7 +35,7 @@ struct meson_sm_chip {
 	struct meson_sm_cmd cmd[];
 };
 
-struct meson_sm_chip gxbb_chip = {
+static const struct meson_sm_chip gxbb_chip = {
 	.shmem_size		= SZ_4K,
 	.cmd_shmem_in_base	= 0x82000020,
 	.cmd_shmem_out_base	= 0x82000021,
@@ -44,6 +44,8 @@ struct meson_sm_chip gxbb_chip = {
 		CMD(SM_EFUSE_WRITE,	0x82000031),
 		CMD(SM_EFUSE_USER_MAX,	0x82000033),
 		CMD(SM_GET_CHIP_ID,	0x82000044),
+		CMD(SM_A1_PWRC_SET,	0x82000093),
+		CMD(SM_A1_PWRC_GET,	0x82000095),
 		{ /* sentinel */ },
 	},
 };
@@ -223,11 +225,16 @@ EXPORT_SYMBOL(meson_sm_call_write);
 struct meson_sm_firmware *meson_sm_get(struct device_node *sm_node)
 {
 	struct platform_device *pdev = of_find_device_by_node(sm_node);
+	struct meson_sm_firmware *fw;
 
 	if (!pdev)
 		return NULL;
 
-	return platform_get_drvdata(pdev);
+	fw = platform_get_drvdata(pdev);
+
+	put_device(&pdev->dev);
+
+	return fw;
 }
 EXPORT_SYMBOL_GPL(meson_sm_get);
 
@@ -256,19 +263,7 @@ static ssize_t serial_show(struct device *dev, struct device_attribute *attr,
 		return ret;
 	}
 
-	ret = sprintf(buf, "%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x\n",
-			id_buf[SM_CHIP_ID_OFFSET + 0],
-			id_buf[SM_CHIP_ID_OFFSET + 1],
-			id_buf[SM_CHIP_ID_OFFSET + 2],
-			id_buf[SM_CHIP_ID_OFFSET + 3],
-			id_buf[SM_CHIP_ID_OFFSET + 4],
-			id_buf[SM_CHIP_ID_OFFSET + 5],
-			id_buf[SM_CHIP_ID_OFFSET + 6],
-			id_buf[SM_CHIP_ID_OFFSET + 7],
-			id_buf[SM_CHIP_ID_OFFSET + 8],
-			id_buf[SM_CHIP_ID_OFFSET + 9],
-			id_buf[SM_CHIP_ID_OFFSET + 10],
-			id_buf[SM_CHIP_ID_OFFSET + 11]);
+	ret = sprintf(buf, "%12phN\n", &id_buf[SM_CHIP_ID_OFFSET]);
 
 	kfree(id_buf);
 
@@ -323,10 +318,13 @@ static int __init meson_sm_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, fw);
 
-	pr_info("secure-monitor enabled\n");
+	if (devm_of_platform_populate(dev))
+		goto out_in_base;
 
 	if (sysfs_create_group(&pdev->dev.kobj, &meson_sm_sysfs_attr_group))
 		goto out_in_base;
+
+	pr_info("secure-monitor enabled\n");
 
 	return 0;
 
@@ -343,3 +341,4 @@ static struct platform_driver meson_sm_driver = {
 	},
 };
 module_platform_driver_probe(meson_sm_driver, meson_sm_probe);
+MODULE_LICENSE("GPL v2");

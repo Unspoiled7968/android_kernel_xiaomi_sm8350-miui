@@ -120,6 +120,12 @@ struct acc_dev {
 	/* delayed work for handling ACCESSORY_START */
 	struct delayed_work start_work;
 
+	/* work for handling ACCESSORY GET PROTOCOL */
+	struct work_struct getprotocol_work;
+
+	/* work for handling ACCESSORY SEND STRING */
+	struct work_struct sendstring_work;
+
 	/* worker for registering and unregistering hid devices */
 	struct work_struct hid_work;
 
@@ -164,7 +170,7 @@ static struct usb_ss_ep_comp_descriptor acc_superspeedplus_comp_desc = {
 	.bDescriptorType        = USB_DT_SS_ENDPOINT_COMP,
 
 	/* the following 2 values can be tweaked if necessary */
-	/* .bMaxBurst =         0, */
+	.bMaxBurst              = 6,
 	/* .bmAttributes =      0, */
 };
 
@@ -189,7 +195,7 @@ static struct usb_ss_ep_comp_descriptor acc_superspeed_comp_desc = {
 	.bDescriptorType        = USB_DT_SS_ENDPOINT_COMP,
 
 	/* the following 2 values can be tweaked if necessary */
-	/* .bMaxBurst =         0, */
+	.bMaxBurst              = 6,
 	/* .bmAttributes =      0, */
 };
 
@@ -298,6 +304,8 @@ static void __put_acc_dev(struct kref *kref)
 
 	/* Cancel any async work */
 	cancel_delayed_work_sync(&dev->start_work);
+	cancel_work_sync(&dev->getprotocol_work);
+	cancel_work_sync(&dev->sendstring_work);
 	cancel_work_sync(&dev->hid_work);
 
 	ref->acc_dev = NULL;
@@ -492,7 +500,7 @@ static void acc_complete_send_hid_event(struct usb_ep *ep,
 		return;
 	}
 
-	hid_report_raw_event(hid->hid, HID_INPUT_REPORT, req->buf, length, 1);
+	__hid_report_raw_event(hid->hid, HID_INPUT_REPORT, req->buf, length, length, 1);
 }
 
 static int acc_hid_parse(struct hid_device *hid)
@@ -993,6 +1001,7 @@ int acc_ctrlrequest(struct usb_composite_dev *cdev,
 			value = 0;
 			cdev->req->complete = acc_complete_setup_noop;
 		} else if (b_request == ACCESSORY_SEND_STRING) {
+			schedule_work(&dev->sendstring_work);
 			dev->string_index = w_index;
 			cdev->gadget->ep0->driver_data = dev;
 			cdev->req->complete = acc_complete_set_string;
@@ -1039,6 +1048,7 @@ int acc_ctrlrequest(struct usb_composite_dev *cdev,
 		}
 	} else if (b_requestType == (USB_DIR_IN | USB_TYPE_VENDOR)) {
 		if (b_request == ACCESSORY_GET_PROTOCOL) {
+			schedule_work(&dev->getprotocol_work);
 			*((u16 *)cdev->req->buf) = PROTOCOL_VERSION;
 			value = sizeof(u16);
 			cdev->req->complete = acc_complete_setup_noop;
@@ -1051,8 +1061,6 @@ int acc_ctrlrequest(struct usb_composite_dev *cdev,
 			memset(dev->serial, 0, sizeof(dev->serial));
 			dev->start_requested = 0;
 			dev->audio_mode = 0;
-			strlcpy(dev->manufacturer, "Android", ACC_STRING_SIZE);
-			strlcpy(dev->model, "Android", ACC_STRING_SIZE);
 		}
 	}
 
@@ -1215,6 +1223,20 @@ acc_function_unbind(struct usb_configuration *c, struct usb_function *f)
 	}
 
 	acc_hid_unbind(dev);
+}
+
+static void acc_getprotocol_work(struct work_struct *data)
+{
+	char *envp[2] = { "ACCESSORY=GETPROTOCOL", NULL };
+
+	kobject_uevent_env(&acc_device.this_device->kobj, KOBJ_CHANGE, envp);
+}
+
+static void acc_sendstring_work(struct work_struct *data)
+{
+	char *envp[2] = { "ACCESSORY=SENDSTRING", NULL };
+
+	kobject_uevent_env(&acc_device.this_device->kobj, KOBJ_CHANGE, envp);
 }
 
 static void acc_start_work(struct work_struct *data)
@@ -1392,6 +1414,8 @@ static int acc_setup(void)
 	INIT_LIST_HEAD(&dev->dead_hid_list);
 	INIT_DELAYED_WORK(&dev->start_work, acc_start_work);
 	INIT_WORK(&dev->hid_work, acc_hid_work);
+	INIT_WORK(&dev->getprotocol_work, acc_getprotocol_work);
+	INIT_WORK(&dev->sendstring_work, acc_sendstring_work);
 
 	dev->ref = ref;
 	if (cmpxchg_relaxed(&ref->acc_dev, NULL, dev)) {

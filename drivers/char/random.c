@@ -60,6 +60,10 @@
 #include <asm/irq_regs.h>
 #include <asm/io.h>
 
+// GKI: Keep this header to retain the original CRC that previously used the
+// random.h tracepoints.
+#include <linux/writeback.h>
+
 /*********************************************************************
  *
  * Initialization and readiness waiting.
@@ -172,6 +176,7 @@ int __cold unregister_random_ready_notifier(struct notifier_block *nb)
 	return ret;
 }
 
+static void process_oldschool_random_ready_list(void);
 static void __cold process_random_ready_list(void)
 {
 	unsigned long flags;
@@ -179,6 +184,8 @@ static void __cold process_random_ready_list(void)
 	spin_lock_irqsave(&random_ready_chain_lock, flags);
 	raw_notifier_call_chain(&random_ready_chain, 0, NULL);
 	spin_unlock_irqrestore(&random_ready_chain_lock, flags);
+
+	process_oldschool_random_ready_list();
 }
 
 #define warn_unseeded_randomness() \
@@ -229,10 +236,12 @@ static struct {
 struct crng {
 	u8 key[CHACHA_KEY_SIZE];
 	unsigned long generation;
+	local_lock_t lock;
 };
 
 static DEFINE_PER_CPU(struct crng, crngs) = {
-	.generation = ULONG_MAX
+	.generation = ULONG_MAX,
+	.lock = INIT_LOCAL_LOCK(crngs.lock),
 };
 
 /* Used by crng_reseed() and crng_make_state() to extract a new seed from the input pool. */
@@ -281,7 +290,7 @@ static void crng_reseed(void)
  * that this function overwrites it before returning.
  */
 static void crng_fast_key_erasure(u8 key[CHACHA_KEY_SIZE],
-				  u32 chacha_state[CHACHA_BLOCK_SIZE / sizeof(u32)],
+				  u32 chacha_state[CHACHA_STATE_WORDS],
 				  u8 *random_data, size_t random_data_len)
 {
 	u8 first_block[CHACHA_BLOCK_SIZE];
@@ -325,7 +334,7 @@ static bool crng_has_old_seed(void)
  * random data. It also returns up to 32 bytes on its own of random data
  * that may be used; random_data_len may not be greater than 32.
  */
-static void crng_make_state(u32 chacha_state[CHACHA_BLOCK_SIZE / sizeof(u32)],
+static void crng_make_state(u32 chacha_state[CHACHA_STATE_WORDS],
 			    u8 *random_data, size_t random_data_len)
 {
 	unsigned long flags;
@@ -362,7 +371,7 @@ static void crng_make_state(u32 chacha_state[CHACHA_BLOCK_SIZE / sizeof(u32)],
 	if (unlikely(crng_has_old_seed()))
 		crng_reseed();
 
-	local_irq_save(flags);
+	local_lock_irqsave(&crngs.lock, flags);
 	crng = raw_cpu_ptr(&crngs);
 
 	/*
@@ -387,12 +396,12 @@ static void crng_make_state(u32 chacha_state[CHACHA_BLOCK_SIZE / sizeof(u32)],
 	 * should wind up here immediately.
 	 */
 	crng_fast_key_erasure(crng->key, chacha_state, random_data, random_data_len);
-	local_irq_restore(flags);
+	local_unlock_irqrestore(&crngs.lock, flags);
 }
 
 static void _get_random_bytes(void *buf, size_t len)
 {
-	u32 chacha_state[CHACHA_BLOCK_SIZE / sizeof(u32)];
+	u32 chacha_state[CHACHA_STATE_WORDS];
 	u8 tmp[CHACHA_BLOCK_SIZE];
 	size_t first_block_len;
 
@@ -441,7 +450,7 @@ EXPORT_SYMBOL(get_random_bytes);
 
 static ssize_t get_random_bytes_user(struct iov_iter *iter)
 {
-	u32 chacha_state[CHACHA_BLOCK_SIZE / sizeof(u32)];
+	u32 chacha_state[CHACHA_STATE_WORDS];
 	u8 block[CHACHA_BLOCK_SIZE];
 	size_t ret = 0, copied;
 
@@ -505,11 +514,13 @@ struct batch_ ##type {								\
 	 * formula of (integer_blocks + 0.5) * CHACHA_BLOCK_SIZE.		\
 	 */									\
 	type entropy[CHACHA_BLOCK_SIZE * 3 / (2 * sizeof(type))];		\
+	local_lock_t lock;							\
 	unsigned long generation;						\
 	unsigned int position;							\
 };										\
 										\
 static DEFINE_PER_CPU(struct batch_ ##type, batched_entropy_ ##type) = {	\
+	.lock = INIT_LOCAL_LOCK(batched_entropy_ ##type.lock),			\
 	.position = UINT_MAX							\
 };										\
 										\
@@ -527,7 +538,7 @@ type get_random_ ##type(void)							\
 		return ret;							\
 	}									\
 										\
-	local_irq_save(flags);		\
+	local_lock_irqsave(&batched_entropy_ ##type.lock, flags);		\
 	batch = raw_cpu_ptr(&batched_entropy_##type);				\
 										\
 	next_gen = READ_ONCE(base_crng.generation);				\
@@ -541,7 +552,7 @@ type get_random_ ##type(void)							\
 	ret = batch->entropy[batch->position];					\
 	batch->entropy[batch->position] = 0;					\
 	++batch->position;							\
-	local_irq_restore(flags);		\
+	local_unlock_irqrestore(&batched_entropy_ ##type.lock, flags);		\
 	return ret;								\
 }										\
 EXPORT_SYMBOL(get_random_ ##type);
@@ -574,7 +585,7 @@ int __cold random_prepare_cpu(unsigned int cpu)
  * use. Use get_random_bytes() instead. It returns the number of
  * bytes filled in.
  */
-size_t __must_check get_random_bytes_arch(void *buf, size_t len)
+int __must_check get_random_bytes_arch(void *buf, int len)
 {
 	size_t left = len;
 	u8 *p = buf;
@@ -785,8 +796,8 @@ static void __cold _credit_init_bits(size_t bits)
  *
  **********************************************************************/
 
-static bool trust_cpu __initdata = IS_ENABLED(CONFIG_RANDOM_TRUST_CPU);
-static bool trust_bootloader __initdata = IS_ENABLED(CONFIG_RANDOM_TRUST_BOOTLOADER);
+static bool trust_cpu __ro_after_init = IS_ENABLED(CONFIG_RANDOM_TRUST_CPU);
+static bool trust_bootloader __ro_after_init = IS_ENABLED(CONFIG_RANDOM_TRUST_BOOTLOADER);
 static int __init parse_trust_cpu(char *arg)
 {
 	return kstrtobool(arg, &trust_cpu);
@@ -809,7 +820,7 @@ early_param("random.trust_bootloader", parse_trust_bootloader);
 int __init random_init(const char *command_line)
 {
 	ktime_t now = ktime_get_real();
-	unsigned int i, arch_bits;
+	unsigned int i, arch_bytes;
 	unsigned long entropy;
 
 #if defined(LATENT_ENTROPY_PLUGIN)
@@ -817,12 +828,12 @@ int __init random_init(const char *command_line)
 	_mix_pool_bytes(compiletime_seed, sizeof(compiletime_seed));
 #endif
 
-	for (i = 0, arch_bits = BLAKE2S_BLOCK_SIZE * 8;
+	for (i = 0, arch_bytes = BLAKE2S_BLOCK_SIZE;
 	     i < BLAKE2S_BLOCK_SIZE; i += sizeof(entropy)) {
 		if (!arch_get_random_seed_long_early(&entropy) &&
 		    !arch_get_random_long_early(&entropy)) {
 			entropy = random_get_entropy();
-			arch_bits -= sizeof(entropy) * 8;
+			arch_bytes -= sizeof(entropy);
 		}
 		_mix_pool_bytes(&entropy, sizeof(entropy));
 	}
@@ -834,7 +845,7 @@ int __init random_init(const char *command_line)
 	if (crng_ready())
 		crng_reseed();
 	else if (trust_cpu)
-		_credit_init_bits(arch_bits);
+		credit_init_bits(arch_bytes * 8);
 
 	return 0;
 }
@@ -882,12 +893,13 @@ EXPORT_SYMBOL_GPL(add_hwgenerator_randomness);
  * Handle random seed passed by bootloader, and credit it if
  * CONFIG_RANDOM_TRUST_BOOTLOADER is set.
  */
-void __init add_bootloader_randomness(const void *buf, size_t len)
+void __cold add_bootloader_randomness(const void *buf, size_t len)
 {
 	mix_pool_bytes(buf, len);
 	if (trust_bootloader)
 		credit_init_bits(len * 8);
 }
+EXPORT_SYMBOL_GPL(add_bootloader_randomness);
 
 struct fast_pool {
 	unsigned long pool[4];
@@ -1299,7 +1311,7 @@ static ssize_t random_read_iter(struct kiocb *kiocb, struct iov_iter *iter)
 	int ret;
 
 	if (!crng_ready() &&
-	    ((kiocb->ki_flags & IOCB_NOWAIT) ||
+	    ((kiocb->ki_flags & (IOCB_NOWAIT | IOCB_NOIO)) ||
 	     (kiocb->ki_filp->f_flags & O_NONBLOCK)))
 		return -EAGAIN;
 
@@ -1446,7 +1458,7 @@ static u8 sysctl_bootid[UUID_SIZE];
  * UUID. The difference is in whether table->data is NULL; if it is,
  * then a new UUID is generated and returned to the user.
  */
-static int proc_do_uuid(struct ctl_table *table, int write, void __user *buf,
+static int proc_do_uuid(struct ctl_table *table, int write, void *buf,
 			size_t *lenp, loff_t *ppos)
 {
 	u8 tmp_uuid[UUID_SIZE], *uuid;
@@ -1477,7 +1489,7 @@ static int proc_do_uuid(struct ctl_table *table, int write, void __user *buf,
 }
 
 /* The same as proc_dointvec, but writes don't change anything. */
-static int proc_do_rointvec(struct ctl_table *table, int write, void __user *buf,
+static int proc_do_rointvec(struct ctl_table *table, int write, void *buf,
 			    size_t *lenp, loff_t *ppos)
 {
 	return write ? 0 : proc_dointvec(table, 0, buf, lenp, ppos);
@@ -1527,3 +1539,76 @@ struct ctl_table random_table[] = {
 	{ }
 };
 #endif	/* CONFIG_SYSCTL */
+
+/*
+ * Android KABI fixups
+ *
+ * Add back two functions that were being used by out-of-tree drivers.
+ *
+ * Yes, horrible hack, the things we do for FIPS "compliance"...
+ */
+static DEFINE_SPINLOCK(random_ready_list_lock);
+static LIST_HEAD(random_ready_list);
+
+int add_random_ready_callback(struct random_ready_callback *rdy)
+{
+	struct module *owner;
+	unsigned long flags;
+	int err = -EALREADY;
+
+	if (crng_ready())
+		return err;
+
+	owner = rdy->owner;
+	if (!try_module_get(owner))
+		return -ENOENT;
+
+	spin_lock_irqsave(&random_ready_list_lock, flags);
+	if (crng_ready())
+		goto out;
+
+	owner = NULL;
+
+	list_add(&rdy->list, &random_ready_list);
+	err = 0;
+
+out:
+	spin_unlock_irqrestore(&random_ready_list_lock, flags);
+
+	module_put(owner);
+
+	return err;
+}
+EXPORT_SYMBOL(add_random_ready_callback);
+
+void del_random_ready_callback(struct random_ready_callback *rdy)
+{
+	unsigned long flags;
+	struct module *owner = NULL;
+
+	spin_lock_irqsave(&random_ready_list_lock, flags);
+	if (!list_empty(&rdy->list)) {
+		list_del_init(&rdy->list);
+		owner = rdy->owner;
+	}
+	spin_unlock_irqrestore(&random_ready_list_lock, flags);
+
+	module_put(owner);
+}
+EXPORT_SYMBOL(del_random_ready_callback);
+
+static void process_oldschool_random_ready_list(void)
+{
+	unsigned long flags;
+	struct random_ready_callback *rdy, *tmp;
+
+	spin_lock_irqsave(&random_ready_list_lock, flags);
+	list_for_each_entry_safe(rdy, tmp, &random_ready_list, list) {
+		struct module *owner = rdy->owner;
+
+		list_del_init(&rdy->list);
+		rdy->func(rdy);
+		module_put(owner);
+	}
+	spin_unlock_irqrestore(&random_ready_list_lock, flags);
+}

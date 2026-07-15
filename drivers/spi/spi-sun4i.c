@@ -198,7 +198,7 @@ static void sun4i_spi_set_cs(struct spi_device *spi, bool enable)
 
 static size_t sun4i_spi_max_transfer_size(struct spi_device *spi)
 {
-	return SUN4I_FIFO_DEPTH - 1;
+	return SUN4I_MAX_XFER_SIZE - 1;
 }
 
 static int sun4i_spi_transfer_one(struct spi_master *master,
@@ -262,6 +262,9 @@ static int sun4i_spi_transfer_one(struct spi_master *master,
 		reg &= ~SUN4I_CTL_DHB;
 	else
 		reg |= SUN4I_CTL_DHB;
+
+	/* Now that the settings are correct, enable the interface */
+	reg |= SUN4I_CTL_ENABLE;
 
 	sun4i_spi_write(sspi, SUN4I_CTL_REG, reg);
 
@@ -403,7 +406,7 @@ static int sun4i_spi_runtime_resume(struct device *dev)
 	}
 
 	sun4i_spi_write(sspi, SUN4I_CTL_REG,
-			SUN4I_CTL_ENABLE | SUN4I_CTL_MASTER | SUN4I_CTL_TP);
+			SUN4I_CTL_MASTER | SUN4I_CTL_TP);
 
 	return 0;
 

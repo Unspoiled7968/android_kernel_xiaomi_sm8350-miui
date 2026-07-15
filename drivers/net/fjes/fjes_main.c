@@ -14,9 +14,7 @@
 #include "fjes.h"
 #include "fjes_trace.h"
 
-#define MAJ 1
-#define MIN 2
-#define DRV_VERSION __stringify(MAJ) "." __stringify(MIN)
+#define DRV_VERSION "1.2"
 #define DRV_NAME	"fjes"
 char fjes_driver_name[] = DRV_NAME;
 char fjes_driver_version[] = DRV_VERSION;
@@ -48,7 +46,7 @@ static void fjes_get_stats64(struct net_device *, struct rtnl_link_stats64 *);
 static int fjes_change_mtu(struct net_device *, int);
 static int fjes_vlan_rx_add_vid(struct net_device *, __be16 proto, u16);
 static int fjes_vlan_rx_kill_vid(struct net_device *, __be16 proto, u16);
-static void fjes_tx_retry(struct net_device *);
+static void fjes_tx_retry(struct net_device *, unsigned int txqueue);
 
 static int fjes_acpi_add(struct acpi_device *);
 static int fjes_acpi_remove(struct acpi_device *);
@@ -795,7 +793,7 @@ fjes_xmit_frame(struct sk_buff *skb, struct net_device *netdev)
 	return ret;
 }
 
-static void fjes_tx_retry(struct net_device *netdev)
+static void fjes_tx_retry(struct net_device *netdev, unsigned int txqueue)
 {
 	struct netdev_queue *queue = netdev_get_tx_queue(netdev, 0);
 
@@ -974,7 +972,7 @@ static void fjes_stop_req_irq(struct fjes_adapter *adapter, int src_epid)
 				FJES_RX_STOP_REQ_DONE;
 		spin_unlock_irqrestore(&hw->rx_status_lock, flags);
 		clear_bit(src_epid, &hw->txrx_stop_req_bit);
-		/* fall through */
+		fallthrough;
 	case EP_PARTNER_UNSHARE:
 	case EP_PARTNER_COMPLETE:
 	default:

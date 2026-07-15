@@ -18,6 +18,8 @@
 #include <linux/mmc/mmc.h>
 #include <linux/mmc/sd.h>
 
+#include <trace/hooks/mmc_core.h>
+
 #include "core.h"
 #include "card.h"
 #include "host.h"
@@ -382,11 +384,11 @@ int mmc_sd_switch_hs(struct mmc_card *card)
 	if (!status)
 		return -ENOMEM;
 
-	err = mmc_sd_switch(card, 1, 0, 1, status);
+	err = mmc_sd_switch(card, 1, 0, HIGH_SPEED_BUS_SPEED, status);
 	if (err)
 		goto out;
 
-	if ((status[16] & 0xF) != 1) {
+	if ((status[16] & 0xF) != HIGH_SPEED_BUS_SPEED) {
 		pr_warn("%s: Problem switching card into high-speed mode!\n",
 			mmc_hostname(card->host));
 		err = 0;
@@ -462,6 +464,8 @@ static void sd_update_bus_speed_mode(struct mmc_card *card)
 		    SD_MODE_UHS_SDR12)) {
 			card->sd_bus_speed = UHS_SDR12_BUS_SPEED;
 	}
+
+	trace_android_vh_sd_update_bus_speed_mode(card);
 }
 
 static int sd_set_bus_speed_mode(struct mmc_card *card, u8 *status)
@@ -598,60 +602,6 @@ static int sd_set_current_limit(struct mmc_card *card, u8 *status)
 	return 0;
 }
 
-#if defined(CONFIG_SDC_QTI)
-/**
- * mmc_sd_change_bus_speed() - Change SD card bus frequency at runtime
- * @host: pointer to mmc host structure
- * @freq: pointer to desired frequency to be set
- *
- * Change the SD card bus frequency at runtime after the card is
- * initialized. Callers are expected to make sure of the card's
- * state (DATA/RCV/TRANSFER) beforing changing the frequency at runtime.
- *
- * If the frequency to change is greater than max. supported by card,
- * *freq is changed to max. supported by card and if it is less than min.
- * supported by host, *freq is changed to min. supported by host.
- */
-static int mmc_sd_change_bus_speed(struct mmc_host *host, unsigned long *freq)
-{
-	int err = 0;
-	struct mmc_card *card;
-
-	/*
-	 * Assign card pointer after claiming host to avoid race
-	 * conditions that may arise during removal of the card.
-	 */
-	card = host->card;
-
-	/* sanity checks */
-	if (!card || !freq) {
-		err = -EINVAL;
-		goto out;
-	}
-
-	mmc_set_clock(host, (unsigned int) (*freq));
-
-	if (!mmc_host_is_spi(card->host) && mmc_card_uhs(card)
-			&& card->host->ops->execute_tuning) {
-		/*
-		 * We try to probe host driver for tuning for any
-		 * frequency, it is host driver responsibility to
-		 * perform actual tuning only when required.
-		 */
-		err = card->host->ops->execute_tuning(card->host,
-				MMC_SEND_TUNING_BLOCK);
-		if (err) {
-			pr_warn("%s: %s: tuning execution failed %d. Restoring to previous clock %lu\n",
-				   mmc_hostname(card->host), __func__, err,
-				   host->clk_scaling.curr_freq);
-			mmc_set_clock(host, host->clk_scaling.curr_freq);
-		}
-	}
-
-out:
-	return err;
-}
-#endif
 /*
  * UHS-I specific initialization procedure
  */
@@ -767,7 +717,36 @@ static ssize_t mmc_dsr_show(struct device *dev,
 
 static DEVICE_ATTR(dsr, S_IRUGO, mmc_dsr_show, NULL);
 
+MMC_DEV_ATTR(vendor, "0x%04x\n", card->cis.vendor);
+MMC_DEV_ATTR(device, "0x%04x\n", card->cis.device);
+MMC_DEV_ATTR(revision, "%u.%u\n", card->major_rev, card->minor_rev);
+
+#define sdio_info_attr(num)									\
+static ssize_t info##num##_show(struct device *dev, struct device_attribute *attr, char *buf)	\
+{												\
+	struct mmc_card *card = mmc_dev_to_card(dev);						\
+												\
+	if (num > card->num_info)								\
+		return -ENODATA;								\
+	if (!card->info[num-1][0])								\
+		return 0;									\
+	return sprintf(buf, "%s\n", card->info[num-1]);						\
+}												\
+static DEVICE_ATTR_RO(info##num)
+
+sdio_info_attr(1);
+sdio_info_attr(2);
+sdio_info_attr(3);
+sdio_info_attr(4);
+
 static struct attribute *sd_std_attrs[] = {
+	&dev_attr_vendor.attr,
+	&dev_attr_device.attr,
+	&dev_attr_revision.attr,
+	&dev_attr_info1.attr,
+	&dev_attr_info2.attr,
+	&dev_attr_info3.attr,
+	&dev_attr_info4.attr,
 	&dev_attr_cid.attr,
 	&dev_attr_csd.attr,
 	&dev_attr_scr.attr,
@@ -786,7 +765,32 @@ static struct attribute *sd_std_attrs[] = {
 	&dev_attr_dsr.attr,
 	NULL,
 };
-ATTRIBUTE_GROUPS(sd_std);
+
+static umode_t sd_std_is_visible(struct kobject *kobj, struct attribute *attr,
+				 int index)
+{
+	struct device *dev = kobj_to_dev(kobj);
+	struct mmc_card *card = mmc_dev_to_card(dev);
+
+	/* CIS vendor and device ids, revision and info string are available only for Combo cards */
+	if ((attr == &dev_attr_vendor.attr ||
+	     attr == &dev_attr_device.attr ||
+	     attr == &dev_attr_revision.attr ||
+	     attr == &dev_attr_info1.attr ||
+	     attr == &dev_attr_info2.attr ||
+	     attr == &dev_attr_info3.attr ||
+	     attr == &dev_attr_info4.attr
+	    ) && card->type != MMC_TYPE_SD_COMBO)
+		return 0;
+
+	return attr->mode;
+}
+
+static const struct attribute_group sd_std_group = {
+	.attrs = sd_std_attrs,
+	.is_visible = sd_std_is_visible,
+};
+__ATTRIBUTE_GROUPS(sd_std);
 
 struct device_type sd_type = {
 	.groups = sd_std_groups,
@@ -933,14 +937,15 @@ int mmc_sd_setup_card(struct mmc_host *host, struct mmc_card *card,
 
 		/* Erase init depends on CSD and SSR */
 		mmc_init_erase(card);
-
-		/*
-		 * Fetch switch information from card.
-		 */
-		err = mmc_read_switch(card);
-		if (err)
-			return err;
 	}
+
+	/*
+	 * Fetch switch information from card. Note, sd3_bus_mode can change if
+	 * voltage switch outcome changes, so do this always.
+	 */
+	err = mmc_read_switch(card);
+	if (err)
+		return err;
 
 	/*
 	 * For SPI, enable CRC as appropriate.
@@ -975,24 +980,13 @@ unsigned mmc_sd_get_max_clock(struct mmc_card *card)
 {
 	unsigned max_dtr = (unsigned int)-1;
 
-#if defined(CONFIG_SDC_QTI)
-	if (mmc_card_uhs(card)) {
-		if (max_dtr > card->sw_caps.uhs_max_dtr)
-			max_dtr = card->sw_caps.uhs_max_dtr;
-	} else if (mmc_card_hs(card)) {
-		if (max_dtr > card->sw_caps.hs_max_dtr)
-			max_dtr = card->sw_caps.hs_max_dtr;
-	} else if (max_dtr > card->csd.max_dtr) {
-		max_dtr = card->csd.max_dtr;
-	}
-#else
 	if (mmc_card_hs(card)) {
 		if (max_dtr > card->sw_caps.hs_max_dtr)
 			max_dtr = card->sw_caps.hs_max_dtr;
 	} else if (max_dtr > card->csd.max_dtr) {
 		max_dtr = card->csd.max_dtr;
 	}
-#endif
+
 	return max_dtr;
 }
 
@@ -1101,26 +1095,15 @@ retry:
 	if (!v18_fixup_failed && !mmc_host_is_spi(host) && mmc_host_uhs(host) &&
 	    mmc_sd_card_using_v18(card) &&
 	    host->ios.signal_voltage != MMC_SIGNAL_VOLTAGE_180) {
-		/*
-		 * Re-read switch information in case it has changed since
-		 * oldcard was initialized.
-		 */
-		if (oldcard) {
-			err = mmc_read_switch(card);
-			if (err)
-				goto free_card;
+		if (mmc_host_set_uhs_voltage(host) ||
+		    mmc_sd_init_uhs_card(card)) {
+			v18_fixup_failed = true;
+			mmc_power_cycle(host, ocr);
+			if (!oldcard)
+				mmc_remove_card(card);
+			goto retry;
 		}
-		if (mmc_sd_card_using_v18(card)) {
-			if (mmc_host_set_uhs_voltage(host) ||
-			    mmc_sd_init_uhs_card(card)) {
-				v18_fixup_failed = true;
-				mmc_power_cycle(host, ocr);
-				if (!oldcard)
-					mmc_remove_card(card);
-				goto retry;
-			}
-			goto cont;
-		}
+		goto cont;
 	}
 
 	/* Initialization sequence for UHS-I cards */
@@ -1155,7 +1138,6 @@ retry:
 			mmc_set_bus_width(host, MMC_BUS_WIDTH_4);
 		}
 	}
-
 cont:
 	if (host->cqe_ops && !host->cqe_enabled) {
 		err = host->cqe_ops->cqe_enable(host, card);
@@ -1175,11 +1157,6 @@ cont:
 		goto free_card;
 	}
 
-#if defined(CONFIG_SDC_QTI)
-	card->clk_scaling_highest = mmc_sd_get_max_clock(card);
-	card->clk_scaling_lowest = host->f_min;
-#endif
-
 	host->card = card;
 	return 0;
 
@@ -1195,9 +1172,6 @@ free_card:
  */
 static void mmc_sd_remove(struct mmc_host *host)
 {
-#if defined(CONFIG_SDC_QTI)
-	mmc_exit_clk_scaling(host);
-#endif
 	mmc_remove_card(host->card);
 	host->card = NULL;
 }
@@ -1217,21 +1191,7 @@ static void mmc_sd_detect(struct mmc_host *host)
 {
 	int err;
 
-#if defined(CONFIG_SDC_QTI)
-	/*
-	 * Try to acquire claim host. If failed to get the lock in 2 sec,
-	 * just return; This is to ensure that when this call is invoked
-	 * due to pm_suspend, not to block suspend for longer duration.
-	 */
-	pm_runtime_get_sync(&host->card->dev);
-	if (!mmc_try_claim_host(host, NULL, 2000)) {
-		pm_runtime_mark_last_busy(&host->card->dev);
-		pm_runtime_put_autosuspend(&host->card->dev);
-		return;
-	}
-#else
-	 mmc_get_card(host->card, NULL);
-#endif
+	mmc_get_card(host->card, NULL);
 
 	/*
 	 * Just check if our card has been removed.
@@ -1253,16 +1213,8 @@ static void mmc_sd_detect(struct mmc_host *host)
 static int _mmc_sd_suspend(struct mmc_host *host)
 {
 	int err = 0;
-#if defined(CONFIG_SDC_QTI)
-	err = mmc_suspend_clk_scaling(host);
-	if (err) {
-		pr_err("%s: %s: fail to suspend clock scaling (%d)\n",
-			mmc_hostname(host), __func__,  err);
-		return err;
-	}
-#endif
+
 	mmc_claim_host(host);
-	mmc_log_string(host, "Enter\n");
 
 	if (mmc_card_suspended(host->card))
 		goto out;
@@ -1277,7 +1229,6 @@ static int _mmc_sd_suspend(struct mmc_host *host)
 
 out:
 	mmc_release_host(host);
-	mmc_log_string(host, "Exit err: %d\n", err);
 	return err;
 }
 
@@ -1306,7 +1257,6 @@ static int _mmc_sd_resume(struct mmc_host *host)
 	int err = 0;
 
 	mmc_claim_host(host);
-	mmc_log_string(host, "Enter\n");
 
 	if (!mmc_card_suspended(host->card))
 		goto out;
@@ -1315,17 +1265,8 @@ static int _mmc_sd_resume(struct mmc_host *host)
 	err = mmc_sd_init_card(host, host->card->ocr, host->card);
 	mmc_card_clr_suspended(host->card);
 
-#if defined(CONFIG_SDC_QTI)
-	err = mmc_resume_clk_scaling(host);
-	if (err) {
-		pr_err("%s: %s: fail to resume clock scaling (%d)\n",
-			mmc_hostname(host), __func__, err);
-		goto out;
-	}
-#endif
 out:
 	mmc_release_host(host);
-	mmc_log_string(host, "Exit err: %d\n", err);
 	return err;
 }
 
@@ -1335,7 +1276,6 @@ out:
 static int mmc_sd_resume(struct mmc_host *host)
 {
 	pm_runtime_enable(&host->card->dev);
-	mmc_log_string(host, "done\n");
 	return 0;
 }
 
@@ -1388,9 +1328,6 @@ static const struct mmc_bus_ops mmc_sd_ops = {
 	.alive = mmc_sd_alive,
 	.shutdown = mmc_sd_suspend,
 	.hw_reset = mmc_sd_hw_reset,
-#if defined(CONFIG_SDC_QTI)
-	.change_bus_speed = mmc_sd_change_bus_speed,
-#endif
 };
 
 /*
@@ -1451,13 +1388,6 @@ int mmc_attach_sd(struct mmc_host *host)
 		goto remove_card;
 
 	mmc_claim_host(host);
-#if defined(CONFIG_SDC_QTI)
-	err = mmc_init_clk_scaling(host);
-	if (err) {
-		mmc_release_host(host);
-		goto remove_card;
-	}
-#endif
 	return 0;
 
 remove_card:
@@ -1469,6 +1399,8 @@ err:
 
 	pr_err("%s: error %d whilst initialising SD card\n",
 		mmc_hostname(host), err);
+
+	trace_android_vh_mmc_attach_sd(host, ocr, err);
 
 	return err;
 }

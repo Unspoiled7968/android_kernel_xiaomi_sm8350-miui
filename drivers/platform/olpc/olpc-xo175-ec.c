@@ -410,7 +410,7 @@ static void olpc_xo175_ec_complete(void *arg)
 		dev_dbg(dev, "got event %.2x\n", byte);
 		switch (byte) {
 		case EVENT_AC_CHANGE:
-			psy = power_supply_get_by_name("olpc-ac");
+			psy = power_supply_get_by_name("olpc_ac");
 			if (psy) {
 				power_supply_changed(psy);
 				power_supply_put(psy);
@@ -420,7 +420,7 @@ static void olpc_xo175_ec_complete(void *arg)
 		case EVENT_BATTERY_CRITICAL:
 		case EVENT_BATTERY_SOC_CHANGE:
 		case EVENT_BATTERY_ERROR:
-			psy = power_supply_get_by_name("olpc-battery");
+			psy = power_supply_get_by_name("olpc_battery");
 			if (psy) {
 				power_supply_changed(psy);
 				power_supply_put(psy);
@@ -431,7 +431,7 @@ static void olpc_xo175_ec_complete(void *arg)
 			input_sync(priv->pwrbtn);
 			input_report_key(priv->pwrbtn, KEY_POWER, 0);
 			input_sync(priv->pwrbtn);
-			/* fall through */
+			fallthrough;
 		case EVENT_POWER_PRESS_WAKE:
 		case EVENT_TIMED_HOST_WAKE:
 			pm_wakeup_event(priv->pwrbtn->dev.parent,
@@ -482,7 +482,7 @@ static int olpc_xo175_ec_cmd(u8 cmd, u8 *inbuf, size_t inlen, u8 *resp,
 	dev_dbg(dev, "CMD %x, %zd bytes expected\n", cmd, resp_len);
 
 	if (inlen > 5) {
-		dev_err(dev, "command len %zd too big!\n", resp_len);
+		dev_err(dev, "command len %zd too big!\n", inlen);
 		return -EOVERFLOW;
 	}
 

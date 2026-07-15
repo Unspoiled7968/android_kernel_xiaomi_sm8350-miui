@@ -324,6 +324,10 @@ static const struct hid_device_id hid_battery_quirks[] = {
 	  HID_BATTERY_QUIRK_IGNORE },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_ELAN, USB_DEVICE_ID_ASUS_UX550_TOUCHSCREEN),
 	  HID_BATTERY_QUIRK_IGNORE },
+	{ HID_I2C_DEVICE(USB_VENDOR_ID_ELAN, I2C_DEVICE_ID_HP_SPECTRE_X360_15),
+	  HID_BATTERY_QUIRK_IGNORE },
+	{ HID_I2C_DEVICE(USB_VENDOR_ID_ELAN, I2C_DEVICE_ID_SURFACE_GO_TOUCHSCREEN),
+	  HID_BATTERY_QUIRK_IGNORE },
 	{}
 };
 
@@ -714,12 +718,28 @@ static void hidinput_configure_usage(struct hid_input *hidinput, struct hid_fiel
 
 		switch (usage->hid) {
 		/* These usage IDs map directly to the usage codes. */
-		case HID_GD_X: case HID_GD_Y: case HID_GD_Z:
+		case HID_GD_X: case HID_GD_Y:
 		case HID_GD_RX: case HID_GD_RY: case HID_GD_RZ:
 			if (field->flags & HID_MAIN_ITEM_RELATIVE)
 				map_rel(usage->hid & 0xf);
 			else
 				map_abs_clear(usage->hid & 0xf);
+			break;
+
+		case HID_GD_Z:
+			/* HID_GD_Z is mapped to ABS_DISTANCE for stylus/pen */
+			if (field->flags & HID_MAIN_ITEM_RELATIVE) {
+				map_rel(usage->hid & 0xf);
+			} else {
+				if (field->application == HID_DG_PEN ||
+				    field->physical == HID_DG_PEN ||
+				    field->logical == HID_DG_STYLUS ||
+				    field->physical == HID_DG_STYLUS ||
+				    field->application == HID_DG_DIGITIZER)
+					map_abs_clear(ABS_DISTANCE);
+				else
+					map_abs_clear(usage->hid & 0xf);
+			}
 			break;
 
 		case HID_GD_WHEEL:
@@ -1587,20 +1607,11 @@ static bool __hidinput_change_resolution_multipliers(struct hid_device *hid,
 {
 	struct hid_usage *usage;
 	bool update_needed = false;
+	bool get_report_completed = false;
 	int i, j;
 
 	if (report->maxfield == 0)
 		return false;
-
-	/*
-	 * If we have more than one feature within this report we
-	 * need to fill in the bits from the others before we can
-	 * overwrite the ones for the Resolution Multiplier.
-	 */
-	if (report->maxfield > 1) {
-		hid_hw_request(hid, report, HID_REQ_GET_REPORT);
-		hid_hw_wait(hid);
-	}
 
 	for (i = 0; i < report->maxfield; i++) {
 		__s32 value = use_logical_max ?
@@ -1619,6 +1630,25 @@ static bool __hidinput_change_resolution_multipliers(struct hid_device *hid,
 
 			if (usage->hid != HID_GD_RESOLUTION_MULTIPLIER)
 				continue;
+
+			/*
+			 * If we have more than one feature within this
+			 * report we need to fill in the bits from the
+			 * others before we can overwrite the ones for the
+			 * Resolution Multiplier.
+			 *
+			 * But if we're not allowed to read from the device,
+			 * we just bail. Such a device should not exist
+			 * anyway.
+			 */
+			if (!get_report_completed && report->maxfield > 1) {
+				if (hid->quirks & HID_QUIRK_NO_INIT_REPORTS)
+					return update_needed;
+
+				hid_hw_request(hid, report, HID_REQ_GET_REPORT);
+				hid_hw_wait(hid);
+				get_report_completed = true;
+			}
 
 			report->field[i]->value[j] = value;
 			update_needed = true;

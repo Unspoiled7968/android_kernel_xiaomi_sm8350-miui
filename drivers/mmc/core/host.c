@@ -15,6 +15,7 @@
 #include <linux/of.h>
 #include <linux/of_gpio.h>
 #include <linux/pagemap.h>
+#include <linux/pm_wakeup.h>
 #include <linux/export.h>
 #include <linux/leds.h>
 #include <linux/slab.h>
@@ -32,11 +33,6 @@
 
 #define cls_dev_to_mmc_host(d)	container_of(d, struct mmc_host, class_dev)
 
-#if defined(CONFIG_SDC_QTI)
-#define MMC_DEVFRQ_DEFAULT_UP_THRESHOLD 35
-#define MMC_DEVFRQ_DEFAULT_DOWN_THRESHOLD 5
-#define MMC_DEVFRQ_DEFAULT_POLLING_MSEC 100
-#endif
 static DEFINE_IDA(mmc_host_ida);
 
 #ifdef CONFIG_PM_SLEEP
@@ -78,7 +74,9 @@ static const struct dev_pm_ops mmc_host_class_dev_pm_ops = {
 static void mmc_host_classdev_release(struct device *dev)
 {
 	struct mmc_host *host = cls_dev_to_mmc_host(dev);
-	ida_simple_remove(&mmc_host_ida, host->index);
+	wakeup_source_unregister(host->ws);
+	if (of_alias_get_id(host->parent->of_node, "mmc") < 0)
+		ida_simple_remove(&mmc_host_ida, host->index);
 	kfree(host);
 }
 
@@ -212,46 +210,6 @@ static void mmc_retune_timer(struct timer_list *t)
 	mmc_retune_needed(host);
 }
 
-#if defined(CONFIG_SDC_QTI)
-static int mmc_dt_get_array(struct device *dev, const char *prop_name,
-				u32 **out, int *len, u32 size)
-{
-	int ret = 0;
-	struct device_node *np = dev->of_node;
-	size_t sz;
-	u32 *arr = NULL;
-
-	if (!of_get_property(np, prop_name, len)) {
-		ret = -EINVAL;
-		goto out;
-	}
-	sz = *len = *len / sizeof(*arr);
-	if (sz <= 0 || (size > 0 && (sz > size))) {
-		dev_err(dev, "%s invalid size\n", prop_name);
-		ret = -EINVAL;
-		goto out;
-	}
-
-	arr = devm_kcalloc(dev, sz, sizeof(*arr), GFP_KERNEL);
-	if (!arr) {
-		ret = -ENOMEM;
-		goto out;
-	}
-
-	ret = of_property_read_u32_array(np, prop_name, arr, sz);
-	if (ret < 0) {
-		dev_err(dev, "%s failed reading array %d\n", prop_name, ret);
-		goto out;
-	}
-	*out = arr;
-out:
-	if (ret)
-		*len = 0;
-	return ret;
-
-}
-#endif
-
 /**
  *	mmc_of_parse() - parse host's device-tree node
  *	@host: host whose node should be parsed.
@@ -266,18 +224,9 @@ int mmc_of_parse(struct mmc_host *host)
 	struct device *dev = host->parent;
 	u32 bus_width, drv_type, cd_debounce_delay_ms;
 	int ret;
-	bool cd_cap_invert, cd_gpio_invert = false;
-#if defined(CONFIG_SDC_QTI)
-	const char *lower_bus_speed = NULL;
-	struct device_node *np;
-#endif
 
 	if (!dev || !dev_fwnode(dev))
 		return 0;
-
-#if defined(CONFIG_SDC_QTI)
-	np = dev->of_node;
-#endif
 
 	/* "bus-width" is translated to MMC_CAP_*_BIT_DATA flags */
 	if (device_property_read_u32(dev, "bus-width", &bus_width) < 0) {
@@ -289,7 +238,7 @@ int mmc_of_parse(struct mmc_host *host)
 	switch (bus_width) {
 	case 8:
 		host->caps |= MMC_CAP_8_BIT_DATA;
-		/* fall through - Hosts capable of 8-bit can also do 4 bits */
+		fallthrough;	/* Hosts capable of 8-bit can also do 4 bits */
 	case 4:
 		host->caps |= MMC_CAP_4_BIT_DATA;
 		break;
@@ -317,10 +266,12 @@ int mmc_of_parse(struct mmc_host *host)
 	 */
 
 	/* Parse Card Detection */
+
 	if (device_property_read_bool(dev, "non-removable")) {
 		host->caps |= MMC_CAP_NONREMOVABLE;
 	} else {
-		cd_cap_invert = device_property_read_bool(dev, "cd-inverted");
+		if (device_property_read_bool(dev, "cd-inverted"))
+			host->caps2 |= MMC_CAP2_CD_ACTIVE_HIGH;
 
 		if (device_property_read_u32(dev, "cd-debounce-delay-ms",
 					     &cd_debounce_delay_ms))
@@ -330,26 +281,11 @@ int mmc_of_parse(struct mmc_host *host)
 			host->caps |= MMC_CAP_NEEDS_POLL;
 
 		ret = mmc_gpiod_request_cd(host, "cd", 0, false,
-					   cd_debounce_delay_ms * 1000,
-					   &cd_gpio_invert);
+					   cd_debounce_delay_ms * 1000);
 		if (!ret)
 			dev_info(host->parent, "Got CD GPIO\n");
 		else if (ret != -ENOENT && ret != -ENOSYS)
 			return ret;
-
-		/*
-		 * There are two ways to flag that the CD line is inverted:
-		 * through the cd-inverted flag and by the GPIO line itself
-		 * being inverted from the GPIO subsystem. This is a leftover
-		 * from the times when the GPIO subsystem did not make it
-		 * possible to flag a line as inverted.
-		 *
-		 * If the capability on the host AND the GPIO line are
-		 * both inverted, the end result is that the CD line is
-		 * not inverted.
-		 */
-		if (cd_cap_invert ^ cd_gpio_invert)
-			host->caps2 |= MMC_CAP2_CD_ACTIVE_HIGH;
 	}
 
 	/* Parse Write Protection */
@@ -357,7 +293,7 @@ int mmc_of_parse(struct mmc_host *host)
 	if (device_property_read_bool(dev, "wp-inverted"))
 		host->caps2 |= MMC_CAP2_RO_ACTIVE_HIGH;
 
-	ret = mmc_gpiod_request_ro(host, "wp", 0, 0, NULL);
+	ret = mmc_gpiod_request_ro(host, "wp", 0, 0);
 	if (!ret)
 		dev_info(host->parent, "Got WP GPIO\n");
 	else if (ret != -ENOENT && ret != -ENOSYS)
@@ -388,6 +324,8 @@ int mmc_of_parse(struct mmc_host *host)
 		host->caps |= MMC_CAP_SDIO_IRQ;
 	if (device_property_read_bool(dev, "full-pwr-cycle"))
 		host->caps2 |= MMC_CAP2_FULL_PWR_CYCLE;
+	if (device_property_read_bool(dev, "full-pwr-cycle-in-suspend"))
+		host->caps2 |= MMC_CAP2_FULL_PWR_CYCLE_IN_SUSPEND;
 	if (device_property_read_bool(dev, "keep-power-in-suspend"))
 		host->pm_caps |= MMC_PM_KEEP_POWER;
 	if (device_property_read_bool(dev, "wakeup-source") ||
@@ -436,30 +374,6 @@ int mmc_of_parse(struct mmc_host *host)
 	device_property_read_u32(dev, "post-power-on-delay-ms",
 				 &host->ios.power_delay_ms);
 
-#if defined(CONFIG_SDC_QTI)
-	if (mmc_dt_get_array(dev, "qcom,devfreq,freq-table",
-				&host->clk_scaling.pltfm_freq_table,
-				&host->clk_scaling.pltfm_freq_table_sz, 0))
-		pr_debug("%s: no clock scaling frequencies were supplied\n",
-				dev_name(dev));
-	else if (!host->clk_scaling.pltfm_freq_table ||
-			!host->clk_scaling.pltfm_freq_table_sz)
-		dev_info(dev, "bad dts clock scaling frequencies\n");
-
-	/*
-	 * Few hosts can support DDR52 mode at the same lower
-	 * system voltage corner as high-speed mode. In such
-	 * cases, it is always better to put it in DDR
-	 * mode which will improve the performance
-	 * without any power impact.
-	 */
-	if (!of_property_read_string(np, "qcom,scaling-lower-bus-speed-mode",
-			&lower_bus_speed)) {
-		if (!strcmp(lower_bus_speed, "DDR52"))
-			host->clk_scaling.lower_bus_speed_mode |=
-				MMC_SCALING_LOWER_DDR52_MODE;
-	}
-#endif
 	return mmc_pwrseq_alloc(host);
 }
 
@@ -516,7 +430,7 @@ static int mmc_first_nonreserved_index(void)
 {
 	int max;
 
-	max = of_alias_get_highest_id("sdhc");
+	max = of_alias_get_highest_id("mmc");
 	if (max < 0)
 		return 0;
 
@@ -532,7 +446,7 @@ static int mmc_first_nonreserved_index(void)
  */
 struct mmc_host *mmc_alloc_host(int extra, struct device *dev)
 {
-	int err;
+	int index;
 	struct mmc_host *host;
 	int alias_id, min_idx, max_idx;
 
@@ -543,24 +457,24 @@ struct mmc_host *mmc_alloc_host(int extra, struct device *dev)
 	/* scanning will be enabled when we're ready */
 	host->rescan_disable = 1;
 
-	alias_id = of_alias_get_id(dev->of_node, "sdhc");
+	alias_id = of_alias_get_id(dev->of_node, "mmc");
 	if (alias_id >= 0) {
-		min_idx = alias_id;
-		max_idx = alias_id + 1;
+		index = alias_id;
 	} else {
 		min_idx = mmc_first_nonreserved_index();
 		max_idx = 0;
+
+		index = ida_simple_get(&mmc_host_ida, min_idx, max_idx, GFP_KERNEL);
+		if (index < 0) {
+			kfree(host);
+			return NULL;
+		}
 	}
 
-	err = ida_simple_get(&mmc_host_ida, min_idx, max_idx, GFP_KERNEL);
-	if (err < 0) {
-		kfree(host);
-		return NULL;
-	}
-
-	host->index = err;
+	host->index = index;
 
 	dev_set_name(&host->class_dev, "mmc%d", host->index);
+	host->ws = wakeup_source_register(NULL, dev_name(&host->class_dev));
 
 	host->parent = dev;
 	host->class_dev.parent = dev;
@@ -574,9 +488,6 @@ struct mmc_host *mmc_alloc_host(int extra, struct device *dev)
 	}
 
 	spin_lock_init(&host->lock);
-#if defined(CONFIG_SDC_QTI)
-	atomic_set(&host->active_reqs, 0);
-#endif
 	init_waitqueue_head(&host->wq);
 	INIT_DELAYED_WORK(&host->detect, mmc_rescan);
 	INIT_DELAYED_WORK(&host->sdio_irq_work, sdio_irq_work);
@@ -595,161 +506,38 @@ struct mmc_host *mmc_alloc_host(int extra, struct device *dev)
 
 	host->fixed_drv_type = -EINVAL;
 	host->ios.power_delay_ms = 10;
+	host->ios.power_mode = MMC_POWER_UNDEFINED;
 
 	return host;
 }
 
 EXPORT_SYMBOL(mmc_alloc_host);
 
-#if defined(CONFIG_SDC_QTI)
-static ssize_t enable_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
+static void devm_mmc_host_release(struct device *dev, void *res)
 {
-	struct mmc_host *host = cls_dev_to_mmc_host(dev);
-
-	if (!host)
-		return -EINVAL;
-
-	return scnprintf(buf, PAGE_SIZE, "%d\n", mmc_can_scale_clk(host));
+	mmc_free_host(*(struct mmc_host **)res);
 }
 
-static ssize_t enable_store(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t count)
+struct mmc_host *devm_mmc_alloc_host(struct device *dev, int extra)
 {
-	struct mmc_host *host = cls_dev_to_mmc_host(dev);
-	unsigned long value;
+	struct mmc_host **dr, *host;
 
-	if (!host || !host->card || kstrtoul(buf, 0, &value))
-		return -EINVAL;
+	dr = devres_alloc(devm_mmc_host_release, sizeof(*dr), GFP_KERNEL);
+	if (!dr)
+		return NULL;
 
-	mmc_get_card(host->card, NULL);
-
-	if (!value) {
-		/* Suspend the clock scaling and mask host capability */
-		if (host->clk_scaling.enable)
-			mmc_suspend_clk_scaling(host);
-		host->clk_scaling.enable = false;
-		host->caps2 &= ~MMC_CAP2_CLK_SCALE;
-		host->clk_scaling.state = MMC_LOAD_HIGH;
-		/* Set to max. frequency when disabling */
-		mmc_clk_update_freq(host, host->card->clk_scaling_highest,
-					host->clk_scaling.state);
-	} else if (value) {
-		/* Unmask host capability and resume scaling */
-		host->caps2 |= MMC_CAP2_CLK_SCALE;
-		if (!host->clk_scaling.enable) {
-			host->clk_scaling.enable = true;
-			mmc_resume_clk_scaling(host);
-		}
+	host = mmc_alloc_host(extra, dev);
+	if (!host) {
+		devres_free(dr);
+		return NULL;
 	}
 
-	mmc_put_card(host->card, NULL);
+	*dr = host;
+	devres_add(dev, dr);
 
-	return count;
+	return host;
 }
-
-static ssize_t up_threshold_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
-{
-	struct mmc_host *host = cls_dev_to_mmc_host(dev);
-
-	if (!host)
-		return -EINVAL;
-
-	return scnprintf(buf, PAGE_SIZE, "%d\n", host->clk_scaling.upthreshold);
-}
-
-#define MAX_PERCENTAGE	100
-static ssize_t up_threshold_store(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t count)
-{
-	struct mmc_host *host = cls_dev_to_mmc_host(dev);
-	unsigned long value;
-
-	if (!host || kstrtoul(buf, 0, &value) || (value > MAX_PERCENTAGE))
-		return -EINVAL;
-
-	host->clk_scaling.upthreshold = value;
-
-	pr_debug("%s: clkscale_up_thresh set to %lu\n",
-			mmc_hostname(host), value);
-	return count;
-}
-
-static ssize_t down_threshold_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
-{
-	struct mmc_host *host = cls_dev_to_mmc_host(dev);
-
-	if (!host)
-		return -EINVAL;
-
-	return scnprintf(buf, PAGE_SIZE, "%d\n",
-			host->clk_scaling.downthreshold);
-}
-
-static ssize_t down_threshold_store(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t count)
-{
-	struct mmc_host *host = cls_dev_to_mmc_host(dev);
-	unsigned long value;
-
-	if (!host || kstrtoul(buf, 0, &value) || (value > MAX_PERCENTAGE))
-		return -EINVAL;
-
-	host->clk_scaling.downthreshold = value;
-
-	pr_debug("%s: clkscale_down_thresh set to %lu\n",
-			mmc_hostname(host), value);
-	return count;
-}
-
-static ssize_t polling_interval_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
-{
-	struct mmc_host *host = cls_dev_to_mmc_host(dev);
-
-	if (!host)
-		return -EINVAL;
-
-	return scnprintf(buf, PAGE_SIZE, "%lu milliseconds\n",
-			host->clk_scaling.polling_delay_ms);
-}
-
-static ssize_t polling_interval_store(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t count)
-{
-	struct mmc_host *host = cls_dev_to_mmc_host(dev);
-	unsigned long value;
-
-	if (!host || kstrtoul(buf, 0, &value))
-		return -EINVAL;
-
-	host->clk_scaling.polling_delay_ms = value;
-
-	pr_debug("%s: clkscale_polling_delay_ms set to %lu\n",
-			mmc_hostname(host), value);
-	return count;
-}
-
-DEVICE_ATTR_RW(enable);
-DEVICE_ATTR_RW(polling_interval);
-DEVICE_ATTR_RW(up_threshold);
-DEVICE_ATTR_RW(down_threshold);
-
-static struct attribute *clk_scaling_attrs[] = {
-	&dev_attr_enable.attr,
-	&dev_attr_up_threshold.attr,
-	&dev_attr_down_threshold.attr,
-	&dev_attr_polling_interval.attr,
-	NULL,
-};
-
-static struct attribute_group clk_scaling_attr_grp = {
-	.name = "clk_scaling",
-	.attrs = clk_scaling_attrs,
-};
-#endif
+EXPORT_SYMBOL(devm_mmc_alloc_host);
 
 static int mmc_validate_host_caps(struct mmc_host *host)
 {
@@ -782,29 +570,11 @@ int mmc_add_host(struct mmc_host *host)
 		return err;
 
 	led_trigger_register_simple(dev_name(&host->class_dev), &host->led);
-#if defined(CONFIG_SDC_QTI)
-	host->clk_scaling.upthreshold = MMC_DEVFRQ_DEFAULT_UP_THRESHOLD;
-	host->clk_scaling.downthreshold = MMC_DEVFRQ_DEFAULT_DOWN_THRESHOLD;
-	host->clk_scaling.polling_delay_ms = MMC_DEVFRQ_DEFAULT_POLLING_MSEC;
-	host->clk_scaling.skip_clk_scale_freq_update = false;
-#endif
 
 #ifdef CONFIG_DEBUG_FS
 	mmc_add_host_debugfs(host);
 #endif
 
-#ifdef CONFIG_MMC_IPC_LOGGING
-	host->ipc_log_ctxt = ipc_log_context_create(NUM_LOG_PAGES, dev_name(&host->class_dev), 0);
-	if (!host->ipc_log_ctxt)
-		pr_err("%s: Error getting ipc_log_ctxt\n", __func__);
-#endif
-
-#if defined(CONFIG_SDC_QTI)
-	err = sysfs_create_group(&host->class_dev.kobj, &clk_scaling_attr_grp);
-	if (err)
-		pr_err("%s: failed to create clk scale sysfs group with err %d\n",
-				__func__, err);
-#endif
 	mmc_start_host(host);
 	return 0;
 }
@@ -827,14 +597,6 @@ void mmc_remove_host(struct mmc_host *host)
 	mmc_remove_host_debugfs(host);
 #endif
 
-#ifdef CONFIG_MMC_IPC_LOGGING
-	ipc_log_context_destroy(host->ipc_log_ctxt);
-	host->ipc_log_ctxt = NULL;
-#endif
-
-#if defined(CONFIG_SDC_QTI)
-	sysfs_remove_group(&host->class_dev.kobj, &clk_scaling_attr_grp);
-#endif
 	device_del(&host->class_dev);
 
 	led_trigger_unregister_simple(host->led);
@@ -851,7 +613,6 @@ EXPORT_SYMBOL(mmc_remove_host);
 void mmc_free_host(struct mmc_host *host)
 {
 	cancel_delayed_work_sync(&host->detect);
-	mmc_crypto_free_host(host);
 	mmc_pwrseq_free(host);
 	put_device(&host->class_dev);
 }

@@ -11,15 +11,13 @@
 
 struct tcf_vlan_params {
 	int               tcfv_action;
+	unsigned char     tcfv_push_dst[ETH_ALEN];
+	unsigned char     tcfv_push_src[ETH_ALEN];
 	u16               tcfv_push_vid;
 	__be16            tcfv_push_proto;
 	u8                tcfv_push_prio;
 	bool              tcfv_push_prio_exists;
 	struct rcu_head   rcu;
-#ifdef CONFIG_NET_SCHED_ACT_VLAN_QGKI
-	unsigned char     tcfv_push_dst[ETH_ALEN];
-	unsigned char     tcfv_push_src[ETH_ALEN];
-#endif
 };
 
 struct tcf_vlan {

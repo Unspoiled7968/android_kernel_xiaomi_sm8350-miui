@@ -218,14 +218,12 @@ static void dpp1_dscl_set_lb(
 			INTERLEAVE_EN, lb_params->interleave_en, /* Interleave source enable */
 			LB_DATA_FORMAT__ALPHA_EN, lb_params->alpha_en); /* Alpha enable */
 	}
-#if defined(CONFIG_DRM_AMD_DC_DCN2_0)
 	else {
 		/* DSCL caps: pixel data processed in float format */
 		REG_SET_2(LB_DATA_FORMAT, 0,
 			INTERLEAVE_EN, lb_params->interleave_en, /* Interleave source enable */
 			LB_DATA_FORMAT__ALPHA_EN, lb_params->alpha_en); /* Alpha enable */
 	}
-#endif
 
 	REG_SET_2(LB_MEMORY_CTRL, 0,
 		MEMORY_CONFIG, mem_size_config,
@@ -619,8 +617,10 @@ static void dpp1_dscl_set_manual_ratio_init(
 		SCL_V_INIT_INT, init_int);
 
 	if (REG(SCL_VERT_FILTER_INIT_BOT)) {
-		init_frac = dc_fixpt_u0d19(data->inits.v_bot) << 5;
-		init_int = dc_fixpt_floor(data->inits.v_bot);
+		struct fixed31_32 bot = dc_fixpt_add(data->inits.v, data->ratios.vert);
+
+		init_frac = dc_fixpt_u0d19(bot) << 5;
+		init_int = dc_fixpt_floor(bot);
 		REG_SET_2(SCL_VERT_FILTER_INIT_BOT, 0,
 			SCL_V_INIT_FRAC_BOT, init_frac,
 			SCL_V_INIT_INT_BOT, init_int);
@@ -633,8 +633,10 @@ static void dpp1_dscl_set_manual_ratio_init(
 		SCL_V_INIT_INT_C, init_int);
 
 	if (REG(SCL_VERT_FILTER_INIT_BOT_C)) {
-		init_frac = dc_fixpt_u0d19(data->inits.v_c_bot) << 5;
-		init_int = dc_fixpt_floor(data->inits.v_c_bot);
+		struct fixed31_32 bot = dc_fixpt_add(data->inits.v_c, data->ratios.vert_c);
+
+		init_frac = dc_fixpt_u0d19(bot) << 5;
+		init_int = dc_fixpt_floor(bot);
 		REG_SET_2(SCL_VERT_FILTER_INIT_BOT_C, 0,
 			SCL_V_INIT_FRAC_BOT_C, init_frac,
 			SCL_V_INIT_INT_BOT_C, init_int);

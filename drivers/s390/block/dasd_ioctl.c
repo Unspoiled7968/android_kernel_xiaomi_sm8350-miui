@@ -22,6 +22,7 @@
 #include <asm/schid.h>
 #include <asm/cmb.h>
 #include <linux/uaccess.h>
+#include <linux/dasd_mod.h>
 
 /* This is ugly... */
 #define PRINTK_HEADER "dasd_ioctl:"
@@ -54,10 +55,7 @@ dasd_ioctl_enable(struct block_device *bdev)
 
 	dasd_enable_device(base);
 	/* Formatting the dasd device can change the capacity. */
-	mutex_lock(&bdev->bd_mutex);
-	i_size_write(bdev->bd_inode,
-		     (loff_t)get_capacity(base->block->gdp) << 9);
-	mutex_unlock(&bdev->bd_mutex);
+	bd_set_nr_sectors(bdev, get_capacity(base->block->gdp));
 	dasd_put_device(base);
 	return 0;
 }
@@ -90,9 +88,7 @@ dasd_ioctl_disable(struct block_device *bdev)
 	 * Set i_size to zero, since read, write, etc. check against this
 	 * value.
 	 */
-	mutex_lock(&bdev->bd_mutex);
-	i_size_write(bdev->bd_inode, 0);
-	mutex_unlock(&bdev->bd_mutex);
+	bd_set_nr_sectors(bdev, 0);
 	dasd_put_device(base);
 	return 0;
 }
@@ -282,7 +278,7 @@ dasd_ioctl_format(struct block_device *bdev, void __user *argp)
 		dasd_put_device(base);
 		return -EFAULT;
 	}
-	if (bdev != bdev->bd_contains) {
+	if (bdev_is_partition(bdev)) {
 		pr_warn("%s: The specified DASD is a partition and cannot be formatted\n",
 			dev_name(&base->cdev->dev));
 		dasd_put_device(base);
@@ -309,7 +305,7 @@ static int dasd_ioctl_check_format(struct block_device *bdev, void __user *argp)
 	base = dasd_device_from_gendisk(bdev->bd_disk);
 	if (!base)
 		return -ENODEV;
-	if (bdev != bdev->bd_contains) {
+	if (bdev_is_partition(bdev)) {
 		pr_warn("%s: The specified DASD is a partition and cannot be checked\n",
 			dev_name(&base->cdev->dev));
 		rc = -EINVAL;
@@ -367,7 +363,7 @@ static int dasd_ioctl_release_space(struct block_device *bdev, void __user *argp
 		rc = -EROFS;
 		goto out_err;
 	}
-	if (bdev != bdev->bd_contains) {
+	if (bdev_is_partition(bdev)) {
 		pr_warn("%s: The specified DASD is a partition and tracks cannot be released\n",
 			dev_name(&base->cdev->dev));
 		rc = -EINVAL;
@@ -545,7 +541,7 @@ dasd_ioctl_set_ro(struct block_device *bdev, void __user *argp)
 
 	if (!capable(CAP_SYS_ADMIN))
 		return -EACCES;
-	if (bdev != bdev->bd_contains)
+	if (bdev_is_partition(bdev))
 		// ro setting is not allowed for partitions
 		return -EINVAL;
 	if (get_user(intval, (int __user *)argp))
@@ -665,3 +661,36 @@ int dasd_ioctl(struct block_device *bdev, fmode_t mode,
 	dasd_put_device(base);
 	return rc;
 }
+
+
+/**
+ * dasd_biodasdinfo() - fill out the dasd information structure
+ * @disk [in]: pointer to gendisk structure that references a DASD
+ * @info [out]: pointer to the dasd_information2_t structure
+ *
+ * Provide access to DASD specific information.
+ * The gendisk structure is checked if it belongs to the DASD driver by
+ * comparing the gendisk->fops pointer.
+ * If it does not belong to the DASD driver -EINVAL is returned.
+ * Otherwise the provided dasd_information2_t structure is filled out.
+ *
+ * Returns:
+ *   %0 on success and a negative error value on failure.
+ */
+int dasd_biodasdinfo(struct gendisk *disk, struct dasd_information2_t *info)
+{
+	struct dasd_device *base;
+	int error;
+
+	if (disk->fops != &dasd_device_operations)
+		return -EINVAL;
+
+	base = dasd_device_from_gendisk(disk);
+	if (!base)
+		return -ENODEV;
+	error = __dasd_ioctl_information(base->block, info);
+	dasd_put_device(base);
+	return error;
+}
+/* export that symbol_get in partition detection is possible */
+EXPORT_SYMBOL_GPL(dasd_biodasdinfo);

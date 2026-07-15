@@ -19,19 +19,18 @@
 #include <linux/fadvise.h>
 #include <linux/sched.h>
 #include <linux/sched/mm.h>
+#include <linux/uio.h>
 #include <linux/ksm.h>
 #include <linux/fs.h>
 #include <linux/file.h>
 #include <linux/blkdev.h>
 #include <linux/backing-dev.h>
-#include <linux/compat.h>
 #include <linux/pagewalk.h>
 #include <linux/swap.h>
 #include <linux/swapops.h>
 #include <linux/shmem_fs.h>
 #include <linux/mmu_notifier.h>
-#include <linux/sched/mm.h>
-#include <linux/uio.h>
+#include <trace/hooks/mm.h>
 
 #include <asm/tlb.h>
 
@@ -40,12 +39,12 @@
 struct madvise_walk_private {
 	struct mmu_gather *tlb;
 	bool pageout;
-	struct task_struct *target_task;
+	bool can_pageout_file;
 };
 
 /*
  * Any behaviour which results in changes to the vma->vm_flags needs to
- * take mmap_sem for writing. Others, which simply traverse vmas, need
+ * take mmap_lock for writing. Others, which simply traverse vmas, need
  * to only take it for reading.
  */
 static int madvise_need_mmap_write(int behavior)
@@ -170,10 +169,10 @@ static long madvise_behavior(struct vm_area_struct *vma,
 
 success:
 	/*
-	 * vm_flags is protected by the mmap_sem held in write mode.
+	 * vm_flags is protected by the mmap_lock held in write mode.
 	 */
 	vm_write_begin(vma);
-	WRITE_ONCE(vma->vm_flags, new_flags);
+	WRITE_ONCE(vma->vm_flags, vma_pad_fixup_flags(vma, new_flags));
 	vm_write_end(vma);
 
 out_convert_errno:
@@ -231,25 +230,28 @@ static void force_shm_swapin_readahead(struct vm_area_struct *vma,
 		unsigned long start, unsigned long end,
 		struct address_space *mapping)
 {
-	pgoff_t index;
+	XA_STATE(xas, &mapping->i_pages, linear_page_index(vma, start));
+	pgoff_t end_index = linear_page_index(vma, end + PAGE_SIZE - 1);
 	struct page *page;
-	swp_entry_t swap;
 
-	for (; start < end; start += PAGE_SIZE) {
-		index = ((start - vma->vm_start) >> PAGE_SHIFT) + vma->vm_pgoff;
+	rcu_read_lock();
+	xas_for_each(&xas, page, end_index) {
+		swp_entry_t swap;
 
-		page = find_get_entry(mapping, index);
-		if (!xa_is_value(page)) {
-			if (page)
-				put_page(page);
+		if (!xa_is_value(page))
 			continue;
-		}
+		xas_pause(&xas);
+		rcu_read_unlock();
+
 		swap = radix_to_swp_entry(page);
 		page = read_swap_cache_async(swap, GFP_HIGHUSER_MOVABLE,
 							NULL, 0, false);
 		if (page)
 			put_page(page);
+
+		rcu_read_lock();
 	}
+	rcu_read_unlock();
 
 	lru_add_drain();	/* Push any new pages onto the LRU now */
 }
@@ -293,16 +295,16 @@ static long madvise_willneed(struct vm_area_struct *vma,
 	 * Filesystem's fadvise may need to take various locks.  We need to
 	 * explicitly grab a reference because the vma (and hence the
 	 * vma's reference to the file) can go away as soon as we drop
-	 * mmap_sem.
+	 * mmap_lock.
 	 */
-	*prev = NULL;	/* tell sys_madvise we drop mmap_sem */
+	*prev = NULL;	/* tell sys_madvise we drop mmap_lock */
 	get_file(file);
 	offset = (loff_t)(start - vma->vm_start)
 			+ ((loff_t)vma->vm_pgoff << PAGE_SHIFT);
-	up_read(&mm->mmap_sem);
+	mmap_read_unlock(mm);
 	vfs_fadvise(file, offset, end - start, POSIX_FADV_WILLNEED);
 	fput(file);
-	down_read(&mm->mmap_sem);
+	mmap_read_lock(mm);
 	return 0;
 }
 
@@ -313,20 +315,22 @@ static int madvise_cold_or_pageout_pte_range(pmd_t *pmd,
 	struct madvise_walk_private *private = walk->private;
 	struct mmu_gather *tlb = private->tlb;
 	bool pageout = private->pageout;
+	bool pageout_anon_only = pageout && !private->can_pageout_file;
 	struct mm_struct *mm = tlb->mm;
 	struct vm_area_struct *vma = walk->vma;
 	pte_t *orig_pte, *pte, ptent;
 	spinlock_t *ptl;
 	struct page *page = NULL;
 	LIST_HEAD(page_list);
+	bool allow_shared = false;
+	bool abort_madvise = false;
+	bool skip = false;
 
-	if (fatal_signal_pending(current))
+	trace_android_vh_madvise_cold_or_pageout_abort(vma, &abort_madvise);
+	if (fatal_signal_pending(current) || abort_madvise)
 		return -EINTR;
 
-	if (private->target_task &&
-			fatal_signal_pending(private->target_task))
-		return -EINTR;
-
+	trace_android_vh_madvise_cold_or_pageout(vma, &allow_shared);
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 	if (pmd_trans_huge(*pmd)) {
 		pmd_t orig_pmd;
@@ -351,6 +355,9 @@ static int madvise_cold_or_pageout_pte_range(pmd_t *pmd,
 
 		/* Do not interfere with other mappings of this page */
 		if (page_mapcount(page) != 1)
+			goto huge_unlock;
+
+		if (pageout_anon_only && !PageAnon(page))
 			goto huge_unlock;
 
 		if (next - addr != HPAGE_PMD_SIZE) {
@@ -414,12 +421,18 @@ regular_page:
 		if (!page)
 			continue;
 
+		trace_android_vh_should_end_madvise(mm, &skip, &pageout);
+		if (skip)
+			break;
+
 		/*
 		 * Creating a THP page is expensive so split it only if we
 		 * are sure it's worth. Split it if we are only owner.
 		 */
 		if (PageTransCompound(page)) {
 			if (page_mapcount(page) != 1)
+				break;
+			if (pageout_anon_only && !PageAnon(page))
 				break;
 			get_page(page);
 			if (!trylock_page(page)) {
@@ -445,7 +458,10 @@ regular_page:
 		 * Do not interfere with other mappings of this page and
 		 * non-LRU page.
 		 */
-		if (!PageLRU(page) || page_mapcount(page) != 1)
+		if (!allow_shared && (!PageLRU(page) || page_mapcount(page) != 1))
+			continue;
+
+		if (pageout_anon_only && !PageAnon(page))
 			continue;
 
 		VM_BUG_ON_PAGE(PageTransCompound(page), page);
@@ -470,8 +486,10 @@ regular_page:
 			if (!isolate_lru_page(page)) {
 				if (PageUnevictable(page))
 					putback_lru_page(page);
-				else
+				else {
 					list_add(&page->lru, &page_list);
+					trace_android_vh_page_isolated_for_reclaim(mm, page);
+				}
 			}
 		} else
 			deactivate_page(page);
@@ -491,14 +509,12 @@ static const struct mm_walk_ops cold_walk_ops = {
 };
 
 static void madvise_cold_page_range(struct mmu_gather *tlb,
-			     struct task_struct *task,
 			     struct vm_area_struct *vma,
 			     unsigned long addr, unsigned long end)
 {
 	struct madvise_walk_private walk_private = {
 		.pageout = false,
 		.tlb = tlb,
-		.target_task = task,
 	};
 
 	tlb_start_vma(tlb, vma);
@@ -506,8 +522,7 @@ static void madvise_cold_page_range(struct mmu_gather *tlb,
 	tlb_end_vma(tlb, vma);
 }
 
-static long madvise_cold(struct task_struct *task,
-			struct vm_area_struct *vma,
+static long madvise_cold(struct vm_area_struct *vma,
 			struct vm_area_struct **prev,
 			unsigned long start_addr, unsigned long end_addr)
 {
@@ -520,21 +535,21 @@ static long madvise_cold(struct task_struct *task,
 
 	lru_add_drain();
 	tlb_gather_mmu(&tlb, mm, start_addr, end_addr);
-	madvise_cold_page_range(&tlb, task, vma, start_addr, end_addr);
+	madvise_cold_page_range(&tlb, vma, start_addr, end_addr);
 	tlb_finish_mmu(&tlb, start_addr, end_addr);
 
 	return 0;
 }
 
 static void madvise_pageout_page_range(struct mmu_gather *tlb,
-			     struct task_struct *task,
 			     struct vm_area_struct *vma,
-			     unsigned long addr, unsigned long end)
+			     unsigned long addr, unsigned long end,
+			     bool can_pageout_file)
 {
 	struct madvise_walk_private walk_private = {
 		.pageout = true,
 		.tlb = tlb,
-		.target_task = task,
+		.can_pageout_file = can_pageout_file,
 	};
 
 	tlb_start_vma(tlb, vma);
@@ -542,10 +557,8 @@ static void madvise_pageout_page_range(struct mmu_gather *tlb,
 	tlb_end_vma(tlb, vma);
 }
 
-static inline bool can_do_pageout(struct vm_area_struct *vma)
+static inline bool can_do_file_pageout(struct vm_area_struct *vma)
 {
-	if (vma_is_anonymous(vma))
-		return true;
 	if (!vma->vm_file)
 		return false;
 	/*
@@ -558,24 +571,29 @@ static inline bool can_do_pageout(struct vm_area_struct *vma)
 		inode_permission(file_inode(vma->vm_file), MAY_WRITE) == 0;
 }
 
-static long madvise_pageout(struct task_struct *task,
-			struct vm_area_struct *vma,
+static long madvise_pageout(struct vm_area_struct *vma,
 			struct vm_area_struct **prev,
 			unsigned long start_addr, unsigned long end_addr)
 {
 	struct mm_struct *mm = vma->vm_mm;
 	struct mmu_gather tlb;
+	bool can_pageout_file;
 
 	*prev = vma;
 	if (!can_madv_lru_vma(vma))
 		return -EINVAL;
 
-	if (!can_do_pageout(vma))
-		return 0;
+	/*
+	 * If the VMA belongs to a private file mapping, there can be private
+	 * dirty pages which can be paged out if even this process is neither
+	 * owner nor write capable of the file. Cache the file access check
+	 * here and use it later during page walk.
+	 */
+	can_pageout_file = can_do_file_pageout(vma);
 
 	lru_add_drain();
 	tlb_gather_mmu(&tlb, mm, start_addr, end_addr);
-	madvise_pageout_page_range(&tlb, task, vma, start_addr, end_addr);
+	madvise_pageout_page_range(&tlb, vma, start_addr, end_addr, can_pageout_file);
 	tlb_finish_mmu(&tlb, start_addr, end_addr);
 
 	return 0;
@@ -704,6 +722,7 @@ out:
 	if (nr_swap) {
 		if (current->mm == mm)
 			sync_mm_rss(mm);
+
 		add_mm_counter(mm, MM_SWAPENTS, nr_swap);
 	}
 	arch_leave_lazy_mmu_mode();
@@ -792,9 +811,9 @@ static long madvise_dontneed_free(struct vm_area_struct *vma,
 		return -EINVAL;
 
 	if (!userfaultfd_remove(vma, start, end)) {
-		*prev = NULL; /* mmap_sem has been dropped, prev is stale */
+		*prev = NULL; /* mmap_lock has been dropped, prev is stale */
 
-		down_read(&mm->mmap_sem);
+		mmap_read_lock(mm);
 		vma = find_vma(mm, start);
 		if (!vma)
 			return -ENOMEM;
@@ -815,7 +834,7 @@ static long madvise_dontneed_free(struct vm_area_struct *vma,
 		if (end > vma->vm_end) {
 			/*
 			 * Don't fail if end > vma->vm_end. If the old
-			 * vma was splitted while the mmap_sem was
+			 * vma was splitted while the mmap_lock was
 			 * released the effect of the concurrent
 			 * operation may not cause madvise() to
 			 * have an undefined result. There may be an
@@ -851,7 +870,7 @@ static long madvise_remove(struct vm_area_struct *vma,
 	struct file *f;
 	struct mm_struct *mm = vma->vm_mm;
 
-	*prev = NULL;	/* tell sys_madvise we drop mmap_sem */
+	*prev = NULL;	/* tell sys_madvise we drop mmap_lock */
 
 	if (vma->vm_flags & VM_LOCKED)
 		return -EINVAL;
@@ -862,7 +881,7 @@ static long madvise_remove(struct vm_area_struct *vma,
 			return -EINVAL;
 	}
 
-	if ((vma->vm_flags & (VM_SHARED|VM_WRITE)) != (VM_SHARED|VM_WRITE))
+	if (!vma_is_shared_maywrite(vma))
 		return -EACCES;
 
 	offset = (loff_t)(start - vma->vm_start)
@@ -872,18 +891,18 @@ static long madvise_remove(struct vm_area_struct *vma,
 	 * Filesystem's fallocate may need to take i_mutex.  We need to
 	 * explicitly grab a reference because the vma (and hence the
 	 * vma's reference to the file) can go away as soon as we drop
-	 * mmap_sem.
+	 * mmap_lock.
 	 */
 	get_file(f);
 	if (userfaultfd_remove(vma, start, end)) {
-		/* mmap_sem was not released by userfaultfd_remove() */
-		up_read(&mm->mmap_sem);
+		/* mmap_lock was not released by userfaultfd_remove() */
+		mmap_read_unlock(mm);
 	}
 	error = vfs_fallocate(f,
 				FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE,
 				offset, end - start);
 	fput(f);
-	down_read(&mm->mmap_sem);
+	mmap_read_lock(mm);
 	return error;
 }
 
@@ -894,16 +913,16 @@ static long madvise_remove(struct vm_area_struct *vma,
 static int madvise_inject_error(int behavior,
 		unsigned long start, unsigned long end)
 {
-	struct page *page;
 	struct zone *zone;
-	unsigned int order;
+	unsigned long size;
 
 	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
 
 
-	for (; start < end; start += PAGE_SIZE << order) {
+	for (; start < end; start += size) {
 		unsigned long pfn;
+		struct page *page;
 		int ret;
 
 		ret = get_user_pages_fast(start, 1, 0, &page);
@@ -914,36 +933,20 @@ static int madvise_inject_error(int behavior,
 		/*
 		 * When soft offlining hugepages, after migrating the page
 		 * we dissolve it, therefore in the second loop "page" will
-		 * no longer be a compound page, and order will be 0.
+		 * no longer be a compound page.
 		 */
-		order = compound_order(compound_head(page));
-
-		if (PageHWPoison(page)) {
-			put_page(page);
-			continue;
-		}
+		size = page_size(compound_head(page));
 
 		if (behavior == MADV_SOFT_OFFLINE) {
 			pr_info("Soft offlining pfn %#lx at process virtual address %#lx\n",
-					pfn, start);
-
-			ret = soft_offline_page(page, MF_COUNT_INCREASED);
-			if (ret)
-				return ret;
-			continue;
+				 pfn, start);
+			ret = soft_offline_page(pfn, MF_COUNT_INCREASED);
+		} else {
+			pr_info("Injecting memory failure for pfn %#lx at process virtual address %#lx\n",
+				 pfn, start);
+			ret = memory_failure(pfn, MF_COUNT_INCREASED);
 		}
 
-		pr_info("Injecting memory failure for pfn %#lx at process virtual address %#lx\n",
-				pfn, start);
-
-		/*
-		 * Drop the page reference taken by get_user_pages_fast(). In
-		 * the absence of MF_COUNT_INCREASED the memory_failure()
-		 * routine is responsible for pinning the page to prevent it
-		 * from being released back to the page allocator.
-		 */
-		put_page(page);
-		ret = memory_failure(pfn, 0);
 		if (ret)
 			return ret;
 	}
@@ -957,8 +960,7 @@ static int madvise_inject_error(int behavior,
 #endif
 
 static long
-madvise_vma(struct task_struct *task, struct vm_area_struct *vma,
-		struct vm_area_struct **prev,
+madvise_vma(struct vm_area_struct *vma, struct vm_area_struct **prev,
 		unsigned long start, unsigned long end, int behavior)
 {
 	switch (behavior) {
@@ -967,9 +969,9 @@ madvise_vma(struct task_struct *task, struct vm_area_struct *vma,
 	case MADV_WILLNEED:
 		return madvise_willneed(vma, prev, start, end);
 	case MADV_COLD:
-		return madvise_cold(task, vma, prev, start, end);
+		return madvise_cold(vma, prev, start, end);
 	case MADV_PAGEOUT:
-		return madvise_pageout(task, vma, prev, start, end);
+		return madvise_pageout(vma, prev, start, end);
 	case MADV_FREE:
 	case MADV_DONTNEED:
 		return madvise_dontneed_free(vma, prev, start, end, behavior);
@@ -1022,10 +1024,7 @@ process_madvise_behavior_valid(int behavior)
 	switch (behavior) {
 	case MADV_COLD:
 	case MADV_PAGEOUT:
-#ifdef CONFIG_KSM
-	case MADV_MERGEABLE:
-	case MADV_UNMERGEABLE:
-#endif
+	case MADV_WILLNEED:
 		return true;
 	default:
 		return false;
@@ -1098,8 +1097,7 @@ process_madvise_behavior_valid(int behavior)
  *  -EBADF  - map exists, but area maps something that isn't a file.
  *  -EAGAIN - a kernel resource was temporarily unavailable.
  */
-int do_madvise(struct task_struct *target_task, struct mm_struct *mm,
-		unsigned long start, size_t len_in, int behavior)
+int do_madvise(struct mm_struct *mm, unsigned long start, size_t len_in, int behavior)
 {
 	unsigned long end, tmp;
 	struct vm_area_struct *vma, *prev;
@@ -1114,9 +1112,9 @@ int do_madvise(struct task_struct *target_task, struct mm_struct *mm,
 	if (!madvise_behavior_valid(behavior))
 		return error;
 
-	if (start & ~PAGE_MASK)
+	if (!PAGE_ALIGNED(start))
 		return error;
-	len = (len_in + ~PAGE_MASK) & PAGE_MASK;
+	len = PAGE_ALIGN(len_in);
 
 	/* Check to see whether len was rounded up from small -ve to zero */
 	if (len_in && !len)
@@ -1137,27 +1135,10 @@ int do_madvise(struct task_struct *target_task, struct mm_struct *mm,
 
 	write = madvise_need_mmap_write(behavior);
 	if (write) {
-		if (down_write_killable(&mm->mmap_sem))
+		if (mmap_write_lock_killable(mm))
 			return -EINTR;
-
-		/*
-		 * We may have stolen the mm from another process
-		 * that is undergoing core dumping.
-		 *
-		 * Right now that's io_ring, in the future it may
-		 * be remote process management and not "current"
-		 * at all.
-		 *
-		 * We need to fix core dumping to not do this,
-		 * but for now we have the mmget_still_valid()
-		 * model.
-		 */
-		if (!mmget_still_valid(mm)) {
-			up_write(&mm->mmap_sem);
-			return -EINTR;
-		}
 	} else {
-		down_read(&mm->mmap_sem);
+		mmap_read_lock(mm);
 	}
 
 	/*
@@ -1190,8 +1171,7 @@ int do_madvise(struct task_struct *target_task, struct mm_struct *mm,
 			tmp = end;
 
 		/* Here vma->vm_start <= start < tmp <= (end|vma->vm_end). */
-		error = madvise_vma(target_task, vma, &prev,
-					start, tmp, behavior);
+		error = madvise_vma(vma, &prev, start, tmp, behavior);
 		if (error)
 			goto out;
 		start = tmp;
@@ -1202,76 +1182,50 @@ int do_madvise(struct task_struct *target_task, struct mm_struct *mm,
 			goto out;
 		if (prev)
 			vma = prev->vm_next;
-		else	/* madvise_remove dropped mmap_sem */
+		else	/* madvise_remove dropped mmap_lock */
 			vma = find_vma(mm, start);
 	}
 out:
 	blk_finish_plug(&plug);
 	if (write)
-		up_write(&mm->mmap_sem);
+		mmap_write_unlock(mm);
 	else
-		up_read(&mm->mmap_sem);
+		mmap_read_unlock(mm);
 
 	return error;
 }
 
 SYSCALL_DEFINE3(madvise, unsigned long, start, size_t, len_in, int, behavior)
 {
-	return do_madvise(current, current->mm, start, len_in, behavior);
+	return do_madvise(current->mm, start, len_in, behavior);
 }
 
-static int do_process_madvise(struct task_struct *target_task,
-		struct mm_struct *mm, struct iov_iter *iter, int behavior)
-{
-	struct iovec iovec;
-	int ret = 0;
-
-	while (iov_iter_count(iter)) {
-		iovec = iov_iter_iovec(iter);
-		ret = do_madvise(target_task, mm, (unsigned long)iovec.iov_base,
-					iovec.iov_len, behavior);
-		if (ret < 0)
-			break;
-		iov_iter_advance(iter, iovec.iov_len);
-	}
-
-	return ret;
-}
-
-SYSCALL_DEFINE6(process_madvise, int, which, pid_t, upid,
-		const struct iovec __user *, vec, unsigned long, vlen,
-		int, behavior, unsigned long, flags)
+SYSCALL_DEFINE5(process_madvise, int, pidfd, const struct iovec __user *, vec,
+		size_t, vlen, int, behavior, unsigned int, flags)
 {
 	ssize_t ret;
+	struct iovec iovstack[UIO_FASTIOV], iovec;
+	struct iovec *iov = iovstack;
+	struct iov_iter iter;
 	struct pid *pid;
 	struct task_struct *task;
 	struct mm_struct *mm;
-	struct iovec iovstack[UIO_FASTIOV];
-	struct iovec *iov = iovstack;
-	struct iov_iter iter;
+	size_t total_len;
+	unsigned int f_flags;
 
-	if (flags != 0)
-		return -EINVAL;
+	if (flags != 0) {
+		ret = -EINVAL;
+		goto out;
+	}
 
-	switch (which) {
-	case P_PID:
-		if (upid <= 0)
-			return -EINVAL;
+	ret = import_iovec(READ, vec, vlen, ARRAY_SIZE(iovstack), &iov, &iter);
+	if (ret < 0)
+		goto out;
 
-		pid = find_get_pid(upid);
-		if (!pid)
-			return -ESRCH;
-		break;
-	case P_PIDFD:
-		if (upid < 0)
-			return -EINVAL;
-
-		pid = pidfd_get_pid(upid);
-		if (IS_ERR(pid))
-			return PTR_ERR(pid);
-		break;
-	default:
-		return -EINVAL;
+	pid = pidfd_get_pid(pidfd, &f_flags);
+	if (IS_ERR(pid)) {
+		ret = PTR_ERR(pid);
+		goto free_iov;
 	}
 
 	task = get_pid_task(pid, PIDTYPE_PID);
@@ -1285,25 +1239,43 @@ SYSCALL_DEFINE6(process_madvise, int, which, pid_t, upid,
 		goto release_task;
 	}
 
-	mm = mm_access(task, PTRACE_MODE_ATTACH_FSCREDS);
+	/* Require PTRACE_MODE_READ to avoid leaking ASLR metadata. */
+	mm = mm_access(task, PTRACE_MODE_READ_FSCREDS);
 	if (IS_ERR_OR_NULL(mm)) {
 		ret = IS_ERR(mm) ? PTR_ERR(mm) : -ESRCH;
 		goto release_task;
 	}
 
-	ret = import_iovec(READ, vec, vlen, ARRAY_SIZE(iovstack), &iov, &iter);
-	if (ret >= 0) {
-		size_t total_len = iov_iter_count(&iter);
-
-		ret = do_process_madvise(task, mm, &iter, behavior);
-		if (ret >= 0)
-			ret = total_len - iov_iter_count(&iter);
-		kfree(iov);
+	/*
+	 * Require CAP_SYS_NICE for influencing process performance. Note that
+	 * only non-destructive hints are currently supported.
+	 */
+	if (!capable(CAP_SYS_NICE)) {
+		ret = -EPERM;
+		goto release_mm;
 	}
+
+	total_len = iov_iter_count(&iter);
+
+	while (iov_iter_count(&iter)) {
+		iovec = iov_iter_iovec(&iter);
+		ret = do_madvise(mm, (unsigned long)iovec.iov_base,
+					iovec.iov_len, behavior);
+		if (ret < 0)
+			break;
+		iov_iter_advance(&iter, iovec.iov_len);
+	}
+
+	ret = (total_len - iov_iter_count(&iter)) ? : ret;
+
+release_mm:
 	mmput(mm);
 release_task:
 	put_task_struct(task);
 put_pid:
 	put_pid(pid);
+free_iov:
+	kfree(iov);
+out:
 	return ret;
 }

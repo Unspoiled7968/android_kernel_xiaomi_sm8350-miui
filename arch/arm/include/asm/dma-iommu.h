@@ -6,13 +6,11 @@
 
 #include <linux/mm_types.h>
 #include <linux/scatterlist.h>
-#include <linux/dma-debug.h>
 #include <linux/kref.h>
 
 struct dma_iommu_mapping {
 	/* iommu specific data */
 	struct iommu_domain	*domain;
-	const struct dma_map_ops *ops;
 
 	unsigned long		**bitmaps;	/* array of bitmaps */
 	unsigned int		nr_bitmaps;	/* nr of elements in array */
@@ -33,8 +31,6 @@ void arm_iommu_release_mapping(struct dma_iommu_mapping *mapping);
 int arm_iommu_attach_device(struct device *dev,
 					struct dma_iommu_mapping *mapping);
 void arm_iommu_detach_device(struct device *dev);
-
-int arm_dma_supported(struct device *dev, u64 mask);
 
 #endif /* __KERNEL__ */
 #endif

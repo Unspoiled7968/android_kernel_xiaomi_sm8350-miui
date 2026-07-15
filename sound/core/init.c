@@ -14,6 +14,7 @@
 #include <linux/ctype.h>
 #include <linux/pm.h>
 #include <linux/completion.h>
+#include <linux/interrupt.h>
 
 #include <sound/core.h>
 #include <sound/control.h>
@@ -203,6 +204,9 @@ int snd_card_new(struct device *parent, int idx, const char *xid,
 	mutex_unlock(&snd_card_mutex);
 	card->dev = parent;
 	card->number = idx;
+#ifdef MODULE
+	WARN_ON(!module);
+#endif
 	card->module = module;
 	INIT_LIST_HEAD(&card->devices);
 	init_rwsem(&card->controls_rwsem);
@@ -211,13 +215,13 @@ int snd_card_new(struct device *parent, int idx, const char *xid,
 	INIT_LIST_HEAD(&card->ctl_files);
 	spin_lock_init(&card->files_lock);
 	INIT_LIST_HEAD(&card->files_list);
+	mutex_init(&card->memory_mutex);
 #ifdef CONFIG_PM
 	init_waitqueue_head(&card->power_sleep);
 #endif
 	init_waitqueue_head(&card->remove_sleep);
-#ifdef CONFIG_AUDIO_QGKI
-	init_waitqueue_head(&card->offline_poll_wait);
-#endif
+	card->sync_irq = -1;
+
 	device_initialize(&card->card_dev);
 	card->card_dev.parent = parent;
 	card->card_dev.class = sound_class;
@@ -413,6 +417,9 @@ int snd_card_disconnect(struct snd_card *card)
 	/* notify all devices that we are disconnected */
 	snd_device_disconnect_all(card);
 
+	if (card->sync_irq > 0)
+		synchronize_irq(card->sync_irq);
+
 	snd_info_card_disconnect(card);
 	if (card->registered) {
 		device_del(&card->card_dev);
@@ -514,10 +521,9 @@ EXPORT_SYMBOL(snd_card_free_when_closed);
  */
 int snd_card_free(struct snd_card *card)
 {
-	struct completion released;
+	DECLARE_COMPLETION_ONSTACK(released);
 	int ret;
 
-	init_completion(&released);
 	card->release_completion = &released;
 	ret = snd_card_free_when_closed(card);
 	if (ret)
@@ -528,13 +534,19 @@ int snd_card_free(struct snd_card *card)
 }
 EXPORT_SYMBOL(snd_card_free);
 
+/* check, if the character is in the valid ASCII range */
+static inline bool safe_ascii_char(char c)
+{
+	return isascii(c) && isalnum(c);
+}
+
 /* retrieve the last word of shortname or longname */
 static const char *retrieve_id_from_card_name(const char *name)
 {
 	const char *spos = name;
 
 	while (*name) {
-		if (isspace(*name) && isalnum(name[1]))
+		if (isspace(*name) && safe_ascii_char(name[1]))
 			spos = name + 1;
 		name++;
 	}
@@ -561,12 +573,12 @@ static void copy_valid_id_string(struct snd_card *card, const char *src,
 {
 	char *id = card->id;
 
-	while (*nid && !isalnum(*nid))
+	while (*nid && !safe_ascii_char(*nid))
 		nid++;
 	if (isdigit(*nid))
 		*id++ = isalpha(*src) ? *src : 'D';
 	while (*nid && (size_t)(id - card->id) < sizeof(card->id) - 1) {
-		if (isalnum(*nid))
+		if (safe_ascii_char(*nid))
 			*id++ = *nid;
 		nid++;
 	}
@@ -664,7 +676,7 @@ card_id_store_attr(struct device *dev, struct device_attribute *attr,
 
 	for (idx = 0; idx < copy; idx++) {
 		c = buf[idx];
-		if (!isalnum(c) && c != '_' && c != '-')
+		if (!safe_ascii_char(c) && c != '_' && c != '-')
 			return -EINVAL;
 	}
 	memcpy(buf1, buf, copy);
@@ -980,37 +992,6 @@ int snd_card_file_remove(struct snd_card *card, struct file *file)
 	return 0;
 }
 EXPORT_SYMBOL(snd_card_file_remove);
-
-#ifdef CONFIG_AUDIO_QGKI
-/**
- * snd_card_change_online_state - mark card's online/offline state
- * @card: Card to mark
- * @online: whether online of offline
- *
- * Mutes the DAI DAC.
- */
-void snd_card_change_online_state(struct snd_card *card, int online)
-{
-	snd_printd("snd card %s state change %d -> %d\n",
-		card->shortname, !card->offline, online);
-	card->offline = !online;
-	/* make sure offline is updated prior to wake up */
-	wmb();
-	xchg(&card->offline_change, 1);
-	wake_up_interruptible(&card->offline_poll_wait);
-}
-EXPORT_SYMBOL(snd_card_change_online_state);
-
-/**
- * snd_card_is_online_state - return true if card is online state
- * @card: Card to query
- */
-bool snd_card_is_online_state(struct snd_card *card)
-{
-	return !card->offline;
-}
-EXPORT_SYMBOL(snd_card_is_online_state);
-#endif
 
 #ifdef CONFIG_PM
 /**

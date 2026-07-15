@@ -28,6 +28,7 @@
  * IN THE SOFTWARE.
  */
 #include <linux/compat.h>
+#include <linux/nospec.h>
 #include <linux/ratelimit.h>
 #include <linux/export.h>
 
@@ -395,6 +396,7 @@ static int drm_legacy_infobufs32(struct drm_device *dev, void *data,
 			struct drm_file *file_priv)
 {
 	drm_buf_info32_t *request = data;
+
 	return __drm_legacy_infobufs(dev, data, &request->count, copy_one_buf32);
 }
 
@@ -820,6 +822,7 @@ static int compat_drm_update_draw(struct file *file, unsigned int cmd,
 				  unsigned long arg)
 {
 	drm_update_draw32_t update32;
+
 	if (copy_from_user(&update32, (void __user *)arg, sizeof(update32)))
 		return -EFAULT;
 
@@ -990,12 +993,13 @@ long drm_compat_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	if (nr >= ARRAY_SIZE(drm_compat_ioctls))
 		return drm_ioctl(filp, cmd, arg);
 
+	nr = array_index_nospec(nr, ARRAY_SIZE(drm_compat_ioctls));
 	fn = drm_compat_ioctls[nr].fn;
 	if (!fn)
 		return drm_ioctl(filp, cmd, arg);
 
-	DRM_DEBUG("pid=%d, dev=0x%lx, auth=%d, %s\n",
-		  task_pid_nr(current),
+	DRM_DEBUG("comm=\"%s\", pid=%d, dev=0x%lx, auth=%d, %s\n",
+		  current->comm, task_pid_nr(current),
 		  (long)old_encode_dev(file_priv->minor->kdev->devt),
 		  file_priv->authenticated,
 		  drm_compat_ioctls[nr].name);

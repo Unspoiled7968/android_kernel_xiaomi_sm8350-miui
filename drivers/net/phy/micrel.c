@@ -19,6 +19,7 @@
  *			 ksz9477
  */
 
+#include <linux/bitfield.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/phy.h>
@@ -26,8 +27,6 @@
 #include <linux/of.h>
 #include <linux/clk.h>
 #include <linux/delay.h>
-#include <linux/netdevice.h>
-#include <linux/etherdevice.h>
 
 /* Operation Mode Strap Override */
 #define MII_KSZPHY_OMSO				0x16
@@ -73,21 +72,6 @@
 #define MII_KSZPHY_TX_DATA_PAD_SKEW             0x106
 
 #define PS_TO_REG				200
-
-/*Register 2.10. 15:14 PME Output Select*/
-#define MII_KSZPHY_OMSO_PME_N2                  BIT(10)
-/*Register 2.10. BITS 6, 1 and 0 to detect the type of WOL */
-#define MII_KSZPHY_WOL_MAGIC_PKT                BIT(6)
-#define MII_KSZPHY_WOL_LINK_DOWN                BIT(1)
-#define MII_KSZPHY_WOL_LINK_UP                  BIT(0)
-/* Register 2.10.15:14 PME Output Select */
-#define MII_KSZPHY_WOL_CTRL_PME_N2              BIT(15)
-#define MII_KSZPHY_WOL_CTRL_INT_N               BIT(14)
-
-/* MMD Address 2h, Register 2h Operation Mode Strap Override*/
-#define MII_KSZPHY_OMSO_REG                     0x2
-/* MMD Address 2h, Register 10h Wake-On-LAN Control   */
-#define MII_KSZPHY_WOL_CTRL_REG                 0x10
 
 struct kszphy_hw_stat {
 	const char *string;
@@ -324,14 +308,19 @@ static int kszphy_config_init(struct phy_device *phydev)
 	return kszphy_config_reset(phydev);
 }
 
+static int ksz8041_fiber_mode(struct phy_device *phydev)
+{
+	struct device_node *of_node = phydev->mdio.dev.of_node;
+
+	return of_property_read_bool(of_node, "micrel,fiber-mode");
+}
+
 static int ksz8041_config_init(struct phy_device *phydev)
 {
 	__ETHTOOL_DECLARE_LINK_MODE_MASK(mask) = { 0, };
 
-	struct device_node *of_node = phydev->mdio.dev.of_node;
-
 	/* Limit supported and advertised modes in fiber mode */
-	if (of_property_read_bool(of_node, "micrel,fiber-mode")) {
+	if (ksz8041_fiber_mode(phydev)) {
 		phydev->dev_flags |= MICREL_PHY_FXEN;
 		linkmode_set_bit(ETHTOOL_LINK_MODE_100baseT_Full_BIT, mask);
 		linkmode_set_bit(ETHTOOL_LINK_MODE_100baseT_Half_BIT, mask);
@@ -507,44 +496,60 @@ static int ksz9021_config_init(struct phy_device *phydev)
 
 /* MMD Address 0x2 */
 #define MII_KSZ9031RN_CONTROL_PAD_SKEW	4
+#define MII_KSZ9031RN_RX_CTL_M		GENMASK(7, 4)
+#define MII_KSZ9031RN_TX_CTL_M		GENMASK(3, 0)
+
 #define MII_KSZ9031RN_RX_DATA_PAD_SKEW	5
+#define MII_KSZ9031RN_RXD3		GENMASK(15, 12)
+#define MII_KSZ9031RN_RXD2		GENMASK(11, 8)
+#define MII_KSZ9031RN_RXD1		GENMASK(7, 4)
+#define MII_KSZ9031RN_RXD0		GENMASK(3, 0)
+
 #define MII_KSZ9031RN_TX_DATA_PAD_SKEW	6
+#define MII_KSZ9031RN_TXD3		GENMASK(15, 12)
+#define MII_KSZ9031RN_TXD2		GENMASK(11, 8)
+#define MII_KSZ9031RN_TXD1		GENMASK(7, 4)
+#define MII_KSZ9031RN_TXD0		GENMASK(3, 0)
+
 #define MII_KSZ9031RN_CLK_PAD_SKEW	8
+#define MII_KSZ9031RN_GTX_CLK		GENMASK(9, 5)
+#define MII_KSZ9031RN_RX_CLK		GENMASK(4, 0)
+
+/* KSZ9031 has internal RGMII_IDRX = 1.2ns and RGMII_IDTX = 0ns. To
+ * provide different RGMII options we need to configure delay offset
+ * for each pad relative to build in delay.
+ */
+/* keep rx as "No delay adjustment" and set rx_clk to +0.60ns to get delays of
+ * 1.80ns
+ */
+#define RX_ID				0x7
+#define RX_CLK_ID			0x19
+
+/* set rx to +0.30ns and rx_clk to -0.90ns to compensate the
+ * internal 1.2ns delay.
+ */
+#define RX_ND				0xc
+#define RX_CLK_ND			0x0
+
+/* set tx to -0.42ns and tx_clk to +0.96ns to get 1.38ns delay */
+#define TX_ID				0x0
+#define TX_CLK_ID			0x1f
+
+/* set tx and tx_clk to "No delay adjustment" to keep 0ns
+ * dealy
+ */
+#define TX_ND				0x7
+#define TX_CLK_ND			0xf
 
 /* MMD Address 0x1C */
 #define MII_KSZ9031RN_EDPD		0x23
 #define MII_KSZ9031RN_EDPD_ENABLE	BIT(0)
 
-static int ksz9031_ack_interrupt(struct phy_device *phydev)
-{
-	/* bit[7..0] int status, which is a read and clear register. */
-	int rc;
-	u32 reg_value;
-
-	rc = phy_read(phydev, MII_KSZPHY_INTCS);
-
-	reg_value = phy_read_mmd(phydev, 0x2, MII_KSZPHY_OMSO_REG);
-	if (reg_value & MII_KSZPHY_OMSO_PME_N2) {
-		/* PME output is cleared by disabling the PME trigger src */
-		reg_value = phy_read_mmd(phydev, 0x2, MII_KSZPHY_WOL_CTRL_REG);
-		reg_value &= ~MII_KSZPHY_WOL_MAGIC_PKT;
-		reg_value &= ~MII_KSZPHY_WOL_LINK_UP;
-		reg_value &= ~MII_KSZPHY_WOL_LINK_DOWN;
-		phy_write_mmd(phydev, 0x2, MII_KSZPHY_WOL_CTRL_REG, reg_value);
-		reg_value = phy_read_mmd(phydev, 0x2, MII_KSZPHY_WOL_CTRL_REG);
-		reg_value |= MII_KSZPHY_WOL_MAGIC_PKT;
-		reg_value |= MII_KSZPHY_WOL_LINK_UP;
-		reg_value |= MII_KSZPHY_WOL_LINK_DOWN;
-		phy_write_mmd(phydev, 0x2, MII_KSZPHY_WOL_CTRL_REG, reg_value);
-	}
-
-	return (rc < 0) ? rc : 0;
-}
-
 static int ksz9031_of_load_skew_values(struct phy_device *phydev,
 				       const struct device_node *of_node,
 				       u16 reg, size_t field_sz,
-				       const char *field[], u8 numfields)
+				       const char *field[], u8 numfields,
+				       bool *update)
 {
 	int val[4] = {-1, -2, -3, -4};
 	int matches = 0;
@@ -559,6 +564,8 @@ static int ksz9031_of_load_skew_values(struct phy_device *phydev,
 
 	if (!matches)
 		return 0;
+
+	*update |= true;
 
 	if (matches < numfields)
 		newval = phy_read_mmd(phydev, 2, reg);
@@ -608,6 +615,67 @@ static int ksz9031_enable_edpd(struct phy_device *phydev)
 			     reg | MII_KSZ9031RN_EDPD_ENABLE);
 }
 
+static int ksz9031_config_rgmii_delay(struct phy_device *phydev)
+{
+	u16 rx, tx, rx_clk, tx_clk;
+	int ret;
+
+	switch (phydev->interface) {
+	case PHY_INTERFACE_MODE_RGMII:
+		tx = TX_ND;
+		tx_clk = TX_CLK_ND;
+		rx = RX_ND;
+		rx_clk = RX_CLK_ND;
+		break;
+	case PHY_INTERFACE_MODE_RGMII_ID:
+		tx = TX_ID;
+		tx_clk = TX_CLK_ID;
+		rx = RX_ID;
+		rx_clk = RX_CLK_ID;
+		break;
+	case PHY_INTERFACE_MODE_RGMII_RXID:
+		tx = TX_ND;
+		tx_clk = TX_CLK_ND;
+		rx = RX_ID;
+		rx_clk = RX_CLK_ID;
+		break;
+	case PHY_INTERFACE_MODE_RGMII_TXID:
+		tx = TX_ID;
+		tx_clk = TX_CLK_ID;
+		rx = RX_ND;
+		rx_clk = RX_CLK_ND;
+		break;
+	default:
+		return 0;
+	}
+
+	ret = phy_write_mmd(phydev, 2, MII_KSZ9031RN_CONTROL_PAD_SKEW,
+			    FIELD_PREP(MII_KSZ9031RN_RX_CTL_M, rx) |
+			    FIELD_PREP(MII_KSZ9031RN_TX_CTL_M, tx));
+	if (ret < 0)
+		return ret;
+
+	ret = phy_write_mmd(phydev, 2, MII_KSZ9031RN_RX_DATA_PAD_SKEW,
+			    FIELD_PREP(MII_KSZ9031RN_RXD3, rx) |
+			    FIELD_PREP(MII_KSZ9031RN_RXD2, rx) |
+			    FIELD_PREP(MII_KSZ9031RN_RXD1, rx) |
+			    FIELD_PREP(MII_KSZ9031RN_RXD0, rx));
+	if (ret < 0)
+		return ret;
+
+	ret = phy_write_mmd(phydev, 2, MII_KSZ9031RN_TX_DATA_PAD_SKEW,
+			    FIELD_PREP(MII_KSZ9031RN_TXD3, tx) |
+			    FIELD_PREP(MII_KSZ9031RN_TXD2, tx) |
+			    FIELD_PREP(MII_KSZ9031RN_TXD1, tx) |
+			    FIELD_PREP(MII_KSZ9031RN_TXD0, tx));
+	if (ret < 0)
+		return ret;
+
+	return phy_write_mmd(phydev, 2, MII_KSZ9031RN_CLK_PAD_SKEW,
+			     FIELD_PREP(MII_KSZ9031RN_GTX_CLK, tx_clk) |
+			     FIELD_PREP(MII_KSZ9031RN_RX_CLK, rx_clk));
+}
+
 static int ksz9031_config_init(struct phy_device *phydev)
 {
 	const struct device *dev = &phydev->mdio.dev;
@@ -640,21 +708,33 @@ static int ksz9031_config_init(struct phy_device *phydev)
 	} while (!of_node && dev_walker);
 
 	if (of_node) {
+		bool update = false;
+
+		if (phy_interface_is_rgmii(phydev)) {
+			result = ksz9031_config_rgmii_delay(phydev);
+			if (result < 0)
+				return result;
+		}
+
 		ksz9031_of_load_skew_values(phydev, of_node,
 				MII_KSZ9031RN_CLK_PAD_SKEW, 5,
-				clk_skews, 2);
+				clk_skews, 2, &update);
 
 		ksz9031_of_load_skew_values(phydev, of_node,
 				MII_KSZ9031RN_CONTROL_PAD_SKEW, 4,
-				control_skews, 2);
+				control_skews, 2, &update);
 
 		ksz9031_of_load_skew_values(phydev, of_node,
 				MII_KSZ9031RN_RX_DATA_PAD_SKEW, 4,
-				rx_data_skews, 4);
+				rx_data_skews, 4, &update);
 
 		ksz9031_of_load_skew_values(phydev, of_node,
 				MII_KSZ9031RN_TX_DATA_PAD_SKEW, 4,
-				tx_data_skews, 4);
+				tx_data_skews, 4, &update);
+
+		if (update && !phy_interface_is_rgmii(phydev))
+			phydev_warn(phydev,
+				    "*-skew-ps values should be used only with RGMII PHY modes\n");
 
 		/* Silicon Errata Sheet (DS80000691D or DS80000692D):
 		 * When the device links in the 1000BASE-T slave mode only,
@@ -748,6 +828,50 @@ static int ksz9131_of_load_skew_values(struct phy_device *phydev,
 	return phy_write_mmd(phydev, 2, reg, newval);
 }
 
+#define KSZ9131RN_MMD_COMMON_CTRL_REG	2
+#define KSZ9131RN_RXC_DLL_CTRL		76
+#define KSZ9131RN_TXC_DLL_CTRL		77
+#define KSZ9131RN_DLL_CTRL_BYPASS	BIT_MASK(12)
+#define KSZ9131RN_DLL_ENABLE_DELAY	0
+#define KSZ9131RN_DLL_DISABLE_DELAY	BIT(12)
+
+static int ksz9131_config_rgmii_delay(struct phy_device *phydev)
+{
+	u16 rxcdll_val, txcdll_val;
+	int ret;
+
+	switch (phydev->interface) {
+	case PHY_INTERFACE_MODE_RGMII:
+		rxcdll_val = KSZ9131RN_DLL_DISABLE_DELAY;
+		txcdll_val = KSZ9131RN_DLL_DISABLE_DELAY;
+		break;
+	case PHY_INTERFACE_MODE_RGMII_ID:
+		rxcdll_val = KSZ9131RN_DLL_ENABLE_DELAY;
+		txcdll_val = KSZ9131RN_DLL_ENABLE_DELAY;
+		break;
+	case PHY_INTERFACE_MODE_RGMII_RXID:
+		rxcdll_val = KSZ9131RN_DLL_ENABLE_DELAY;
+		txcdll_val = KSZ9131RN_DLL_DISABLE_DELAY;
+		break;
+	case PHY_INTERFACE_MODE_RGMII_TXID:
+		rxcdll_val = KSZ9131RN_DLL_DISABLE_DELAY;
+		txcdll_val = KSZ9131RN_DLL_ENABLE_DELAY;
+		break;
+	default:
+		return 0;
+	}
+
+	ret = phy_modify_mmd(phydev, KSZ9131RN_MMD_COMMON_CTRL_REG,
+			     KSZ9131RN_RXC_DLL_CTRL, KSZ9131RN_DLL_CTRL_BYPASS,
+			     rxcdll_val);
+	if (ret < 0)
+		return ret;
+
+	return phy_modify_mmd(phydev, KSZ9131RN_MMD_COMMON_CTRL_REG,
+			      KSZ9131RN_TXC_DLL_CTRL, KSZ9131RN_DLL_CTRL_BYPASS,
+			      txcdll_val);
+}
+
 static int ksz9131_config_init(struct phy_device *phydev)
 {
 	const struct device *dev = &phydev->mdio.dev;
@@ -773,6 +897,12 @@ static int ksz9131_config_init(struct phy_device *phydev)
 
 	if (!of_node)
 		return 0;
+
+	if (phy_interface_is_rgmii(phydev)) {
+		ret = ksz9131_config_rgmii_delay(phydev);
+		if (ret < 0)
+			return ret;
+	}
 
 	ret = ksz9131_of_load_skew_values(phydev, of_node,
 					  MII_KSZ9031RN_CLK_PAD_SKEW, 5,
@@ -1019,102 +1149,14 @@ static int kszphy_probe(struct phy_device *phydev)
 		}
 	}
 
+	if (ksz8041_fiber_mode(phydev))
+		phydev->port = PORT_FIBRE;
+
 	/* Support legacy board-file configuration */
 	if (phydev->dev_flags & MICREL_PHY_50MHZ_CLK) {
 		priv->rmii_ref_clk_sel = true;
 		priv->rmii_ref_clk_sel_val = true;
 	}
-
-	return 0;
-}
-
-static void ksz9031_set_wol_settings(struct phy_device *phydev)
-{
-	u32 reg_value;
-
-	/* Enable both PHY and PME_N2 interrupts */
-	reg_value = phy_read_mmd(phydev, 0x2, MII_KSZPHY_WOL_CTRL_REG);
-	reg_value |= MII_KSZPHY_WOL_CTRL_PME_N2;
-	reg_value &= ~MII_KSZPHY_WOL_CTRL_INT_N;
-	reg_value |= MII_KSZPHY_WOL_MAGIC_PKT;
-	reg_value |= MII_KSZPHY_WOL_LINK_UP;
-	reg_value |= MII_KSZPHY_WOL_LINK_DOWN;
-	phy_write_mmd(phydev, 0x2, MII_KSZPHY_WOL_CTRL_REG, reg_value);
-}
-
-static int ksz9031_set_wol(struct phy_device *phydev,
-			   struct ethtool_wolinfo *wol)
-{
-	struct net_device *ndev = phydev->attached_dev;
-	const u8 *mac;
-	int ret = 0;
-	u32 reg_value;
-
-	if (!ndev)
-		return -ENODEV;
-
-	if (wol->wolopts & WAKE_MAGIC) {
-		mac = (const u8 *)ndev->dev_addr;
-
-		if (!is_valid_ether_addr(mac))
-			return -EINVAL;
-
-		phy_write_mmd(phydev, 0x2, 0x11, mac[5] | (mac[4] << 8));
-		phy_write_mmd(phydev, 0x2, 0x12, mac[3] | (mac[2] << 8));
-		phy_write_mmd(phydev, 0x2, 0x13, mac[1] | (mac[0] << 8));
-
-		/* Enable WOL interrupt for magic pkt, link up and down */
-		ksz9031_set_wol_settings(phydev);
-
-		/* Enable PME_N2 output */
-		reg_value = phy_read_mmd(phydev, 0x2, MII_KSZPHY_OMSO_REG);
-		reg_value |= MII_KSZPHY_OMSO_PME_N2;
-		phy_write_mmd(phydev, 0x2, MII_KSZPHY_OMSO_REG, reg_value);
-	}
-
-	return ret;
-}
-
-static void ksz9031_get_wol(struct phy_device *phydev,
-			    struct ethtool_wolinfo *wol)
-{
-	u32 reg_value;
-
-	wol->supported = WAKE_MAGIC;
-	wol->wolopts = 0;
-
-	reg_value = phy_read_mmd(phydev, 0x2, MII_KSZPHY_OMSO_REG);
-	if (reg_value & MII_KSZPHY_OMSO_PME_N2)
-		wol->wolopts |= WAKE_MAGIC;
-}
-
-static int ksz9031_suspend(struct phy_device *phydev)
-{
-	int value;
-	int wol_enabled;
-	u32 reg_value;
-
-	reg_value = phy_read_mmd(phydev, 0x2, MII_KSZPHY_OMSO_REG);
-	wol_enabled = reg_value & MII_KSZPHY_OMSO_PME_N2;
-
-	value = phy_read(phydev, MII_BMCR);
-	if (wol_enabled)
-		value |= BMCR_ISOLATE;
-	else
-		value |= BMCR_PDOWN;
-
-	phy_write(phydev, MII_BMCR, value);
-
-	return 0;
-}
-
-static int ksz9031_resume(struct phy_device *phydev)
-{
-	int value;
-
-	value = phy_read(phydev, MII_BMCR);
-	value &= ~(BMCR_PDOWN | BMCR_ISOLATE);
-	phy_write(phydev, MII_BMCR, value);
 
 	return 0;
 }
@@ -1276,15 +1318,13 @@ static struct phy_driver ksphy_driver[] = {
 	.config_init	= ksz9031_config_init,
 	.soft_reset	= genphy_soft_reset,
 	.read_status	= ksz9031_read_status,
-	.ack_interrupt	= ksz9031_ack_interrupt,
+	.ack_interrupt	= kszphy_ack_interrupt,
 	.config_intr	= kszphy_config_intr,
 	.get_sset_count = kszphy_get_sset_count,
 	.get_strings	= kszphy_get_strings,
 	.get_stats	= kszphy_get_stats,
-	.set_wol	= ksz9031_set_wol,
-	.get_wol	 = ksz9031_get_wol,
-	.suspend	= ksz9031_suspend,
-	.resume		= ksz9031_resume,
+	.suspend	= genphy_suspend,
+	.resume		= kszphy_resume,
 }, {
 	.phy_id		= PHY_ID_LAN8814,
 	.phy_id_mask	= MICREL_PHY_ID_MASK,

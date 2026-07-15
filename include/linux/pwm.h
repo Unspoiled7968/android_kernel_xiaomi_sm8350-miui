@@ -5,6 +5,7 @@
 #include <linux/err.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
+#include <linux/android_kabi.h>
 
 struct pwm_capture;
 struct seq_file;
@@ -83,7 +84,8 @@ struct pwm_state {
  * @chip: PWM chip providing this PWM device
  * @chip_data: chip-private data associated with the PWM device
  * @args: PWM arguments
- * @state: curent PWM channel state
+ * @state: last applied state
+ * @last: last implemented state (for PWM_DEBUG)
  */
 struct pwm_device {
 	const char *label;
@@ -95,6 +97,9 @@ struct pwm_device {
 
 	struct pwm_args args;
 	struct pwm_state state;
+	struct pwm_state last;
+
+	ANDROID_KABI_RESERVE(1);
 };
 
 /**
@@ -265,10 +270,7 @@ pwm_set_relative_duty_cycle(struct pwm_state *state, unsigned int duty_cycle,
  * @request: optional hook for requesting a PWM
  * @free: optional hook for freeing a PWM
  * @capture: capture and report PWM signal
- * @apply: atomically apply a new PWM config. The state argument
- *	   should be adjusted with the real hardware config (if the
- *	   approximate the period or duty_cycle value, state should
- *	   reflect it)
+ * @apply: atomically apply a new PWM config
  * @get_state: get the current PWM state. This function is only
  *	       called once per PWM device when the PWM chip is
  *	       registered.
@@ -299,6 +301,8 @@ struct pwm_ops {
 			    enum pwm_polarity polarity);
 	int (*enable)(struct pwm_chip *chip, struct pwm_device *pwm);
 	void (*disable)(struct pwm_chip *chip, struct pwm_device *pwm);
+
+	ANDROID_KABI_RESERVE(1);
 };
 
 /**
@@ -325,6 +329,8 @@ struct pwm_chip {
 	/* only used internally by the PWM framework */
 	struct list_head list;
 	struct pwm_device *pwms;
+
+	ANDROID_KABI_RESERVE(1);
 };
 
 /**
@@ -333,8 +339,8 @@ struct pwm_chip {
  * @duty_cycle: duty cycle of the PWM signal (in nanoseconds)
  */
 struct pwm_capture {
-	u64 period;
-	u64 duty_cycle;
+	unsigned int period;
+	unsigned int duty_cycle;
 };
 
 #if IS_ENABLED(CONFIG_PWM)

@@ -24,9 +24,13 @@
  * struct rpmhpd - top level RPMh power domain resource data structure
  * @dev:		rpmh power domain controller device
  * @pd:			generic_pm_domain corrresponding to the power domain
+ * @parent:		generic_pm_domain corrresponding to the parent's power domain
  * @peer:		A peer power domain in case Active only Voting is
  *			supported
  * @active_only:	True if it represents an Active only peer
+ * @corner:		current corner
+ * @active_corner:	current active corner
+ * @enable_corner:	lowest non-zero corner
  * @level:		An array of level (vlvl) to corner (hlvl) mappings
  *			derived from cmd-db
  * @level_count:	Number of levels supported by the power domain. max
@@ -44,6 +48,7 @@ struct rpmhpd {
 	const bool	active_only;
 	unsigned int	corner;
 	unsigned int	active_corner;
+	unsigned int	enable_corner;
 	u32		level[RPMH_ARC_MAX_LEVELS];
 	size_t		level_count;
 	bool		enabled;
@@ -132,8 +137,81 @@ static const struct rpmhpd_desc sdm845_desc = {
 	.num_pds = ARRAY_SIZE(sdm845_rpmhpds),
 };
 
+/* SM8150 RPMH powerdomains */
+
+static struct rpmhpd sm8150_mmcx_ao;
+static struct rpmhpd sm8150_mmcx = {
+	.pd = { .name = "mmcx", },
+	.peer = &sm8150_mmcx_ao,
+	.res_name = "mmcx.lvl",
+};
+
+static struct rpmhpd sm8150_mmcx_ao = {
+	.pd = { .name = "mmcx_ao", },
+	.active_only = true,
+	.peer = &sm8150_mmcx,
+	.res_name = "mmcx.lvl",
+};
+
+static struct rpmhpd *sm8150_rpmhpds[] = {
+	[SM8150_MSS] = &sdm845_mss,
+	[SM8150_EBI] = &sdm845_ebi,
+	[SM8150_LMX] = &sdm845_lmx,
+	[SM8150_LCX] = &sdm845_lcx,
+	[SM8150_GFX] = &sdm845_gfx,
+	[SM8150_MX] = &sdm845_mx,
+	[SM8150_MX_AO] = &sdm845_mx_ao,
+	[SM8150_CX] = &sdm845_cx,
+	[SM8150_CX_AO] = &sdm845_cx_ao,
+	[SM8150_MMCX] = &sm8150_mmcx,
+	[SM8150_MMCX_AO] = &sm8150_mmcx_ao,
+};
+
+static const struct rpmhpd_desc sm8150_desc = {
+	.rpmhpds = sm8150_rpmhpds,
+	.num_pds = ARRAY_SIZE(sm8150_rpmhpds),
+};
+
+static struct rpmhpd *sm8250_rpmhpds[] = {
+	[SM8250_CX] = &sdm845_cx,
+	[SM8250_CX_AO] = &sdm845_cx_ao,
+	[SM8250_EBI] = &sdm845_ebi,
+	[SM8250_GFX] = &sdm845_gfx,
+	[SM8250_LCX] = &sdm845_lcx,
+	[SM8250_LMX] = &sdm845_lmx,
+	[SM8250_MMCX] = &sm8150_mmcx,
+	[SM8250_MMCX_AO] = &sm8150_mmcx_ao,
+	[SM8250_MX] = &sdm845_mx,
+	[SM8250_MX_AO] = &sdm845_mx_ao,
+};
+
+static const struct rpmhpd_desc sm8250_desc = {
+	.rpmhpds = sm8250_rpmhpds,
+	.num_pds = ARRAY_SIZE(sm8250_rpmhpds),
+};
+
+/* SC7180 RPMH powerdomains */
+static struct rpmhpd *sc7180_rpmhpds[] = {
+	[SC7180_CX] = &sdm845_cx,
+	[SC7180_CX_AO] = &sdm845_cx_ao,
+	[SC7180_GFX] = &sdm845_gfx,
+	[SC7180_MX] = &sdm845_mx,
+	[SC7180_MX_AO] = &sdm845_mx_ao,
+	[SC7180_LMX] = &sdm845_lmx,
+	[SC7180_LCX] = &sdm845_lcx,
+	[SC7180_MSS] = &sdm845_mss,
+};
+
+static const struct rpmhpd_desc sc7180_desc = {
+	.rpmhpds = sc7180_rpmhpds,
+	.num_pds = ARRAY_SIZE(sc7180_rpmhpds),
+};
+
 static const struct of_device_id rpmhpd_match_table[] = {
+	{ .compatible = "qcom,sc7180-rpmhpd", .data = &sc7180_desc },
 	{ .compatible = "qcom,sdm845-rpmhpd", .data = &sdm845_desc },
+	{ .compatible = "qcom,sm8150-rpmhpd", .data = &sm8150_desc },
+	{ .compatible = "qcom,sm8250-rpmhpd", .data = &sm8250_desc },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, rpmhpd_match_table);
@@ -183,12 +261,15 @@ static int rpmhpd_aggregate_corner(struct rpmhpd *pd, unsigned int corner)
 	unsigned int active_corner, sleep_corner;
 	unsigned int this_active_corner = 0, this_sleep_corner = 0;
 	unsigned int peer_active_corner = 0, peer_sleep_corner = 0;
+	unsigned int peer_enabled_corner;
 
 	to_active_sleep(pd, corner, &this_active_corner, &this_sleep_corner);
 
-	if (peer && peer->enabled)
-		to_active_sleep(peer, peer->corner, &peer_active_corner,
+	if (peer && peer->enabled) {
+		peer_enabled_corner = max(peer->corner, peer->enable_corner);
+		to_active_sleep(peer, peer_enabled_corner, &peer_active_corner,
 				&peer_sleep_corner);
+	}
 
 	active_corner = max(this_active_corner, peer_active_corner);
 
@@ -219,13 +300,13 @@ static int rpmhpd_aggregate_corner(struct rpmhpd *pd, unsigned int corner)
 static int rpmhpd_power_on(struct generic_pm_domain *domain)
 {
 	struct rpmhpd *pd = domain_to_rpmhpd(domain);
-	int ret = 0;
+	unsigned int corner;
+	int ret;
 
 	mutex_lock(&rpmhpd_lock);
 
-	if (pd->corner)
-		ret = rpmhpd_aggregate_corner(pd, pd->corner);
-
+	corner = max(pd->corner, pd->enable_corner);
+	ret = rpmhpd_aggregate_corner(pd, corner);
 	if (!ret)
 		pd->enabled = true;
 
@@ -270,6 +351,10 @@ static int rpmhpd_set_performance_state(struct generic_pm_domain *domain,
 		i--;
 
 	if (pd->enabled) {
+		/* Ensure that the domain isn't turn off */
+		if (i < pd->enable_corner)
+			i = pd->enable_corner;
+
 		ret = rpmhpd_aggregate_corner(pd, i);
 		if (ret)
 			goto out;
@@ -305,6 +390,10 @@ static int rpmhpd_update_level_mapping(struct rpmhpd *rpmhpd)
 
 	for (i = 0; i < rpmhpd->level_count; i++) {
 		rpmhpd->level[i] = buf[i];
+
+		/* Remember the first corner with non-zero level */
+		if (!rpmhpd->level[rpmhpd->enable_corner] && rpmhpd->level[i])
+			rpmhpd->enable_corner = i;
 
 		/*
 		 * The AUX data may be zero padded.  These 0 valued entries at

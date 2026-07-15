@@ -51,10 +51,11 @@ static struct at91_soc_pm soc_pm = {
 };
 
 static const match_table_t pm_modes __initconst = {
-	{ AT91_PM_STANDBY, "standby" },
-	{ AT91_PM_ULP0, "ulp0" },
-	{ AT91_PM_ULP1, "ulp1" },
-	{ AT91_PM_BACKUP, "backup" },
+	{ AT91_PM_STANDBY,	"standby" },
+	{ AT91_PM_ULP0,		"ulp0" },
+	{ AT91_PM_ULP0_FAST,    "ulp0-fast" },
+	{ AT91_PM_ULP1,		"ulp1" },
+	{ AT91_PM_BACKUP,	"backup" },
 	{ -1, NULL },
 };
 
@@ -516,18 +517,22 @@ static const struct of_device_id ramc_ids[] __initconst = {
 	{ /*sentinel*/ }
 };
 
-static __init void at91_dt_ramc(void)
+static __init int at91_dt_ramc(void)
 {
 	struct device_node *np;
 	const struct of_device_id *of_id;
 	int idx = 0;
 	void *standby = NULL;
 	const struct ramc_info *ramc;
+	int ret;
 
 	for_each_matching_node_and_match(np, ramc_ids, &of_id) {
 		soc_pm.data.ramc[idx] = of_iomap(np, 0);
-		if (!soc_pm.data.ramc[idx])
-			panic(pr_fmt("unable to map ramc[%d] cpu registers\n"), idx);
+		if (!soc_pm.data.ramc[idx]) {
+			pr_err("unable to map ramc[%d] cpu registers\n", idx);
+			ret = -ENOMEM;
+			goto unmap_ramc;
+		}
 
 		ramc = of_id->data;
 		if (!standby)
@@ -537,15 +542,26 @@ static __init void at91_dt_ramc(void)
 		idx++;
 	}
 
-	if (!idx)
-		panic(pr_fmt("unable to find compatible ram controller node in dtb\n"));
+	if (!idx) {
+		pr_err("unable to find compatible ram controller node in dtb\n");
+		ret = -ENODEV;
+		goto unmap_ramc;
+	}
 
 	if (!standby) {
 		pr_warn("ramc no standby function available\n");
-		return;
+		return 0;
 	}
 
 	at91_cpuidle_device.dev.platform_data = standby;
+
+	return 0;
+
+unmap_ramc:
+	while (idx)
+		iounmap(soc_pm.data.ramc[--idx]);
+
+	return ret;
 }
 
 static void at91rm9200_idle(void)
@@ -555,11 +571,6 @@ static void at91rm9200_idle(void)
 	 * re-enabled by an interrupt or by a reset.
 	 */
 	writel(AT91_PMC_PCK, soc_pm.data.pmc + AT91_PMC_SCDR);
-}
-
-static void at91sam9x60_idle(void)
-{
-	cpu_do_idle();
 }
 
 static void at91sam9_idle(void)
@@ -741,13 +752,36 @@ backup_default:
 
 struct pmc_info {
 	unsigned long uhp_udp_mask;
+	unsigned long mckr;
+	unsigned long version;
 };
 
 static const struct pmc_info pmc_infos[] __initconst = {
-	{ .uhp_udp_mask = AT91RM9200_PMC_UHP | AT91RM9200_PMC_UDP },
-	{ .uhp_udp_mask = AT91SAM926x_PMC_UHP | AT91SAM926x_PMC_UDP },
-	{ .uhp_udp_mask = AT91SAM926x_PMC_UHP },
-	{ .uhp_udp_mask = 0 },
+	{
+		.uhp_udp_mask = AT91RM9200_PMC_UHP | AT91RM9200_PMC_UDP,
+		.mckr = 0x30,
+		.version = AT91_PMC_V1,
+	},
+
+	{
+		.uhp_udp_mask = AT91SAM926x_PMC_UHP | AT91SAM926x_PMC_UDP,
+		.mckr = 0x30,
+		.version = AT91_PMC_V1,
+	},
+	{
+		.uhp_udp_mask = AT91SAM926x_PMC_UHP,
+		.mckr = 0x30,
+		.version = AT91_PMC_V1,
+	},
+	{	.uhp_udp_mask = 0,
+		.mckr = 0x30,
+		.version = AT91_PMC_V1,
+	},
+	{
+		.uhp_udp_mask = AT91SAM926x_PMC_UHP | AT91SAM926x_PMC_UDP,
+		.mckr = 0x28,
+		.version = AT91_PMC_V2,
+	},
 };
 
 static const struct of_device_id atmel_pmc_ids[] __initconst = {
@@ -762,9 +796,54 @@ static const struct of_device_id atmel_pmc_ids[] __initconst = {
 	{ .compatible = "atmel,sama5d3-pmc", .data = &pmc_infos[1] },
 	{ .compatible = "atmel,sama5d4-pmc", .data = &pmc_infos[1] },
 	{ .compatible = "atmel,sama5d2-pmc", .data = &pmc_infos[1] },
-	{ .compatible = "microchip,sam9x60-pmc", .data = &pmc_infos[1] },
+	{ .compatible = "microchip,sam9x60-pmc", .data = &pmc_infos[4] },
 	{ /* sentinel */ },
 };
+
+static void __init at91_pm_modes_validate(const int *modes, int len)
+{
+	u8 i, standby = 0, suspend = 0;
+	int mode;
+
+	for (i = 0; i < len; i++) {
+		if (standby && suspend)
+			break;
+
+		if (modes[i] == soc_pm.data.standby_mode && !standby) {
+			standby = 1;
+			continue;
+		}
+
+		if (modes[i] == soc_pm.data.suspend_mode && !suspend) {
+			suspend = 1;
+			continue;
+		}
+	}
+
+	if (!standby) {
+		if (soc_pm.data.suspend_mode == AT91_PM_STANDBY)
+			mode = AT91_PM_ULP0;
+		else
+			mode = AT91_PM_STANDBY;
+
+		pr_warn("AT91: PM: %s mode not supported! Using %s.\n",
+			pm_modes[soc_pm.data.standby_mode].pattern,
+			pm_modes[mode].pattern);
+		soc_pm.data.standby_mode = mode;
+	}
+
+	if (!suspend) {
+		if (soc_pm.data.standby_mode == AT91_PM_ULP0)
+			mode = AT91_PM_STANDBY;
+		else
+			mode = AT91_PM_ULP0;
+
+		pr_warn("AT91: PM: %s mode not supported! Using %s.\n",
+			pm_modes[soc_pm.data.suspend_mode].pattern,
+			pm_modes[mode].pattern);
+		soc_pm.data.suspend_mode = mode;
+	}
+}
 
 static void __init at91_pm_init(void (*pm_idle)(void))
 {
@@ -785,6 +864,8 @@ static void __init at91_pm_init(void (*pm_idle)(void))
 
 	pmc = of_id->data;
 	soc_pm.data.uhp_udp_mask = pmc->uhp_udp_mask;
+	soc_pm.data.pmc_mckr_offset = pmc->mckr;
+	soc_pm.data.pmc_version = pmc->version;
 
 	if (pm_idle)
 		arm_pm_idle = pm_idle;
@@ -803,10 +884,22 @@ static void __init at91_pm_init(void (*pm_idle)(void))
 
 void __init at91rm9200_pm_init(void)
 {
+	int ret;
+
 	if (!IS_ENABLED(CONFIG_SOC_AT91RM9200))
 		return;
 
-	at91_dt_ramc();
+	/*
+	 * Force STANDBY and ULP0 mode to avoid calling
+	 * at91_pm_modes_validate() which may increase booting time.
+	 * Platform supports anyway only STANDBY and ULP0 modes.
+	 */
+	soc_pm.data.standby_mode = AT91_PM_STANDBY;
+	soc_pm.data.suspend_mode = AT91_PM_ULP0;
+
+	ret = at91_dt_ramc();
+	if (ret)
+		return;
 
 	/*
 	 * AT91RM9200 SDRAM low-power mode cannot be used with self-refresh.
@@ -818,12 +911,21 @@ void __init at91rm9200_pm_init(void)
 
 void __init sam9x60_pm_init(void)
 {
-	if (!IS_ENABLED(CONFIG_SOC_AT91SAM9))
+	static const int modes[] __initconst = {
+		AT91_PM_STANDBY, AT91_PM_ULP0, AT91_PM_ULP0_FAST, AT91_PM_ULP1,
+	};
+	int ret;
+
+	if (!IS_ENABLED(CONFIG_SOC_SAM9X60))
 		return;
 
+	at91_pm_modes_validate(modes, ARRAY_SIZE(modes));
 	at91_pm_modes_init();
-	at91_dt_ramc();
-	at91_pm_init(at91sam9x60_idle);
+	ret = at91_dt_ramc();
+	if (ret)
+		return;
+
+	at91_pm_init(NULL);
 
 	soc_pm.ws_ids = sam9x60_ws_ids;
 	soc_pm.config_pmc_ws = at91_sam9x60_config_pmc_ws;
@@ -831,29 +933,62 @@ void __init sam9x60_pm_init(void)
 
 void __init at91sam9_pm_init(void)
 {
+	int ret;
+
 	if (!IS_ENABLED(CONFIG_SOC_AT91SAM9))
 		return;
 
-	at91_dt_ramc();
+	/*
+	 * Force STANDBY and ULP0 mode to avoid calling
+	 * at91_pm_modes_validate() which may increase booting time.
+	 * Platform supports anyway only STANDBY and ULP0 modes.
+	 */
+	soc_pm.data.standby_mode = AT91_PM_STANDBY;
+	soc_pm.data.suspend_mode = AT91_PM_ULP0;
+
+	ret = at91_dt_ramc();
+	if (ret)
+		return;
+
 	at91_pm_init(at91sam9_idle);
 }
 
 void __init sama5_pm_init(void)
 {
+	static const int modes[] __initconst = {
+		AT91_PM_STANDBY, AT91_PM_ULP0, AT91_PM_ULP0_FAST,
+	};
+	int ret;
+
 	if (!IS_ENABLED(CONFIG_SOC_SAMA5))
 		return;
 
-	at91_dt_ramc();
+	at91_pm_modes_validate(modes, ARRAY_SIZE(modes));
+	ret = at91_dt_ramc();
+	if (ret)
+		return;
+
 	at91_pm_init(NULL);
 }
 
 void __init sama5d2_pm_init(void)
 {
+	static const int modes[] __initconst = {
+		AT91_PM_STANDBY, AT91_PM_ULP0, AT91_PM_ULP0_FAST, AT91_PM_ULP1,
+		AT91_PM_BACKUP,
+	};
+	int ret;
+
 	if (!IS_ENABLED(CONFIG_SOC_SAMA5D2))
 		return;
 
+	at91_pm_modes_validate(modes, ARRAY_SIZE(modes));
 	at91_pm_modes_init();
-	sama5_pm_init();
+	ret = at91_dt_ramc();
+	if (ret)
+		return;
+
+	at91_pm_init(NULL);
 
 	soc_pm.ws_ids = sama5d2_ws_ids;
 	soc_pm.config_shdwc_ws = at91_sama5d2_config_shdwc_ws;

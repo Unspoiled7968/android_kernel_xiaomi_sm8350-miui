@@ -257,7 +257,8 @@ static int ppp_sync_hangup(struct tty_struct *tty)
  */
 static ssize_t
 ppp_sync_read(struct tty_struct *tty, struct file *file,
-	       unsigned char __user *buf, size_t count)
+	      unsigned char *buf, size_t count,
+	      void **cookie, unsigned long offset)
 {
 	return -EAGAIN;
 }
@@ -516,6 +517,11 @@ ppp_sync_txmunge(struct syncppp *ap, struct sk_buff *skb)
 	unsigned char *data;
 	int islcp;
 
+	/* Ensure we can safely access protocol field and LCP code */
+	if (!pskb_may_pull(skb, 3)) {
+		kfree_skb(skb);
+		return NULL;
+	}
 	data  = skb->data;
 	proto = get_unaligned_be16(data);
 

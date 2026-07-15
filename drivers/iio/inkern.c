@@ -362,18 +362,6 @@ static void devm_iio_channel_free(struct device *dev, void *res)
 	iio_channel_release(channel);
 }
 
-static int devm_iio_channel_match(struct device *dev, void *res, void *data)
-{
-	struct iio_channel **r = res;
-
-	if (!r || !*r) {
-		WARN_ON(!r || !*r);
-		return 0;
-	}
-
-	return *r == data;
-}
-
 struct iio_channel *devm_iio_channel_get(struct device *dev,
 					 const char *channel_name)
 {
@@ -395,13 +383,6 @@ struct iio_channel *devm_iio_channel_get(struct device *dev,
 	return channel;
 }
 EXPORT_SYMBOL_GPL(devm_iio_channel_get);
-
-void devm_iio_channel_release(struct device *dev, struct iio_channel *channel)
-{
-	WARN_ON(devres_release(dev, devm_iio_channel_free,
-			       devm_iio_channel_match, channel));
-}
-EXPORT_SYMBOL_GPL(devm_iio_channel_release);
 
 struct iio_channel *iio_channel_get_all(struct device *dev)
 {
@@ -466,7 +447,7 @@ struct iio_channel *iio_channel_get_all(struct device *dev)
 	return chans;
 
 error_free_chans:
-	for (i = 0; i < nummaps; i++)
+	for (i = 0; i < mapind; i++)
 		iio_device_put(chans[i].indio_dev);
 	kfree(chans);
 error_ret:
@@ -515,14 +496,6 @@ struct iio_channel *devm_iio_channel_get_all(struct device *dev)
 	return channels;
 }
 EXPORT_SYMBOL_GPL(devm_iio_channel_get_all);
-
-void devm_iio_channel_release_all(struct device *dev,
-				  struct iio_channel *channels)
-{
-	WARN_ON(devres_release(dev, devm_iio_channel_free_all,
-			       devm_iio_channel_match, channels));
-}
-EXPORT_SYMBOL_GPL(devm_iio_channel_release_all);
 
 static int iio_channel_read(struct iio_channel *chan, int *val, int *val2,
 	enum iio_chan_info_enum info)
@@ -627,7 +600,7 @@ static int iio_convert_raw_to_processed_unlocked(struct iio_channel *chan,
 		 * If no channel scaling is available apply consumer scale to
 		 * raw value and return.
 		 */
-		*processed = raw * scale;
+		*processed = raw64 * scale;
 		return 0;
 	}
 
@@ -637,17 +610,17 @@ static int iio_convert_raw_to_processed_unlocked(struct iio_channel *chan,
 		break;
 	case IIO_VAL_INT_PLUS_MICRO:
 		if (scale_val2 < 0)
-			*processed = -raw64 * scale_val;
+			*processed = -raw64 * scale_val * scale;
 		else
-			*processed = raw64 * scale_val;
+			*processed = raw64 * scale_val * scale;
 		*processed += div_s64(raw64 * (s64)scale_val2 * scale,
 				      1000000LL);
 		break;
 	case IIO_VAL_INT_PLUS_NANO:
 		if (scale_val2 < 0)
-			*processed = -raw64 * scale_val;
+			*processed = -raw64 * scale_val * scale;
 		else
-			*processed = raw64 * scale_val;
+			*processed = raw64 * scale_val * scale;
 		*processed += div_s64(raw64 * (s64)scale_val2 * scale,
 				      1000000000LL);
 		break;

@@ -334,6 +334,8 @@ static void del_nbp(struct net_bridge_port *p)
 	br_stp_disable_port(p);
 	spin_unlock_bh(&br->lock);
 
+	br_mrp_port_del(br, p);
+
 	br_ifinfo_notify(RTM_DELLINK, NULL, p);
 
 	list_del_rcu(&p->list);
@@ -562,17 +564,31 @@ int br_add_if(struct net_bridge *br, struct net_device *dev,
 	unsigned br_hr, dev_hr;
 	bool changed_addr, fdb_synced = false;
 
-	/* Don't allow bridging non-ethernet like devices, or DSA-enabled
-	 * master network devices since the bridge layer rx_handler prevents
-	 * the DSA fake ethertype handler to be invoked, so we do not strip off
-	 * the DSA switch tag protocol header and the bridge layer just return
-	 * RX_HANDLER_CONSUMED, stopping RX processing for these frames.
-	 */
+	/* Don't allow bridging non-ethernet like devices. */
 	if ((dev->flags & IFF_LOOPBACK) ||
 	    dev->type != ARPHRD_ETHER || dev->addr_len != ETH_ALEN ||
-	    !is_valid_ether_addr(dev->dev_addr) ||
-	    netdev_uses_dsa(dev))
+	    !is_valid_ether_addr(dev->dev_addr))
 		return -EINVAL;
+
+	/* Also don't allow bridging of net devices that are DSA masters, since
+	 * the bridge layer rx_handler prevents the DSA fake ethertype handler
+	 * to be invoked, so we don't get the chance to strip off and parse the
+	 * DSA switch tag protocol header (the bridge layer just returns
+	 * RX_HANDLER_CONSUMED, stopping RX processing for these frames).
+	 * The only case where that would not be an issue is when bridging can
+	 * already be offloaded, such as when the DSA master is itself a DSA
+	 * or plain switchdev port, and is bridged only with other ports from
+	 * the same hardware device.
+	 */
+	if (netdev_uses_dsa(dev)) {
+		list_for_each_entry(p, &br->port_list, list) {
+			if (!netdev_port_same_parent_id(dev, p->dev)) {
+				NL_SET_ERR_MSG(extack,
+					       "Cannot do software bridging with a DSA master");
+				return -EINVAL;
+			}
+		}
+	}
 
 	/* No bridging of bridges */
 	if (dev->netdev_ops->ndo_start_xmit == br_dev_xmit) {
@@ -618,7 +634,7 @@ int br_add_if(struct net_bridge *br, struct net_device *dev,
 	if (err)
 		goto err3;
 
-	err = netdev_rx_handler_register(dev, br_handle_frame, p);
+	err = netdev_rx_handler_register(dev, br_get_rx_handler(dev), p);
 	if (err)
 		goto err4;
 
@@ -775,36 +791,3 @@ bool br_port_flag_is_set(const struct net_device *dev, unsigned long flag)
 	return p->flags & flag;
 }
 EXPORT_SYMBOL_GPL(br_port_flag_is_set);
-
-#ifdef CONFIG_ENABLE_SFE
-/* br_port_dev_get()
- * Using the given addr, identify the port to which it is reachable,
- * returing a reference to the net device associated with that port.
- *
- * NOTE: Return NULL if given dev is not a bridge or
- *       the mac has no associated port
- */
-struct net_device *br_port_dev_get(struct net_device *dev, unsigned char *addr)
-{
-	struct net_bridge_fdb_entry *fdbe;
-	struct net_bridge *br;
-	struct net_device *netdev = NULL;
-
-	/* Is this a bridge? */
-	if (!(dev->priv_flags & IFF_EBRIDGE))
-		return NULL;
-
-	br = netdev_priv(dev);
-
-	/* Lookup the fdb entry and get reference to the port dev */
-	rcu_read_lock();
-	fdbe = br_fdb_find_rcu(br, addr, 0);
-	if (fdbe && fdbe->dst) {
-		netdev = fdbe->dst->dev; /* port device */
-		dev_hold(netdev);
-	}
-	rcu_read_unlock();
-	return netdev;
-}
-EXPORT_SYMBOL(br_port_dev_get);
-#endif

@@ -17,7 +17,6 @@
 
 struct regmap_debugfs_node {
 	struct regmap *map;
-	const char *name;
 	struct list_head link;
 };
 
@@ -184,7 +183,7 @@ static inline void regmap_calc_tot_len(struct regmap *map,
 {
 	/* Calculate the length of a fixed format  */
 	if (!map->debugfs_tot_len) {
-		map->debugfs_reg_len = regmap_calc_reg_len(map->max_register),
+		map->debugfs_reg_len = regmap_calc_reg_len(map->max_register);
 		map->debugfs_val_len = 2 * map->format.val_bytes;
 		map->debugfs_tot_len = map->debugfs_reg_len +
 			map->debugfs_val_len + 3;      /* : \n */
@@ -291,7 +290,8 @@ static ssize_t regmap_map_read_file(struct file *file, char __user *user_buf,
 				   count, ppos);
 }
 
-#ifdef CONFIG_REGMAP_ALLOW_WRITE_DEBUGFS
+#undef REGMAP_ALLOW_WRITE_DEBUGFS
+#ifdef REGMAP_ALLOW_WRITE_DEBUGFS
 /*
  * This can be dangerous especially when we have clients such as
  * PMICs, therefore don't provide any real compile time configuration option
@@ -340,72 +340,6 @@ static const struct file_operations regmap_map_fops = {
 	.write = regmap_map_write_file,
 	.llseek = default_llseek,
 };
-
-#ifdef CONFIG_REGMAP_QTI_DEBUG
-static ssize_t regmap_data_read_file(struct file *file, char __user *user_buf,
-				    size_t count, loff_t *ppos)
-{
-	struct regmap *map = file->private_data;
-	int new_count;
-
-	regmap_calc_tot_len(map, NULL, 0);
-	new_count = map->dump_count * map->debugfs_tot_len;
-	if (new_count > count)
-		new_count = count;
-
-	if (*ppos == 0)
-		*ppos = map->dump_address * map->debugfs_tot_len;
-	else if (*ppos >= map->dump_address * map->debugfs_tot_len
-			+ map->dump_count * map->debugfs_tot_len)
-		return 0;
-	else if (*ppos < map->dump_address * map->debugfs_tot_len)
-		return 0;
-
-	return regmap_read_debugfs(map, 0, map->max_register, user_buf,
-			new_count, ppos);
-}
-
-#ifdef CONFIG_REGMAP_ALLOW_WRITE_DEBUGFS
-static ssize_t regmap_data_write_file(struct file *file,
-				     const char __user *user_buf,
-				     size_t count, loff_t *ppos)
-{
-	char buf[32];
-	size_t buf_size;
-	char *start = buf;
-	unsigned long value;
-	struct regmap *map = file->private_data;
-	int ret;
-
-	buf_size = min(count, (sizeof(buf)-1));
-	if (copy_from_user(buf, user_buf, buf_size))
-		return -EFAULT;
-	buf[buf_size] = 0;
-
-	while (*start == ' ')
-		start++;
-	if (kstrtoul(start, 16, &value))
-		return -EINVAL;
-
-	/* Userspace has been fiddling around behind the kernel's back */
-	add_taint(TAINT_USER, LOCKDEP_STILL_OK);
-
-	ret = regmap_write(map, map->dump_address, value);
-	if (ret < 0)
-		return ret;
-	return buf_size;
-}
-#else
-#define regmap_data_write_file NULL
-#endif
-
-static const struct file_operations regmap_data_fops = {
-	.open = simple_open,
-	.read = regmap_data_read_file,
-	.write = regmap_data_write_file,
-	.llseek = default_llseek,
-};
-#endif
 
 static ssize_t regmap_range_read_file(struct file *file, char __user *user_buf,
 				      size_t count, loff_t *ppos)
@@ -609,11 +543,12 @@ static const struct file_operations regmap_cache_bypass_fops = {
 	.write = regmap_cache_bypass_write_file,
 };
 
-void regmap_debugfs_init(struct regmap *map, const char *name)
+void regmap_debugfs_init(struct regmap *map)
 {
 	struct rb_node *next;
 	struct regmap_range_node *range_node;
 	const char *devname = "dummy";
+	const char *name = map->name;
 
 	/*
 	 * Userspace can initiate reads from the hardware over debugfs.
@@ -634,7 +569,6 @@ void regmap_debugfs_init(struct regmap *map, const char *name)
 		if (!node)
 			return;
 		node->map = map;
-		node->name = name;
 		mutex_lock(&regmap_debugfs_early_lock);
 		list_add(&node->link, &regmap_debugfs_early_list);
 		mutex_unlock(&regmap_debugfs_early_lock);
@@ -680,7 +614,7 @@ void regmap_debugfs_init(struct regmap *map, const char *name)
 	if (map->max_register || regmap_readable(map, 0)) {
 		umode_t registers_mode;
 
-#ifdef CONFIG_REGMAP_ALLOW_WRITE_DEBUGFS
+#if defined(REGMAP_ALLOW_WRITE_DEBUGFS)
 		registers_mode = 0600;
 #else
 		registers_mode = 0400;
@@ -690,16 +624,6 @@ void regmap_debugfs_init(struct regmap *map, const char *name)
 				    map, &regmap_map_fops);
 		debugfs_create_file("access", 0400, map->debugfs,
 				    map, &regmap_access_fops);
-
-#ifdef CONFIG_REGMAP_QTI_DEBUG
-		debugfs_create_x32("address", 0600, map->debugfs,
-				    &map->dump_address);
-		map->dump_count = 1;
-		debugfs_create_u32("count", 0600, map->debugfs,
-				    &map->dump_count);
-		debugfs_create_file("data", registers_mode, map->debugfs,
-				    map, &regmap_data_fops);
-#endif
 	}
 
 	if (map->cache_type) {
@@ -760,7 +684,7 @@ void regmap_debugfs_initcall(void)
 
 	mutex_lock(&regmap_debugfs_early_lock);
 	list_for_each_entry_safe(node, tmp, &regmap_debugfs_early_list, link) {
-		regmap_debugfs_init(node->map, node->name);
+		regmap_debugfs_init(node->map);
 		list_del(&node->link);
 		kfree(node);
 	}

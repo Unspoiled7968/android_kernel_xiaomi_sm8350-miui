@@ -293,7 +293,7 @@ static void xemaclite_aligned_read(u32 *src_ptr, u8 *dest_ptr,
 
 		/* Read the remaining data */
 		for (; length > 0; length--)
-			*to_u8_ptr = *from_u8_ptr;
+			*to_u8_ptr++ = *from_u8_ptr++;
 	}
 }
 
@@ -521,7 +521,7 @@ static int xemaclite_set_mac_address(struct net_device *dev, void *address)
  *
  * This function is called when Tx time out occurs for Emaclite device.
  */
-static void xemaclite_tx_timeout(struct net_device *dev)
+static void xemaclite_tx_timeout(struct net_device *dev, unsigned int txqueue)
 {
 	struct net_local *lp = netdev_priv(dev);
 	unsigned long flags;

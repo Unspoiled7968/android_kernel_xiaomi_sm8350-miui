@@ -29,10 +29,10 @@ you probably needn't concern yourself with pcmciautils.
 ====================== ===============  ========================================
         Program        Minimal version       Command to check the version
 ====================== ===============  ========================================
-GNU C                  4.6              gcc --version
+GNU C                  4.9              gcc --version
 Clang/LLVM (optional)  10.0.1           clang --version
 GNU make               3.81             make --version
-binutils               2.21             ld -v
+binutils               2.23             ld -v
 flex                   2.5.35           flex --version
 bison                  2.0              bison --version
 util-linux             2.10o            fdformat --version
@@ -86,7 +86,7 @@ You will need GNU make 3.81 or later to build the kernel.
 Binutils
 --------
 
-Binutils 2.21 or newer is needed to build the kernel.
+Binutils 2.23 or newer is needed to build the kernel.
 
 pkg-config
 ----------
@@ -139,7 +139,7 @@ Architectural changes
 ---------------------
 
 DevFS has been obsoleted in favour of udev
-(http://www.kernel.org/pub/linux/utils/kernel/hotplug/)
+(https://www.kernel.org/pub/linux/utils/kernel/hotplug/)
 
 32-bit UID support is now in place.  Have fun!
 
@@ -398,7 +398,8 @@ Mkinitrd
 E2fsprogs
 ---------
 
-- <http://prdownloads.sourceforge.net/e2fsprogs/e2fsprogs-1.29.tar.gz>
+- <https://www.kernel.org/pub/linux/kernel/people/tytso/e2fsprogs/>
+- <https://git.kernel.org/pub/scm/fs/ext2/e2fsprogs.git/>
 
 JFSutils
 --------
@@ -408,12 +409,13 @@ JFSutils
 Reiserfsprogs
 -------------
 
-- <http://www.kernel.org/pub/linux/utils/fs/reiserfs/>
+- <https://git.kernel.org/pub/scm/linux/kernel/git/jeffm/reiserfsprogs.git/>
 
 Xfsprogs
 --------
 
-- <ftp://oss.sgi.com/projects/xfs/>
+- <https://git.kernel.org/pub/scm/fs/xfs/xfsprogs-dev.git>
+- <https://www.kernel.org/pub/linux/utils/fs/xfs/xfsprogs/>
 
 Pcmciautils
 -----------
@@ -434,7 +436,7 @@ Intel P6 microcode
 udev
 ----
 
-- <http://www.freedesktop.org/software/systemd/man/udev.html>
+- <https://www.freedesktop.org/software/systemd/man/udev.html>
 
 FUSE
 ----
@@ -452,7 +454,9 @@ Networking
 PPP
 ---
 
-- <ftp://ftp.samba.org/pub/ppp/>
+- <https://download.samba.org/pub/ppp/>
+- <https://git.ozlabs.org/?p=ppp.git>
+- <https://github.com/paulusmack/ppp/>
 
 NFS-utils
 ---------
@@ -462,7 +466,7 @@ NFS-utils
 Iptables
 --------
 
-- <http://www.iptables.org/downloads.html>
+- <https://netfilter.org/projects/iptables/index.html>
 
 Ip-route2
 ---------
@@ -485,4 +489,4 @@ Kernel documentation
 Sphinx
 ------
 
-- <http://www.sphinx-doc.org/>
+- <https://www.sphinx-doc.org/>

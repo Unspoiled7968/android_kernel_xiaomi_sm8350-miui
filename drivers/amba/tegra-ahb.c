@@ -120,7 +120,7 @@ static const u32 tegra_ahb_gizmo[] = {
 struct tegra_ahb {
 	void __iomem	*regs;
 	struct device	*dev;
-	u32		ctx[0];
+	u32		ctx[];
 };
 
 static inline u32 gizmo_readl(struct tegra_ahb *ahb, u32 offset)
@@ -144,6 +144,7 @@ int tegra_ahb_enable_smmu(struct device_node *dn)
 	if (!dev)
 		return -EPROBE_DEFER;
 	ahb = dev_get_drvdata(dev);
+	put_device(dev);
 	val = gizmo_readl(ahb, AHB_ARBITRATION_XBAR_CTRL);
 	val |= AHB_ARBITRATION_XBAR_CTRL_SMMU_INIT_DONE;
 	gizmo_writel(ahb, val, AHB_ARBITRATION_XBAR_CTRL);

@@ -11,8 +11,6 @@
  *	evm_inode_removexattr, and evm_verifyxattr
  */
 
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
-
 #include <linux/init.h>
 #include <linux/crypto.h>
 #include <linux/audit.h>
@@ -61,7 +59,10 @@ static int __init evm_set_fixmode(char *str)
 {
 	if (strncmp(str, "fix", 3) == 0)
 		evm_fixmode = 1;
-	return 0;
+	else
+		pr_err("invalid \"%s\" mode", str);
+
+	return 1;
 }
 __setup("evm=", evm_set_fixmode);
 

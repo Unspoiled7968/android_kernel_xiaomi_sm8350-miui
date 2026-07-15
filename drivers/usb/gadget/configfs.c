@@ -39,8 +39,6 @@ EXPORT_SYMBOL_GPL(create_function_device);
 int check_user_usb_string(const char *name,
 		struct usb_gadget_strings *stringtab_dev)
 {
-	unsigned primary_lang;
-	unsigned sub_lang;
 	u16 num;
 	int ret;
 
@@ -48,17 +46,7 @@ int check_user_usb_string(const char *name,
 	if (ret)
 		return ret;
 
-	primary_lang = num & 0x3ff;
-	sub_lang = num >> 10;
-
-	/* simple sanity check for valid langid */
-	switch (primary_lang) {
-	case 0:
-	case 0x62 ... 0xfe:
-	case 0x100 ... 0x3ff:
-		return -EINVAL;
-	}
-	if (!sub_lang)
+	if (!usb_validate_langid(num))
 		return -EINVAL;
 
 	stringtab_dev->language = num;
@@ -85,7 +73,6 @@ struct gadget_info {
 	struct usb_composite_driver composite;
 	struct usb_composite_dev cdev;
 	bool use_os_desc;
-	bool unbinding;
 	char b_vendor_code;
 	char qw_sign[OS_STRING_QW_SIGN_LEN];
 	spinlock_t spinlock;
@@ -163,7 +150,7 @@ static int usb_string_copy(const char *s, char **s_copy)
 		if (!str)
 			return -ENOMEM;
 	}
-	strncpy(str, s, USB_MAX_STRING_WITH_NULL_LEN);
+	strcpy(str, s);
 	if (str[ret - 1] == '\n')
 		str[ret - 1] = '\0';
 	*s_copy = str;
@@ -294,12 +281,9 @@ static int unregister_gadget(struct gadget_info *gi)
 	if (!gi->composite.gadget_driver.udc_name)
 		return -ENODEV;
 
-	gi->unbinding = true;
 	ret = usb_gadget_unregister_driver(&gi->composite.gadget_driver);
 	if (ret)
 		return ret;
-
-	gi->unbinding = false;
 	kfree(gi->composite.gadget_driver.udc_name);
 	gi->composite.gadget_driver.udc_name = NULL;
 	return 0;
@@ -339,9 +323,6 @@ static ssize_t gadget_dev_desc_UDC_store(struct config_item *item,
 			gi->composite.gadget_driver.udc_name = NULL;
 			goto err;
 		}
-#ifdef CONFIG_USB_CONFIGFS_UEVENT
-		schedule_work(&gi->work);
-#endif
 	}
 	mutex_unlock(&gi->lock);
 	return len;
@@ -356,7 +337,7 @@ static ssize_t gadget_dev_desc_max_speed_show(struct config_item *item,
 {
 	enum usb_device_speed speed = to_gadget_info(item)->composite.max_speed;
 
-	return scnprintf(page, PAGE_SIZE, "%s\n", usb_speed_string(speed));
+	return sprintf(page, "%s\n", usb_speed_string(speed));
 }
 
 static ssize_t gadget_dev_desc_max_speed_store(struct config_item *item,
@@ -392,36 +373,6 @@ err:
 	return -EINVAL;
 }
 
-static ssize_t gadget_driver_match_existing_only_store(struct config_item *item,
-		const char *page, size_t len)
-{
-	struct gadget_info *gi = to_gadget_info(item);
-	struct usb_gadget_driver *gadget_driver = &(gi->composite.gadget_driver);
-	bool match_existing_only;
-	int ret;
-
-	ret = kstrtobool(page, &match_existing_only);
-	if (ret)
-		return ret;
-
-	if (match_existing_only)
-		gadget_driver->match_existing_only = 1;
-	else
-		gadget_driver->match_existing_only = 0;
-
-	return len;
-}
-
-static ssize_t gadget_driver_match_existing_only_show(struct config_item *item,
-		char *page)
-{
-	struct gadget_info *gi = to_gadget_info(item);
-	struct usb_gadget_driver *gadget_driver = &(gi->composite.gadget_driver);
-	bool match_existing_only = !!gadget_driver->match_existing_only;
-
-	return sprintf(page, "%s\n", match_existing_only ? "true" : "false");
-}
-
 CONFIGFS_ATTR(gadget_dev_desc_, bDeviceClass);
 CONFIGFS_ATTR(gadget_dev_desc_, bDeviceSubClass);
 CONFIGFS_ATTR(gadget_dev_desc_, bDeviceProtocol);
@@ -432,7 +383,6 @@ CONFIGFS_ATTR(gadget_dev_desc_, bcdDevice);
 CONFIGFS_ATTR(gadget_dev_desc_, bcdUSB);
 CONFIGFS_ATTR(gadget_dev_desc_, UDC);
 CONFIGFS_ATTR(gadget_dev_desc_, max_speed);
-CONFIGFS_ATTR(gadget_, driver_match_existing_only);
 
 static struct configfs_attribute *gadget_root_attrs[] = {
 	&gadget_dev_desc_attr_bDeviceClass,
@@ -445,7 +395,6 @@ static struct configfs_attribute *gadget_root_attrs[] = {
 	&gadget_dev_desc_attr_bcdUSB,
 	&gadget_dev_desc_attr_UDC,
 	&gadget_dev_desc_attr_max_speed,
-	&gadget_attr_driver_match_existing_only,
 	NULL,
 };
 
@@ -515,6 +464,12 @@ static int config_usb_cfg_link(
 	 * from another gadget or a random directory.
 	 * Also a function instance can only be linked once.
 	 */
+
+	if (gi->composite.gadget_driver.udc_name) {
+		ret = -EINVAL;
+		goto out;
+	}
+
 	list_for_each_entry(a_fi, &gi->available_func, cfs_list) {
 		if (a_fi == fi)
 			break;
@@ -938,6 +893,8 @@ static ssize_t os_desc_qw_sign_store(struct config_item *item, const char *page,
 	struct gadget_info *gi = os_desc_item_to_gadget_info(item);
 	int res, l;
 
+	if (!len)
+		return len;
 	l = min((int)len, OS_STRING_QW_SIGN_LEN >> 1);
 	if (page[l - 1] == '\n')
 		--l;
@@ -1439,6 +1396,8 @@ static int configfs_composite_bind(struct usb_gadget *gadget,
 		cdev->use_os_string = true;
 		cdev->b_vendor_code = gi->b_vendor_code;
 		memcpy(cdev->qw_sign, gi->qw_sign, OS_STRING_QW_SIGN_LEN);
+	} else {
+		cdev->use_os_string = false;
 	}
 
 	if (gadget_is_otg(gadget) && !otg_desc[0]) {
@@ -1490,6 +1449,10 @@ static int configfs_composite_bind(struct usb_gadget *gadget,
 				goto err_purge_funcs;
 			}
 		}
+		ret = usb_gadget_check_config(cdev->gadget);
+		if (ret)
+			goto err_purge_funcs;
+
 		usb_ep_autoconfig_reset(cdev->gadget);
 	}
 	if (cdev->use_os_string) {
@@ -1590,18 +1553,28 @@ static void configfs_composite_unbind(struct usb_gadget *gadget)
 static int android_setup(struct usb_gadget *gadget,
 			const struct usb_ctrlrequest *c)
 {
-	struct usb_composite_dev *cdev = get_gadget_data(gadget);
+	struct usb_composite_dev *cdev;
 	unsigned long flags;
-	struct gadget_info *gi = container_of(cdev, struct gadget_info, cdev);
+	struct gadget_info *gi;
 	int value = -EOPNOTSUPP;
 	struct usb_function_instance *fi;
 
-	spin_lock_irqsave(&cdev->lock, flags);
+	if (!android_device)
+		return 0;
+
+	gi = dev_get_drvdata(android_device);
+	spin_lock_irqsave(&gi->spinlock, flags);
+	cdev = get_gadget_data(gadget);
+	if (!cdev || gi->unbind) {
+		spin_unlock_irqrestore(&gi->spinlock, flags);
+		return 0;
+	}
+
 	if (!gi->connected) {
 		gi->connected = 1;
 		schedule_work(&gi->work);
 	}
-	spin_unlock_irqrestore(&cdev->lock, flags);
+
 	list_for_each_entry(fi, &gi->available_func, cfs_list) {
 		if (fi != NULL && fi->f != NULL && fi->f->setup != NULL) {
 			value = fi->f->setup(fi->f, c);
@@ -1618,12 +1591,11 @@ static int android_setup(struct usb_gadget *gadget,
 	if (value < 0)
 		value = composite_setup(gadget, c);
 
-	spin_lock_irqsave(&cdev->lock, flags);
 	if (c->bRequest == USB_REQ_SET_CONFIGURATION &&
 						cdev->config) {
 		schedule_work(&gi->work);
 	}
-	spin_unlock_irqrestore(&cdev->lock, flags);
+	spin_unlock_irqrestore(&gi->spinlock, flags);
 
 	return value;
 }
@@ -1664,19 +1636,8 @@ static void configfs_composite_disconnect(struct usb_gadget *gadget)
 	unsigned long flags;
 
 	cdev = get_gadget_data(gadget);
-	if (!cdev) {
-		WARN(1, "%s: gadget driver already disconnected\n", __func__);
+	if (!cdev)
 		return;
-	}
-
-#ifdef CONFIG_USB_CONFIGFS_F_ACC
-	/*
-	 * accessory HID support can be active while the
-	 * accessory function is not actually enabled,
-	 * so we need to inform it when we are disconnected.
-	 */
-	acc_disconnect();
-#endif
 
 #ifdef CONFIG_USB_CONFIGFS_F_ACC
 	/*
@@ -1691,17 +1652,36 @@ static void configfs_composite_disconnect(struct usb_gadget *gadget)
 	cdev = get_gadget_data(gadget);
 	if (!cdev || gi->unbind) {
 		spin_unlock_irqrestore(&gi->spinlock, flags);
-		WARN(1, "%s: gadget driver already disconnected\n", __func__);
 		return;
 	}
 
 #ifdef CONFIG_USB_CONFIGFS_UEVENT
-	gi->connected = false;
-	if (!gi->unbinding)
-		schedule_work(&gi->work);
+	gi->connected = 0;
+	schedule_work(&gi->work);
 #endif
-
 	composite_disconnect(gadget);
+	spin_unlock_irqrestore(&gi->spinlock, flags);
+}
+
+static void configfs_composite_reset(struct usb_gadget *gadget)
+{
+	struct usb_composite_dev *cdev;
+	struct gadget_info *gi;
+	unsigned long flags;
+
+	cdev = get_gadget_data(gadget);
+	if (!cdev)
+		return;
+
+	gi = container_of(cdev, struct gadget_info, cdev);
+	spin_lock_irqsave(&gi->spinlock, flags);
+	cdev = get_gadget_data(gadget);
+	if (!cdev || gi->unbind) {
+		spin_unlock_irqrestore(&gi->spinlock, flags);
+		return;
+	}
+
+	composite_reset(gadget);
 	spin_unlock_irqrestore(&gi->spinlock, flags);
 }
 
@@ -1758,7 +1738,7 @@ static const struct usb_gadget_driver configfs_driver_template = {
 #else
 	.setup          = configfs_composite_setup,
 #endif
-	.reset          = configfs_composite_disconnect,
+	.reset          = configfs_composite_reset,
 	.disconnect     = configfs_composite_disconnect,
 	.suspend	= configfs_composite_suspend,
 	.resume		= configfs_composite_resume,

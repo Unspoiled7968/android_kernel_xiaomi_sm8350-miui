@@ -4,7 +4,6 @@
  *
  * Copyright (C) 2011 Texas Instruments, Inc.
  * Copyright (C) 2011 Google, Inc.
- * Copyright (c) 2018-2020, The Linux Foundation. All rights reserved.
  *
  * Ohad Ben-Cohen <ohad@wizery.com>
  * Brian Swetland <swetland@google.com>
@@ -321,7 +320,7 @@ int rpmsg_set_signals(struct rpmsg_endpoint *ept, u32 set, u32 clear)
 EXPORT_SYMBOL(rpmsg_set_signals);
 
 /*
- * match an rpmsg channel with a channel info struct.
+ * match a rpmsg channel with a channel info struct.
  * this is used to make sure we're not creating rpmsg devices for channels
  * that already exist.
  */

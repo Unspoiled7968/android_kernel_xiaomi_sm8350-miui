@@ -745,7 +745,7 @@ static void ucan_read_bulk_callback(struct urb *urb)
 		len = le16_to_cpu(m->len);
 
 		/* check sanity (length of content) */
-		if (urb->actual_length - pos < len) {
+		if ((len == 0) || (urb->actual_length - pos < len)) {
 			netdev_warn(up->netdev,
 				    "invalid message (short; no data; l:%d)\n",
 				    urb->actual_length);
@@ -1445,7 +1445,7 @@ static int ucan_probe(struct usb_interface *intf,
 
 	/* request the device information and store it in ctl_msg_buffer
 	 *
-	 * note: ucan_ctrl_command_* wrappers connot be used yet
+	 * note: ucan_ctrl_command_* wrappers cannot be used yet
 	 * because `up` is initialised in Stage 3
 	 */
 	ret = usb_control_msg(udev,
@@ -1494,7 +1494,7 @@ static int ucan_probe(struct usb_interface *intf,
 
 	up = netdev_priv(netdev);
 
-	/* initialze data */
+	/* initialize data */
 	up->udev = udev;
 	up->intf = intf;
 	up->netdev = netdev;

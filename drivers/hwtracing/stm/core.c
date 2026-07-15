@@ -580,25 +580,7 @@ ssize_t notrace stm_data_write(struct stm_data *data, unsigned int m,
 	unsigned int flags = ts_first ? STP_PACKET_TIMESTAMPED : 0;
 	ssize_t sz;
 	size_t pos;
-#ifdef CONFIG_CORESIGHT_QGKI
-	if (data->ost_configured()) {
-		pos = data->ost_packet(data, count, buf);
-		sz = 0;
-	} else {
-		for (pos = 0, sz = 0; pos < count; pos += sz) {
-			sz = min_t(unsigned int, count - pos, 8);
-			sz = data->packet(data, m, c, STP_PACKET_DATA, flags,
-					sz, &((u8 *)buf)[pos]);
-			if (sz <= 0)
-				break;
 
-			if (ts_first) {
-				flags = 0;
-				ts_first = false;
-			}
-		}
-	}
-#else
 	for (pos = 0, sz = 0; pos < count; pos += sz) {
 		sz = min_t(unsigned int, count - pos, 8);
 		sz = data->packet(data, m, c, STP_PACKET_DATA, flags, sz,
@@ -611,7 +593,7 @@ ssize_t notrace stm_data_write(struct stm_data *data, unsigned int m,
 			ts_first = false;
 		}
 	}
-#endif
+
 	return sz < 0 ? sz : pos;
 }
 EXPORT_SYMBOL_GPL(stm_data_write);
@@ -850,23 +832,13 @@ stm_char_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	return err;
 }
 
-#ifdef CONFIG_COMPAT
-static long
-stm_char_compat_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
-{
-	return stm_char_ioctl(file, cmd, (unsigned long)compat_ptr(arg));
-}
-#else
-#define stm_char_compat_ioctl	NULL
-#endif
-
 static const struct file_operations stm_fops = {
 	.open		= stm_char_open,
 	.release	= stm_char_release,
 	.write		= stm_char_write,
 	.mmap		= stm_char_mmap,
 	.unlocked_ioctl	= stm_char_ioctl,
-	.compat_ioctl	= stm_char_compat_ioctl,
+	.compat_ioctl	= compat_ptr_ioctl,
 	.llseek		= no_llseek,
 };
 

@@ -40,7 +40,7 @@ static int tcx_pan_display(struct fb_var_screeninfo *, struct fb_info *);
  *  Frame buffer operations
  */
 
-static struct fb_ops tcx_ops = {
+static const struct fb_ops tcx_ops = {
 	.owner			= THIS_MODULE,
 	.fb_setcolreg		= tcx_setcolreg,
 	.fb_blank		= tcx_blank,
@@ -436,7 +436,7 @@ static int tcx_probe(struct platform_device *op)
 			j = i;
 			break;
 		}
-		par->mmap_map[i].poff = op->resource[j].start;
+		par->mmap_map[i].poff = op->resource[j].start - info->fix.smem_start;
 	}
 
 	info->flags = FBINFO_DEFAULT;

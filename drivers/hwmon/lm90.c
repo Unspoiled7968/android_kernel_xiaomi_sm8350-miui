@@ -1820,8 +1820,7 @@ static const struct hwmon_ops lm90_ops = {
 	.write = lm90_write,
 };
 
-static int lm90_probe(struct i2c_client *client,
-		      const struct i2c_device_id *id)
+static int lm90_probe(struct i2c_client *client)
 {
 	struct device *dev = &client->dev;
 	struct i2c_adapter *adapter = client->adapter;
@@ -1857,7 +1856,7 @@ static int lm90_probe(struct i2c_client *client,
 	if (client->dev.of_node)
 		data->kind = (enum chips)of_device_get_match_data(&client->dev);
 	else
-		data->kind = id->driver_data;
+		data->kind = i2c_match_id(lm90_id, client)->driver_data;
 	if (data->kind == adm1032) {
 		if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_BYTE))
 			client->flags &= ~I2C_CLIENT_PEC;
@@ -1996,7 +1995,7 @@ static struct i2c_driver lm90_driver = {
 		.name	= "lm90",
 		.of_match_table = of_match_ptr(lm90_of_match),
 	},
-	.probe		= lm90_probe,
+	.probe_new	= lm90_probe,
 	.alert		= lm90_alert,
 	.id_table	= lm90_id,
 	.detect		= lm90_detect,

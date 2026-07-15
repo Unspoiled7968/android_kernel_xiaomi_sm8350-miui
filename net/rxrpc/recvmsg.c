@@ -59,6 +59,85 @@ void rxrpc_notify_socket(struct rxrpc_call *call)
 }
 
 /*
+ * Transition a call to the complete state.
+ */
+bool __rxrpc_set_call_completion(struct rxrpc_call *call,
+				 enum rxrpc_call_completion compl,
+				 u32 abort_code,
+				 int error)
+{
+	if (call->state < RXRPC_CALL_COMPLETE) {
+		call->abort_code = abort_code;
+		call->error = error;
+		call->completion = compl,
+		call->state = RXRPC_CALL_COMPLETE;
+		trace_rxrpc_call_complete(call);
+		wake_up(&call->waitq);
+		rxrpc_notify_socket(call);
+		return true;
+	}
+	return false;
+}
+
+bool rxrpc_set_call_completion(struct rxrpc_call *call,
+			       enum rxrpc_call_completion compl,
+			       u32 abort_code,
+			       int error)
+{
+	bool ret = false;
+
+	if (call->state < RXRPC_CALL_COMPLETE) {
+		write_lock_bh(&call->state_lock);
+		ret = __rxrpc_set_call_completion(call, compl, abort_code, error);
+		write_unlock_bh(&call->state_lock);
+	}
+	return ret;
+}
+
+/*
+ * Record that a call successfully completed.
+ */
+bool __rxrpc_call_completed(struct rxrpc_call *call)
+{
+	return __rxrpc_set_call_completion(call, RXRPC_CALL_SUCCEEDED, 0, 0);
+}
+
+bool rxrpc_call_completed(struct rxrpc_call *call)
+{
+	bool ret = false;
+
+	if (call->state < RXRPC_CALL_COMPLETE) {
+		write_lock_bh(&call->state_lock);
+		ret = __rxrpc_call_completed(call);
+		write_unlock_bh(&call->state_lock);
+	}
+	return ret;
+}
+
+/*
+ * Record that a call is locally aborted.
+ */
+bool __rxrpc_abort_call(const char *why, struct rxrpc_call *call,
+			rxrpc_seq_t seq, u32 abort_code, int error)
+{
+	trace_rxrpc_abort(call->debug_id, why, call->cid, call->call_id, seq,
+			  abort_code, error);
+	return __rxrpc_set_call_completion(call, RXRPC_CALL_LOCALLY_ABORTED,
+					   abort_code, error);
+}
+
+bool rxrpc_abort_call(const char *why, struct rxrpc_call *call,
+		      rxrpc_seq_t seq, u32 abort_code, int error)
+{
+	bool ret;
+
+	write_lock_bh(&call->state_lock);
+	ret = __rxrpc_abort_call(why, call, seq, abort_code, error);
+	write_unlock_bh(&call->state_lock);
+	return ret;
+}
+
+/*
  * Pass a call terminating message to userspace.
  */
 static int rxrpc_recvmsg_term(struct rxrpc_call *call, struct msghdr *msg)
@@ -96,37 +175,6 @@ static int rxrpc_recvmsg_term(struct rxrpc_call *call, struct msghdr *msg)
 
 	trace_rxrpc_recvmsg(call, rxrpc_recvmsg_terminal, call->rx_hard_ack,
 			    call->rx_pkt_offset, call->rx_pkt_len, ret);
-	return ret;
-}
-
-/*
- * Pass back notification of a new call.  The call is added to the
- * to-be-accepted list.  This means that the next call to be accepted might not
- * be the last call seen awaiting acceptance, but unless we leave this on the
- * front of the queue and block all other messages until someone gives us a
- * user_ID for it, there's not a lot we can do.
- */
-static int rxrpc_recvmsg_new_call(struct rxrpc_sock *rx,
-				  struct rxrpc_call *call,
-				  struct msghdr *msg, int flags)
-{
-	int tmp = 0, ret;
-
-	ret = put_cmsg(msg, SOL_RXRPC, RXRPC_NEW_CALL, 0, &tmp);
-
-	if (ret == 0 && !(flags & MSG_PEEK)) {
-		_debug("to be accepted");
-		write_lock_bh(&rx->recvmsg_lock);
-		list_del_init(&call->recvmsg_link);
-		write_unlock_bh(&rx->recvmsg_lock);
-
-		rxrpc_get_call(call, rxrpc_call_got);
-		write_lock(&rx->call_lock);
-		list_add_tail(&call->accept_link, &rx->to_be_accepted);
-		write_unlock(&rx->call_lock);
-	}
-
-	trace_rxrpc_recvmsg(call, rxrpc_recvmsg_to_be_accepted, 1, 0, 0, ret);
 	return ret;
 }
 
@@ -549,9 +597,6 @@ try_again:
 	}
 
 	switch (READ_ONCE(call->state)) {
-	case RXRPC_CALL_SERVER_ACCEPTING:
-		ret = rxrpc_recvmsg_new_call(rx, call, msg, flags);
-		break;
 	case RXRPC_CALL_CLIENT_RECV_REPLY:
 	case RXRPC_CALL_SERVER_RECV_REQUEST:
 	case RXRPC_CALL_SERVER_ACK_REQUEST:
@@ -562,7 +607,8 @@ try_again:
 
 		if (after(call->rx_top, call->rx_hard_ack) &&
 		    call->rxtx_buffer[(call->rx_hard_ack + 1) & RXRPC_RXTX_BUFF_MASK])
-			rxrpc_notify_socket(call);
+			if (!(flags & MSG_PEEK))
+				rxrpc_notify_socket(call);
 		break;
 	default:
 		ret = 0;
@@ -597,11 +643,24 @@ error_unlock_call:
 error_requeue_call:
 	if (!(flags & MSG_PEEK)) {
 		write_lock_bh(&rx->recvmsg_lock);
-		list_add(&call->recvmsg_link, &rx->recvmsg_q);
-		write_unlock_bh(&rx->recvmsg_lock);
+		if (list_empty(&call->recvmsg_link)) {
+			list_add(&call->recvmsg_link, &rx->recvmsg_q);
+			trace_rxrpc_call(call->debug_id,
+					 rxrpc_call_see_recvmsg_requeue,
+					 refcount_read(&call->ref),
+					 __builtin_return_address(0), NULL);
+			write_unlock_bh(&rx->recvmsg_lock);
+		} else if (list_is_first(&call->recvmsg_link, &rx->recvmsg_q)) {
+			write_unlock_bh(&rx->recvmsg_lock);
+			rxrpc_put_call(call, rxrpc_call_see_recvmsg_requeue_first);
+		} else {
+			list_move(&call->recvmsg_link, &rx->recvmsg_q);
+			write_unlock_bh(&rx->recvmsg_lock);
+			rxrpc_put_call(call, rxrpc_call_see_recvmsg_requeue_move);
+		}
 		trace_rxrpc_recvmsg(call, rxrpc_recvmsg_requeue, 0, 0, 0, 0);
 	} else {
-		rxrpc_put_call(call, rxrpc_call_put);
+		rxrpc_put_call(call, rxrpc_call_put_recvmsg_peek_nowait);
 	}
 error_no_call:
 	release_sock(&rx->sk);
@@ -647,7 +706,7 @@ int rxrpc_kernel_recv_data(struct socket *sock, struct rxrpc_call *call,
 	       call->debug_id, rxrpc_call_states[call->state],
 	       iov_iter_count(iter), want_more);
 
-	ASSERTCMP(call->state, !=, RXRPC_CALL_SERVER_ACCEPTING);
+	ASSERTCMP(call->state, !=, RXRPC_CALL_SERVER_SECURING);
 
 	mutex_lock(&call->user_mutex);
 
@@ -695,7 +754,7 @@ out:
 	case RXRPC_ACK_DELAY:
 		if (ret != -EAGAIN)
 			break;
-		/* Fall through */
+		fallthrough;
 	default:
 		rxrpc_send_ack_packet(call, false, NULL);
 	}

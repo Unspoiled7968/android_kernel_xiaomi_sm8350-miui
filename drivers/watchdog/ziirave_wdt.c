@@ -306,6 +306,9 @@ static int ziirave_firm_verify(struct watchdog_device *wdd,
 		const u16 len = be16_to_cpu(rec->len);
 		const u32 addr = be32_to_cpu(rec->addr);
 
+		if (len > sizeof(data))
+			return -EINVAL;
+
 		if (ziirave_firm_addr_readonly(addr))
 			continue;
 
@@ -422,7 +425,7 @@ static int ziirave_firm_upload(struct watchdog_device *wdd,
 
 static const struct watchdog_info ziirave_wdt_info = {
 	.options = WDIOF_SETTIMEOUT | WDIOF_MAGICCLOSE | WDIOF_KEEPALIVEPING,
-	.identity = "Zodiac RAVE Watchdog",
+	.identity = "RAVE Switch Watchdog",
 };
 
 static const struct watchdog_ops ziirave_wdt_ops = {

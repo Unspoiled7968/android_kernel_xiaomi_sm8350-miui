@@ -68,7 +68,8 @@
 		       __field(u16, ht_opmode)				   \
 		       __field(u32, dot11MeshHWMPactivePathToRootTimeout)  \
 		       __field(u16, dot11MeshHWMProotInterval)		   \
-		       __field(u16, dot11MeshHWMPconfirmationInterval)
+		       __field(u16, dot11MeshHWMPconfirmationInterval)	   \
+		       __field(bool, dot11MeshNolearn)
 #define MESH_CFG_ASSIGN							      \
 	do {								      \
 		__entry->dot11MeshRetryTimeout = conf->dot11MeshRetryTimeout; \
@@ -109,6 +110,7 @@
 				conf->dot11MeshHWMProotInterval;	      \
 		__entry->dot11MeshHWMPconfirmationInterval =		      \
 				conf->dot11MeshHWMPconfirmationInterval;      \
+		__entry->dot11MeshNolearn = conf->dot11MeshNolearn;	      \
 	} while (0)
 
 #define CHAN_ENTRY __field(enum nl80211_band, band) \
@@ -1593,25 +1595,25 @@ TRACE_EVENT(rdev_set_bitrate_mask,
 		  WIPHY_PR_ARG, NETDEV_PR_ARG, MAC_PR_ARG(peer))
 );
 
-TRACE_EVENT(rdev_mgmt_frame_register,
+TRACE_EVENT(rdev_update_mgmt_frame_registrations,
 	TP_PROTO(struct wiphy *wiphy, struct wireless_dev *wdev,
-		 u16 frame_type, bool reg),
-	TP_ARGS(wiphy, wdev, frame_type, reg),
+		 struct mgmt_frame_regs *upd),
+	TP_ARGS(wiphy, wdev, upd),
 	TP_STRUCT__entry(
 		WIPHY_ENTRY
 		WDEV_ENTRY
-		__field(u16, frame_type)
-		__field(bool, reg)
+		__field(u16, global_stypes)
+		__field(u16, interface_stypes)
 	),
 	TP_fast_assign(
 		WIPHY_ASSIGN;
 		WDEV_ASSIGN;
-		__entry->frame_type = frame_type;
-		__entry->reg = reg;
+		__entry->global_stypes = upd->global_stypes;
+		__entry->interface_stypes = upd->interface_stypes;
 	),
-	TP_printk(WIPHY_PR_FMT ", " WDEV_PR_FMT ", frame_type: 0x%.2x, reg: %s ",
-		  WIPHY_PR_ARG, WDEV_PR_ARG, __entry->frame_type,
-		  __entry->reg ? "true" : "false")
+	TP_printk(WIPHY_PR_FMT ", " WDEV_PR_FMT ", global: 0x%.2x, intf: 0x%.2x",
+		  WIPHY_PR_ARG, WDEV_PR_ARG,
+		  __entry->global_stypes, __entry->interface_stypes)
 );
 
 TRACE_EVENT(rdev_return_int_tx_rx,
@@ -2042,7 +2044,7 @@ TRACE_EVENT(rdev_start_nan,
 		WIPHY_ENTRY
 		WDEV_ENTRY
 		__field(u8, master_pref)
-		__field(u8, bands);
+		__field(u8, bands)
 	),
 	TP_fast_assign(
 		WIPHY_ASSIGN;
@@ -2064,8 +2066,8 @@ TRACE_EVENT(rdev_nan_change_conf,
 		WIPHY_ENTRY
 		WDEV_ENTRY
 		__field(u8, master_pref)
-		__field(u8, bands);
-		__field(u32, changes);
+		__field(u8, bands)
+		__field(u32, changes)
 	),
 	TP_fast_assign(
 		WIPHY_ASSIGN;
@@ -2840,11 +2842,28 @@ TRACE_EVENT(cfg80211_rx_mgmt,
 		__entry->freq = freq;
 		__entry->sig_dbm = sig_dbm;
 	),
-	TP_printk(WDEV_PR_FMT ", freq: %d, sig dbm: %d",
-		  WDEV_PR_ARG, __entry->freq, __entry->sig_dbm)
+	TP_printk(WDEV_PR_FMT ", freq: "KHZ_F", sig dbm: %d",
+		  WDEV_PR_ARG, PR_KHZ(__entry->freq), __entry->sig_dbm)
 );
 
 TRACE_EVENT(cfg80211_mgmt_tx_status,
+	TP_PROTO(struct wireless_dev *wdev, u64 cookie, bool ack),
+	TP_ARGS(wdev, cookie, ack),
+	TP_STRUCT__entry(
+		WDEV_ENTRY
+		__field(u64, cookie)
+		__field(bool, ack)
+	),
+	TP_fast_assign(
+		WDEV_ASSIGN;
+		__entry->cookie = cookie;
+		__entry->ack = ack;
+	),
+	TP_printk(WDEV_PR_FMT", cookie: %llu, ack: %s",
+		  WDEV_PR_ARG, __entry->cookie, BOOL_TO_STR(__entry->ack))
+);
+
+TRACE_EVENT(cfg80211_control_port_tx_status,
 	TP_PROTO(struct wireless_dev *wdev, u64 cookie, bool ack),
 	TP_ARGS(wdev, cookie, ack),
 	TP_STRUCT__entry(
@@ -3121,8 +3140,8 @@ TRACE_EVENT(cfg80211_report_obss_beacon,
 		__entry->freq = freq;
 		__entry->sig_dbm = sig_dbm;
 	),
-	TP_printk(WIPHY_PR_FMT ", freq: %d, sig_dbm: %d",
-		  WIPHY_PR_ARG, __entry->freq, __entry->sig_dbm)
+	TP_printk(WIPHY_PR_FMT ", freq: "KHZ_F", sig_dbm: %d",
+		  WIPHY_PR_ARG, PR_KHZ(__entry->freq), __entry->sig_dbm)
 );
 
 TRACE_EVENT(cfg80211_tdls_oper_request,

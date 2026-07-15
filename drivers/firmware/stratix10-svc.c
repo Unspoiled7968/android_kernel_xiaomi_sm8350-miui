@@ -127,6 +127,7 @@ struct stratix10_svc_data {
  * @complete_status: state for completion
  * @svc_fifo_lock: protect access to service message data queue
  * @invoke_fn: function to issue secure monitor call or hypervisor call
+ * @svc: manages the list of client svc drivers
  *
  * This struct is used to create communication channels for service clients, to
  * handle secure monitor or hypervisor call.
@@ -143,6 +144,7 @@ struct stratix10_svc_controller {
 	struct completion complete_status;
 	spinlock_t svc_fifo_lock;
 	svc_invoke_fn *invoke_fn;
+	struct stratix10_svc *svc;
 };
 
 /**
@@ -214,7 +216,7 @@ static void svc_thread_cmd_data_claim(struct stratix10_svc_controller *ctrl,
 				complete(&ctrl->complete_status);
 				break;
 			}
-			cb_data->status = BIT(SVC_STATUS_RECONFIG_BUFFER_DONE);
+			cb_data->status = BIT(SVC_STATUS_BUFFER_DONE);
 			cb_data->kaddr1 = svc_pa_to_va(res.a1);
 			cb_data->kaddr2 = (res.a2) ?
 					  svc_pa_to_va(res.a2) : NULL;
@@ -227,7 +229,7 @@ static void svc_thread_cmd_data_claim(struct stratix10_svc_controller *ctrl,
 				 __func__);
 		}
 	} while (res.a0 == INTEL_SIP_SMC_STATUS_OK ||
-		 res.a0 == INTEL_SIP_SMC_FPGA_CONFIG_STATUS_BUSY ||
+		 res.a0 == INTEL_SIP_SMC_STATUS_BUSY ||
 		 wait_for_completion_timeout(&ctrl->complete_status, timeout));
 }
 
@@ -250,7 +252,7 @@ static void svc_thread_cmd_config_status(struct stratix10_svc_controller *ctrl,
 	cb_data->kaddr1 = NULL;
 	cb_data->kaddr2 = NULL;
 	cb_data->kaddr3 = NULL;
-	cb_data->status = BIT(SVC_STATUS_RECONFIG_ERROR);
+	cb_data->status = BIT(SVC_STATUS_ERROR);
 
 	pr_debug("%s: polling config status\n", __func__);
 
@@ -259,7 +261,7 @@ static void svc_thread_cmd_config_status(struct stratix10_svc_controller *ctrl,
 		ctrl->invoke_fn(INTEL_SIP_SMC_FPGA_CONFIG_ISDONE,
 				0, 0, 0, 0, 0, 0, 0, &res);
 		if ((res.a0 == INTEL_SIP_SMC_STATUS_OK) ||
-		    (res.a0 == INTEL_SIP_SMC_FPGA_CONFIG_STATUS_ERROR))
+		    (res.a0 == INTEL_SIP_SMC_STATUS_ERROR))
 			break;
 
 		/*
@@ -268,10 +270,10 @@ static void svc_thread_cmd_config_status(struct stratix10_svc_controller *ctrl,
 		 */
 		msleep(1000);
 		count_in_sec--;
-	};
+	}
 
 	if (res.a0 == INTEL_SIP_SMC_STATUS_OK && count_in_sec)
-		cb_data->status = BIT(SVC_STATUS_RECONFIG_COMPLETED);
+		cb_data->status = BIT(SVC_STATUS_COMPLETED);
 
 	p_data->chan->scl->receive_cb(p_data->chan->scl, cb_data);
 }
@@ -294,25 +296,25 @@ static void svc_thread_recv_status_ok(struct stratix10_svc_data *p_data,
 
 	switch (p_data->command) {
 	case COMMAND_RECONFIG:
-		cb_data->status = BIT(SVC_STATUS_RECONFIG_REQUEST_OK);
-		break;
-	case COMMAND_RECONFIG_DATA_SUBMIT:
-		cb_data->status = BIT(SVC_STATUS_RECONFIG_BUFFER_SUBMITTED);
-		break;
-	case COMMAND_NOOP:
-		cb_data->status = BIT(SVC_STATUS_RECONFIG_BUFFER_SUBMITTED);
-		cb_data->kaddr1 = svc_pa_to_va(res.a1);
-		break;
-	case COMMAND_RECONFIG_STATUS:
-		cb_data->status = BIT(SVC_STATUS_RECONFIG_COMPLETED);
-		break;
 	case COMMAND_RSU_UPDATE:
 	case COMMAND_RSU_NOTIFY:
-		cb_data->status = BIT(SVC_STATUS_RSU_OK);
+		cb_data->status = BIT(SVC_STATUS_OK);
+		break;
+	case COMMAND_RECONFIG_DATA_SUBMIT:
+		cb_data->status = BIT(SVC_STATUS_BUFFER_SUBMITTED);
+		break;
+	case COMMAND_RECONFIG_STATUS:
+		cb_data->status = BIT(SVC_STATUS_COMPLETED);
 		break;
 	case COMMAND_RSU_RETRY:
-		cb_data->status = BIT(SVC_STATUS_RSU_OK);
+	case COMMAND_RSU_MAX_RETRY:
+		cb_data->status = BIT(SVC_STATUS_OK);
 		cb_data->kaddr1 = &res.a1;
+		break;
+	case COMMAND_RSU_DCMF_VERSION:
+		cb_data->status = BIT(SVC_STATUS_OK);
+		cb_data->kaddr1 = &res.a1;
+		cb_data->kaddr2 = &res.a2;
 		break;
 	default:
 		pr_warn("it shouldn't happen\n");
@@ -412,6 +414,16 @@ static int svc_normal_to_secure_thread(void *data)
 			a1 = 0;
 			a2 = 0;
 			break;
+		case COMMAND_RSU_MAX_RETRY:
+			a0 = INTEL_SIP_SMC_RSU_MAX_RETRY;
+			a1 = 0;
+			a2 = 0;
+			break;
+		case COMMAND_RSU_DCMF_VERSION:
+			a0 = INTEL_SIP_SMC_RSU_DCMF_VERSION;
+			a1 = 0;
+			a2 = 0;
+			break;
 		default:
 			pr_warn("it shouldn't happen\n");
 			break;
@@ -430,9 +442,9 @@ static int svc_normal_to_secure_thread(void *data)
 
 		if (pdata->command == COMMAND_RSU_STATUS) {
 			if (res.a0 == INTEL_SIP_SMC_RSU_ERROR)
-				cbdata->status = BIT(SVC_STATUS_RSU_ERROR);
+				cbdata->status = BIT(SVC_STATUS_ERROR);
 			else
-				cbdata->status = BIT(SVC_STATUS_RSU_OK);
+				cbdata->status = BIT(SVC_STATUS_OK);
 
 			cbdata->kaddr1 = &res;
 			cbdata->kaddr2 = NULL;
@@ -445,7 +457,7 @@ static int svc_normal_to_secure_thread(void *data)
 		case INTEL_SIP_SMC_STATUS_OK:
 			svc_thread_recv_status_ok(pdata, cbdata, res);
 			break;
-		case INTEL_SIP_SMC_FPGA_CONFIG_STATUS_BUSY:
+		case INTEL_SIP_SMC_STATUS_BUSY:
 			switch (pdata->command) {
 			case COMMAND_RECONFIG_DATA_SUBMIT:
 				svc_thread_cmd_data_claim(ctrl,
@@ -460,43 +472,40 @@ static int svc_normal_to_secure_thread(void *data)
 				break;
 			}
 			break;
-		case INTEL_SIP_SMC_FPGA_CONFIG_STATUS_REJECTED:
+		case INTEL_SIP_SMC_STATUS_REJECTED:
 			pr_debug("%s: STATUS_REJECTED\n", __func__);
 			break;
-		case INTEL_SIP_SMC_FPGA_CONFIG_STATUS_ERROR:
+		case INTEL_SIP_SMC_STATUS_ERROR:
 		case INTEL_SIP_SMC_RSU_ERROR:
 			pr_err("%s: STATUS_ERROR\n", __func__);
-			switch (pdata->command) {
-			/* for FPGA mgr */
-			case COMMAND_RECONFIG_DATA_CLAIM:
-			case COMMAND_RECONFIG:
-			case COMMAND_RECONFIG_DATA_SUBMIT:
-			case COMMAND_RECONFIG_STATUS:
-				cbdata->status =
-					BIT(SVC_STATUS_RECONFIG_ERROR);
-				break;
-
-			/* for RSU */
-			case COMMAND_RSU_STATUS:
-			case COMMAND_RSU_UPDATE:
-			case COMMAND_RSU_NOTIFY:
-			case COMMAND_RSU_RETRY:
-				cbdata->status =
-					BIT(SVC_STATUS_RSU_ERROR);
-				break;
-			}
-
-			cbdata->status = BIT(SVC_STATUS_RECONFIG_ERROR);
-			cbdata->kaddr1 = NULL;
+			cbdata->status = BIT(SVC_STATUS_ERROR);
+			cbdata->kaddr1 = &res.a1;
 			cbdata->kaddr2 = NULL;
 			cbdata->kaddr3 = NULL;
 			pdata->chan->scl->receive_cb(pdata->chan->scl, cbdata);
 			break;
 		default:
-			pr_warn("it shouldn't happen\n");
+			pr_warn("Secure firmware doesn't support...\n");
+
+			/*
+			 * be compatible with older version firmware which
+			 * doesn't support RSU notify or retry
+			 */
+			if ((pdata->command == COMMAND_RSU_RETRY) ||
+			    (pdata->command == COMMAND_RSU_MAX_RETRY) ||
+				(pdata->command == COMMAND_RSU_NOTIFY)) {
+				cbdata->status =
+					BIT(SVC_STATUS_NO_SUPPORT);
+				cbdata->kaddr1 = NULL;
+				cbdata->kaddr2 = NULL;
+				cbdata->kaddr3 = NULL;
+				pdata->chan->scl->receive_cb(
+					pdata->chan->scl, cbdata);
+			}
 			break;
+
 		}
-	};
+	}
 
 	kfree(cbdata);
 	kfree(pdata);
@@ -950,6 +959,7 @@ EXPORT_SYMBOL_GPL(stratix10_svc_free_memory);
 
 static const struct of_device_id stratix10_svc_drv_match[] = {
 	{.compatible = "intel,stratix10-svc"},
+	{.compatible = "intel,agilex-svc"},
 	{},
 };
 
@@ -1030,6 +1040,7 @@ static int stratix10_svc_drv_probe(struct platform_device *pdev)
 		ret = -ENOMEM;
 		goto err_free_kfifo;
 	}
+	controller->svc = svc;
 
 	svc->stratix10_svc_rsu = platform_device_alloc(STRATIX10_RSU, 0);
 	if (!svc->stratix10_svc_rsu) {
@@ -1041,8 +1052,6 @@ static int stratix10_svc_drv_probe(struct platform_device *pdev)
 	ret = platform_device_add(svc->stratix10_svc_rsu);
 	if (ret)
 		goto err_put_device;
-
-	dev_set_drvdata(dev, svc);
 
 	pr_info("Intel Service Layer Driver Initialized\n");
 
@@ -1057,8 +1066,8 @@ err_free_kfifo:
 
 static int stratix10_svc_drv_remove(struct platform_device *pdev)
 {
-	struct stratix10_svc *svc = dev_get_drvdata(&pdev->dev);
 	struct stratix10_svc_controller *ctrl = platform_get_drvdata(pdev);
+	struct stratix10_svc *svc = ctrl->svc;
 
 	platform_device_unregister(svc->stratix10_svc_rsu);
 

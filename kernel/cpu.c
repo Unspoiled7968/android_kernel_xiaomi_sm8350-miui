@@ -31,16 +31,21 @@
 #include <linux/smpboot.h>
 #include <linux/relay.h>
 #include <linux/slab.h>
+#include <linux/scs.h>
 #include <linux/percpu-rwsem.h>
-#include <uapi/linux/sched/types.h>
 #include <linux/cpuset.h>
 #include <linux/random.h>
+#include <uapi/linux/sched/types.h>
 
 #include <trace/events/power.h>
 #define CREATE_TRACE_POINTS
 #include <trace/events/cpuhp.h>
-#include <linux/sched/clock.h>
 
+#undef CREATE_TRACE_POINTS
+#include <trace/hooks/sched.h>
+#include <trace/hooks/cpu.h>
+
+#include "sched/sched.h"
 #include "smpboot.h"
 
 /**
@@ -276,11 +281,13 @@ void cpu_maps_update_begin(void)
 {
 	mutex_lock(&cpu_add_remove_lock);
 }
+EXPORT_SYMBOL_GPL(cpu_maps_update_begin);
 
 void cpu_maps_update_done(void)
 {
 	mutex_unlock(&cpu_add_remove_lock);
 }
+EXPORT_SYMBOL_GPL(cpu_maps_update_done);
 
 /*
  * If set, cpu_up and cpu_down will return -EBUSY and do nothing.
@@ -336,12 +343,12 @@ void lockdep_assert_cpus_held(void)
 
 static void lockdep_acquire_cpus_lock(void)
 {
-	rwsem_acquire(&cpu_hotplug_lock.rw_sem.dep_map, 0, 0, _THIS_IP_);
+	rwsem_acquire(&cpu_hotplug_lock.dep_map, 0, 0, _THIS_IP_);
 }
 
 static void lockdep_release_cpus_lock(void)
 {
-	rwsem_release(&cpu_hotplug_lock.rw_sem.dep_map, 1, _THIS_IP_);
+	rwsem_release(&cpu_hotplug_lock.dep_map, _THIS_IP_);
 }
 
 /*
@@ -437,7 +444,7 @@ static inline bool cpu_smt_allowed(unsigned int cpu)
 	/*
 	 * On x86 it's required to boot all logical CPUs at least once so
 	 * that the init code can get a chance to set CR4.MCE on each
-	 * CPU. Otherwise, a broadacasted MCE observing CR4.MCE=0b on any
+	 * CPU. Otherwise, a broadcasted MCE observing CR4.MCE=0b on any
 	 * core will shutdown the machine.
 	 */
 	return !cpumask_test_cpu(cpu, &cpus_booted_once_mask);
@@ -553,6 +560,12 @@ static int bringup_cpu(unsigned int cpu)
 {
 	struct task_struct *idle = idle_thread_get(cpu);
 	int ret;
+
+	/*
+	 * Reset stale stack state from the last time this CPU was online.
+	 */
+	scs_task_reset(idle);
+	kasan_unpoison_task_stack(idle);
 
 	/*
 	 * Some architectures have to walk the irq descriptors to
@@ -1048,22 +1061,14 @@ static int __ref _cpu_down(unsigned int cpu, int tasks_frozen,
 {
 	struct cpuhp_cpu_state *st = per_cpu_ptr(&cpuhp_state, cpu);
 	int prev_state, ret = 0;
-	u64 start_time = 0;
 
-	if (num_online_cpus() == 1)
+	if (num_active_cpus() == 1 && cpu_active(cpu))
 		return -EBUSY;
 
 	if (!cpu_present(cpu))
 		return -EINVAL;
 
-#ifdef CONFIG_SCHED_WALT
-	if (!tasks_frozen && !cpu_isolated(cpu) && num_online_uniso_cpus() == 1)
-		return -EBUSY;
-#endif
-
 	cpus_write_lock();
-	if (trace_cpuhp_latency_enabled())
-		start_time = sched_clock();
 
 	cpuhp_tasks_frozen = tasks_frozen;
 
@@ -1102,7 +1107,6 @@ static int __ref _cpu_down(unsigned int cpu, int tasks_frozen,
 	}
 
 out:
-	trace_cpuhp_latency(cpu, 0, start_time, ret);
 	cpus_write_unlock();
 	/*
 	 * Do post unplug cleanup. This is still protected against
@@ -1121,21 +1125,9 @@ static int cpu_down_maps_locked(unsigned int cpu, enum cpuhp_state target)
 	return _cpu_down(cpu, 0, target);
 }
 
-static int do_cpu_down(unsigned int cpu, enum cpuhp_state target)
+static int cpu_down(unsigned int cpu, enum cpuhp_state target)
 {
 	int err;
-
-	/*
-	 * When cpusets are enabled, the rebuilding of the scheduling
-	 * domains is deferred to a workqueue context. Make sure
-	 * that the work is completed before proceeding to the next
-	 * hotplug. Otherwise scheduler observes an inconsistent
-	 * view of online and offline CPUs in the root domain. If
-	 * the online CPUs are still stuck in the offline (default)
-	 * domain, those CPUs would not be visible when scheduling
-	 * happens on from other CPUs in the root domain.
-	 */
-	cpuset_wait_for_hotplug();
 
 	cpu_maps_update_begin();
 	err = cpu_down_maps_locked(cpu, target);
@@ -1143,11 +1135,315 @@ static int do_cpu_down(unsigned int cpu, enum cpuhp_state target)
 	return err;
 }
 
-int cpu_down(unsigned int cpu)
+/**
+ * cpu_device_down - Bring down a cpu device
+ * @dev: Pointer to the cpu device to offline
+ *
+ * This function is meant to be used by device core cpu subsystem only.
+ *
+ * Other subsystems should use remove_cpu() instead.
+ */
+int cpu_device_down(struct device *dev)
 {
-	return do_cpu_down(cpu, CPUHP_OFFLINE);
+	return cpu_down(dev->id, CPUHP_OFFLINE);
 }
-EXPORT_SYMBOL(cpu_down);
+
+int remove_cpu(unsigned int cpu)
+{
+	int ret;
+
+	lock_device_hotplug();
+	ret = device_offline(get_cpu_device(cpu));
+	unlock_device_hotplug();
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(remove_cpu);
+
+int __pause_drain_rq(struct cpumask *cpus)
+{
+	unsigned int cpu;
+	int err = 0;
+
+	/*
+	 * Disabling preemption avoids that one of the stopper, started from
+	 * sched_cpu_drain_rq(), blocks firing draining for the whole cpumask.
+	 */
+	preempt_disable();
+	for_each_cpu(cpu, cpus) {
+		err = sched_cpu_drain_rq(cpu);
+		if (err)
+			break;
+	}
+	preempt_enable();
+
+	return err;
+}
+
+void __wait_drain_rq(struct cpumask *cpus)
+{
+	unsigned int cpu;
+
+	for_each_cpu(cpu, cpus)
+		sched_cpu_drain_rq_wait(cpu);
+}
+
+/* if rt task, set to cfs and return previous prio */
+static int pause_reduce_prio(void)
+{
+	int prev_prio = -1;
+
+	if (current->prio < MAX_RT_PRIO) {
+		struct sched_param param = { .sched_priority = 0 };
+
+		prev_prio = current->prio;
+		sched_setscheduler_nocheck(current, SCHED_NORMAL, &param);
+	}
+
+	return prev_prio;
+}
+
+/* if previous prio was set, restore */
+static void pause_restore_prio(int prev_prio)
+{
+	if (prev_prio >= 0 && prev_prio < MAX_RT_PRIO) {
+		struct sched_param param = { .sched_priority = MAX_RT_PRIO-1-prev_prio };
+
+		sched_setscheduler_nocheck(current, SCHED_FIFO, &param);
+	}
+}
+
+int pause_cpus(struct cpumask *cpus)
+{
+	int err = 0;
+	int cpu;
+	u64 start_time = 0;
+	int prev_prio;
+
+	start_time = sched_clock();
+
+	cpu_maps_update_begin();
+
+	if (cpu_hotplug_disabled) {
+		err = -EBUSY;
+		goto err_cpu_maps_update;
+	}
+
+	/* Pausing an already inactive CPU isn't an error */
+	cpumask_and(cpus, cpus, cpu_active_mask);
+
+	for_each_cpu(cpu, cpus) {
+		if (!cpu_online(cpu) || dl_bw_check_overflow(cpu) ||
+			get_cpu_device(cpu)->offline_disabled == true) {
+			err = -EBUSY;
+			goto err_cpu_maps_update;
+		}
+	}
+
+	if (cpumask_weight(cpus) >= num_active_cpus()) {
+		err = -EBUSY;
+		goto err_cpu_maps_update;
+	}
+
+	if (cpumask_empty(cpus))
+		goto err_cpu_maps_update;
+
+	/*
+	 * Lazy migration:
+	 *
+	 * We do care about how fast a CPU can go idle and stay this in this
+	 * state. If we try to take the cpus_write_lock() here, we would have
+	 * to wait for a few dozens of ms, as this function might schedule.
+	 * However, we can, as a first step, flip the active mask and migrate
+	 * anything currently on the run-queue, to give a chance to the paused
+	 * CPUs to reach quickly an idle state. There's a risk meanwhile for
+	 * another CPU to observe an out-of-date active_mask or to incompletely
+	 * update a cpuset. Both problems would be resolved later in the slow
+	 * path, which ensures active_mask synchronization, triggers a cpuset
+	 * rebuild and migrate any task that would have escaped the lazy
+	 * migration.
+	 */
+	for_each_cpu(cpu, cpus)
+		set_cpu_active(cpu, false);
+	err = __pause_drain_rq(cpus);
+	if (err) {
+		__wait_drain_rq(cpus);
+		for_each_cpu(cpu, cpus)
+			set_cpu_active(cpu, true);
+		goto err_cpu_maps_update;
+	}
+
+	prev_prio = pause_reduce_prio();
+
+	/*
+	 * Slow path deactivation:
+	 *
+	 * Now that paused CPUs are most likely idle, we can go through a
+	 * complete scheduler deactivation.
+	 *
+	 * The cpu_active_mask being already set and cpus_write_lock calling
+	 * synchronize_rcu(), we know that all preempt-disabled and RCU users
+	 * will observe the updated value.
+	 */
+	cpus_write_lock();
+
+	__wait_drain_rq(cpus);
+
+	cpuhp_tasks_frozen = 0;
+
+	if (sched_cpus_deactivate_nosync(cpus)) {
+		err = -EBUSY;
+		goto err_cpus_write_unlock;
+	}
+
+	err = __pause_drain_rq(cpus);
+	__wait_drain_rq(cpus);
+	if (err) {
+		for_each_cpu(cpu, cpus)
+			sched_cpu_activate(cpu);
+		goto err_cpus_write_unlock;
+	}
+
+	/*
+	 * Even if living on the side of the regular HP path, pause is using
+	 * one of the HP step (CPUHP_AP_ACTIVE). This should be reflected on the
+	 * current state of the CPU.
+	 */
+	for_each_cpu(cpu, cpus) {
+		struct cpuhp_cpu_state *st = per_cpu_ptr(&cpuhp_state, cpu);
+
+		st->state = CPUHP_AP_ACTIVE - 1;
+		st->target = st->state;
+	}
+
+err_cpus_write_unlock:
+	cpus_write_unlock();
+	pause_restore_prio(prev_prio);
+err_cpu_maps_update:
+	cpu_maps_update_done();
+
+	trace_cpuhp_pause(cpus, start_time, 1);
+
+	return err;
+}
+EXPORT_SYMBOL_GPL(pause_cpus);
+
+int resume_cpus(struct cpumask *cpus)
+{
+	unsigned int cpu;
+	int err = 0;
+	u64 start_time = 0;
+	int prev_prio;
+
+	start_time = sched_clock();
+
+	cpu_maps_update_begin();
+
+	if (cpu_hotplug_disabled) {
+		err = -EBUSY;
+		goto err_cpu_maps_update;
+	}
+
+	/* Resuming an already active CPU isn't an error */
+	cpumask_andnot(cpus, cpus, cpu_active_mask);
+
+	for_each_cpu(cpu, cpus) {
+		if (!cpu_online(cpu)) {
+			err = -EBUSY;
+			goto err_cpu_maps_update;
+		}
+	}
+
+	if (cpumask_empty(cpus))
+		goto err_cpu_maps_update;
+
+	for_each_cpu(cpu, cpus)
+		set_cpu_active(cpu, true);
+
+	trace_android_rvh_resume_cpus(cpus, &err);
+	if (err)
+		goto err_cpu_maps_update;
+
+	prev_prio = pause_reduce_prio();
+
+	/* Lazy Resume. Build domains through schedule a workqueue on
+	 * resuming cpu. This is so that the resuming cpu can work more
+	 * early, and cannot add additional load to other busy cpu.
+	 */
+	cpuset_update_active_cpus_affine(cpumask_first(cpus));
+
+	cpus_write_lock();
+
+	cpuhp_tasks_frozen = 0;
+
+	if (sched_cpus_activate(cpus)) {
+		err = -EBUSY;
+		goto err_cpus_write_unlock;
+	}
+
+	/*
+	 * see pause_cpus.
+	 */
+	for_each_cpu(cpu, cpus) {
+		struct cpuhp_cpu_state *st = per_cpu_ptr(&cpuhp_state, cpu);
+
+		st->state = CPUHP_ONLINE;
+		st->target = st->state;
+	}
+
+err_cpus_write_unlock:
+	cpus_write_unlock();
+	pause_restore_prio(prev_prio);
+err_cpu_maps_update:
+	cpu_maps_update_done();
+
+	trace_cpuhp_pause(cpus, start_time, 0);
+
+	return err;
+}
+EXPORT_SYMBOL_GPL(resume_cpus);
+
+void smp_shutdown_nonboot_cpus(unsigned int primary_cpu)
+{
+	unsigned int cpu;
+	int error;
+
+	cpu_maps_update_begin();
+
+	/*
+	 * Make certain the cpu I'm about to reboot on is online.
+	 *
+	 * This is inline to what migrate_to_reboot_cpu() already do.
+	 */
+	if (!cpu_online(primary_cpu))
+		primary_cpu = cpumask_first(cpu_online_mask);
+
+	for_each_online_cpu(cpu) {
+		if (cpu == primary_cpu)
+			continue;
+
+		error = cpu_down_maps_locked(cpu, CPUHP_OFFLINE);
+		if (error) {
+			pr_err("Failed to offline CPU%d - error=%d",
+				cpu, error);
+			break;
+		}
+	}
+
+	/*
+	 * Ensure all but the reboot CPU are offline.
+	 */
+	BUG_ON(num_online_cpus() > 1);
+
+	/*
+	 * Make sure the CPUs won't be enabled by someone else after this
+	 * point. Kexec will reboot to a new kernel shortly resetting
+	 * everything along the way.
+	 */
+	cpu_hotplug_disabled++;
+
+	cpu_maps_update_done();
+}
 
 #else
 #define takedown_cpu		NULL
@@ -1201,17 +1497,33 @@ void cpuhp_online_idle(enum cpuhp_state state)
 	complete_ap_thread(st, true);
 }
 
+static int switch_to_rt_policy(void)
+{
+	struct sched_param param = { .sched_priority = MAX_RT_PRIO - 1 };
+	unsigned int policy = current->policy;
+
+	if (policy == SCHED_NORMAL)
+		/* Switch to SCHED_FIFO from SCHED_NORMAL. */
+		return sched_setscheduler_nocheck(current, SCHED_FIFO, &param);
+	else
+		return 1;
+}
+
+static int switch_to_fair_policy(void)
+{
+	struct sched_param param = { .sched_priority = 0 };
+
+	return sched_setscheduler_nocheck(current, SCHED_NORMAL, &param);
+}
+
 /* Requires cpu_add_remove_lock to be held */
 static int _cpu_up(unsigned int cpu, int tasks_frozen, enum cpuhp_state target)
 {
 	struct cpuhp_cpu_state *st = per_cpu_ptr(&cpuhp_state, cpu);
 	struct task_struct *idle;
 	int ret = 0;
-	u64 start_time = 0;
 
 	cpus_write_lock();
-	if (trace_cpuhp_latency_enabled())
-		start_time = sched_clock();
 
 	if (!cpu_present(cpu)) {
 		ret = -EINVAL;
@@ -1219,8 +1531,8 @@ static int _cpu_up(unsigned int cpu, int tasks_frozen, enum cpuhp_state target)
 	}
 
 	/*
-	 * The caller of do_cpu_up might have raced with another
-	 * caller. Ignore it for now.
+	 * The caller of cpu_up() might have raced with another
+	 * caller. Nothing to do.
 	 */
 	if (st->state >= target)
 		goto out;
@@ -1259,44 +1571,16 @@ static int _cpu_up(unsigned int cpu, int tasks_frozen, enum cpuhp_state target)
 	target = min((int)target, CPUHP_BRINGUP_CPU);
 	ret = cpuhp_up_callbacks(cpu, st, target);
 out:
-	trace_cpuhp_latency(cpu, 1, start_time, ret);
 	cpus_write_unlock();
 	arch_smt_update();
 	cpu_up_down_serialize_trainwrecks(tasks_frozen);
 	return ret;
 }
 
-static int switch_to_rt_policy(void)
-{
-	struct sched_param param = { .sched_priority = MAX_RT_PRIO - 1 };
-	unsigned int policy = current->policy;
-	int err;
-
-	/* Nobody should be attempting hotplug from these policy contexts. */
-	if (policy == SCHED_BATCH || policy == SCHED_IDLE ||
-					policy == SCHED_DEADLINE)
-		return -EPERM;
-
-	if (policy == SCHED_FIFO || policy == SCHED_RR)
-		return 1;
-
-	/* Only SCHED_NORMAL left. */
-	err = sched_setscheduler_nocheck(current, SCHED_FIFO, &param);
-	return err;
-
-}
-
-static int switch_to_fair_policy(void)
-{
-	struct sched_param param = { .sched_priority = 0 };
-
-	return sched_setscheduler_nocheck(current, SCHED_NORMAL, &param);
-}
-
-static int do_cpu_up(unsigned int cpu, enum cpuhp_state target)
+static int cpu_up(unsigned int cpu, enum cpuhp_state target)
 {
 	int err = 0;
-	int switch_err = 0;
+	int switch_err;
 
 	if (!cpu_possible(cpu)) {
 		pr_err("can't online cpu %d because it is not configured as may-hotadd at boot time\n",
@@ -1307,15 +1591,23 @@ static int do_cpu_up(unsigned int cpu, enum cpuhp_state target)
 		return -EINVAL;
 	}
 
-	cpuset_wait_for_hotplug();
+	trace_android_vh_cpu_up(cpu);
+
+	/*
+	 * CPU hotplug operations consists of many steps and each step
+	 * calls a callback of core kernel subsystem. CPU hotplug-in
+	 * operation may get preempted by other CFS tasks and whole
+	 * operation of cpu hotplug in CPU gets delayed. Switch the
+	 * current task to SCHED_FIFO from SCHED_NORMAL, so that
+	 * hotplug in operation may complete quickly in heavy loaded
+	 * conditions and new CPU will start handle the workload.
+	 */
 
 	switch_err = switch_to_rt_policy();
-	if (switch_err < 0)
-		return switch_err;
 
 	err = try_online_node(cpu_to_node(cpu));
 	if (err)
-		return err;
+		goto switch_out;
 
 	cpu_maps_update_begin();
 
@@ -1331,7 +1623,7 @@ static int do_cpu_up(unsigned int cpu, enum cpuhp_state target)
 	err = _cpu_up(cpu, 0, target);
 out:
 	cpu_maps_update_done();
-
+switch_out:
 	if (!switch_err) {
 		switch_err = switch_to_fair_policy();
 		if (switch_err)
@@ -1342,16 +1634,70 @@ out:
 	return err;
 }
 
-int cpu_up(unsigned int cpu)
+/**
+ * cpu_device_up - Bring up a cpu device
+ * @dev: Pointer to the cpu device to online
+ *
+ * This function is meant to be used by device core cpu subsystem only.
+ *
+ * Other subsystems should use add_cpu() instead.
+ */
+int cpu_device_up(struct device *dev)
 {
-	return do_cpu_up(cpu, CPUHP_ONLINE);
+	return cpu_up(dev->id, CPUHP_ONLINE);
 }
-EXPORT_SYMBOL_GPL(cpu_up);
+
+int add_cpu(unsigned int cpu)
+{
+	int ret;
+
+	lock_device_hotplug();
+	ret = device_online(get_cpu_device(cpu));
+	unlock_device_hotplug();
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(add_cpu);
+
+/**
+ * bringup_hibernate_cpu - Bring up the CPU that we hibernated on
+ * @sleep_cpu: The cpu we hibernated on and should be brought up.
+ *
+ * On some architectures like arm64, we can hibernate on any CPU, but on
+ * wake up the CPU we hibernated on might be offline as a side effect of
+ * using maxcpus= for example.
+ */
+int bringup_hibernate_cpu(unsigned int sleep_cpu)
+{
+	int ret;
+
+	if (!cpu_online(sleep_cpu)) {
+		pr_info("Hibernated on a CPU that is offline! Bringing CPU up.\n");
+		ret = cpu_up(sleep_cpu, CPUHP_ONLINE);
+		if (ret) {
+			pr_err("Failed to bring hibernate-CPU up!\n");
+			return ret;
+		}
+	}
+	return 0;
+}
+
+void bringup_nonboot_cpus(unsigned int setup_max_cpus)
+{
+	unsigned int cpu;
+
+	for_each_present_cpu(cpu) {
+		if (num_online_cpus() >= setup_max_cpus)
+			break;
+		if (!cpu_online(cpu))
+			cpu_up(cpu, CPUHP_ONLINE);
+	}
+}
 
 #ifdef CONFIG_PM_SLEEP_SMP
 static cpumask_var_t frozen_cpus;
 
-int __freeze_secondary_cpus(int primary, bool suspend)
+int freeze_secondary_cpus(int primary)
 {
 	int cpu, error = 0;
 
@@ -1376,7 +1722,7 @@ int __freeze_secondary_cpus(int primary, bool suspend)
 		if (cpu == primary)
 			continue;
 
-		if (suspend && pm_wakeup_pending()) {
+		if (pm_wakeup_pending()) {
 			pr_info("Wakeup pending. Abort CPU freeze\n");
 			error = -EBUSY;
 			break;
@@ -1400,8 +1746,8 @@ int __freeze_secondary_cpus(int primary, bool suspend)
 
 	/*
 	 * Make sure the CPUs won't be enabled by someone else. We need to do
-	 * this even in case of failure as all disable_nonboot_cpus() users are
-	 * supposed to do enable_nonboot_cpus() on the failure path.
+	 * this even in case of failure as all freeze_secondary_cpus() users are
+	 * supposed to do thaw_secondary_cpus() on the failure path.
 	 */
 	cpu_hotplug_disabled++;
 
@@ -1409,15 +1755,15 @@ int __freeze_secondary_cpus(int primary, bool suspend)
 	return error;
 }
 
-void __weak arch_enable_nonboot_cpus_begin(void)
+void __weak arch_thaw_secondary_cpus_begin(void)
 {
 }
 
-void __weak arch_enable_nonboot_cpus_end(void)
+void __weak arch_thaw_secondary_cpus_end(void)
 {
 }
 
-void enable_nonboot_cpus(void)
+void thaw_secondary_cpus(void)
 {
 	int cpu, error;
 	struct device *cpu_device;
@@ -1430,7 +1776,7 @@ void enable_nonboot_cpus(void)
 
 	pr_info("Enabling non-boot CPUs ...\n");
 
-	arch_enable_nonboot_cpus_begin();
+	arch_thaw_secondary_cpus_begin();
 
 	for_each_cpu(cpu, frozen_cpus) {
 		trace_suspend_resume(TPS("CPU_ON"), cpu, true);
@@ -1449,7 +1795,7 @@ void enable_nonboot_cpus(void)
 		pr_warn("Error taking CPU%d up: %d\n", cpu, error);
 	}
 
-	arch_enable_nonboot_cpus_end();
+	arch_thaw_secondary_cpus_end();
 
 	cpumask_clear(frozen_cpus);
 out:
@@ -2190,9 +2536,11 @@ static ssize_t write_cpuhp_target(struct device *dev,
 		goto out;
 
 	if (st->state < target)
-		ret = do_cpu_up(dev->id, target);
-	else
-		ret = do_cpu_down(dev->id, target);
+		ret = cpu_up(dev->id, target);
+	else if (st->state > target)
+		ret = cpu_down(dev->id, target);
+	else if (WARN_ON(st->target != target))
+		st->target = target;
 out:
 	unlock_device_hotplug();
 	return ret ? ret : count;
@@ -2473,11 +2821,6 @@ EXPORT_SYMBOL(__cpu_present_mask);
 struct cpumask __cpu_active_mask __read_mostly;
 EXPORT_SYMBOL(__cpu_active_mask);
 
-#ifdef CONFIG_SCHED_WALT
-struct cpumask __cpu_isolated_mask __read_mostly;
-EXPORT_SYMBOL(__cpu_isolated_mask);
-#endif
-
 atomic_t __num_online_cpus __read_mostly;
 EXPORT_SYMBOL(__num_online_cpus);
 
@@ -2495,13 +2838,6 @@ void init_cpu_online(const struct cpumask *src)
 {
 	cpumask_copy(&__cpu_online_mask, src);
 }
-
-#ifdef CONFIG_SCHED_WALT
-void init_cpu_isolated(const struct cpumask *src)
-{
-	cpumask_copy(&__cpu_isolated_mask, src);
-}
-#endif
 
 void set_cpu_online(unsigned int cpu, bool online)
 {
@@ -2564,7 +2900,8 @@ enum cpu_mitigations {
 };
 
 static enum cpu_mitigations cpu_mitigations __ro_after_init =
-	CPU_MITIGATIONS_AUTO;
+	IS_ENABLED(CONFIG_CPU_MITIGATIONS) ? CPU_MITIGATIONS_AUTO :
+					     CPU_MITIGATIONS_OFF;
 
 static int __init mitigations_parse_cmdline(char *arg)
 {
@@ -2595,23 +2932,3 @@ bool cpu_mitigations_auto_nosmt(void)
 	return cpu_mitigations == CPU_MITIGATIONS_AUTO_NOSMT;
 }
 EXPORT_SYMBOL_GPL(cpu_mitigations_auto_nosmt);
-
-static ATOMIC_NOTIFIER_HEAD(idle_notifier);
-
-void idle_notifier_register(struct notifier_block *n)
-{
-	atomic_notifier_chain_register(&idle_notifier, n);
-}
-EXPORT_SYMBOL_GPL(idle_notifier_register);
-
-void idle_notifier_unregister(struct notifier_block *n)
-{
-	atomic_notifier_chain_unregister(&idle_notifier, n);
-}
-EXPORT_SYMBOL_GPL(idle_notifier_unregister);
-
-void idle_notifier_call_chain(unsigned long val)
-{
-	atomic_notifier_call_chain(&idle_notifier, val, NULL);
-}
-EXPORT_SYMBOL_GPL(idle_notifier_call_chain);

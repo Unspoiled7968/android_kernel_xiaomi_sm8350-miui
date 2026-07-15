@@ -31,22 +31,18 @@
 #include <linux/mmc/mmc.h>
 #include <linux/mmc/sd.h>
 #include <linux/mmc/slot-gpio.h>
-#if defined(CONFIG_SDC_QTI)
-#include <linux/devfreq.h>
-#endif
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/mmc.h>
 
 #include "core.h"
 #include "card.h"
+#include "crypto.h"
 #include "bus.h"
 #include "host.h"
 #include "sdio_bus.h"
 #include "pwrseq.h"
-#if defined(CONFIG_SDC_QTI)
-#include "queue.h"
-#endif
+
 #include "mmc_ops.h"
 #include "sd_ops.h"
 #include "sdio_ops.h"
@@ -114,803 +110,6 @@ static inline void mmc_should_fail_request(struct mmc_host *host,
 
 #endif /* CONFIG_FAIL_MMC_REQUEST */
 
-#if defined(CONFIG_SDC_QTI)
-static bool mmc_is_data_request(struct mmc_request *mmc_request)
-{
-	switch (mmc_request->cmd->opcode) {
-	case MMC_READ_SINGLE_BLOCK:
-	case MMC_READ_MULTIPLE_BLOCK:
-	case MMC_WRITE_BLOCK:
-	case MMC_WRITE_MULTIPLE_BLOCK:
-		return true;
-	default:
-		return false;
-	}
-}
-
-static void mmc_clk_scaling_start_busy(struct mmc_host *host, bool lock_needed)
-{
-	unsigned long flags;
-
-	struct mmc_devfeq_clk_scaling *clk_scaling = &host->clk_scaling;
-
-	if (!clk_scaling->enable)
-		return;
-
-	if (lock_needed)
-		spin_lock_irqsave(&clk_scaling->lock, flags);
-
-	clk_scaling->start_busy = ktime_get();
-	clk_scaling->is_busy_started = true;
-
-	if (lock_needed)
-		spin_unlock_irqrestore(&clk_scaling->lock, flags);
-}
-
-static void mmc_clk_scaling_stop_busy(struct mmc_host *host, bool lock_needed)
-{
-	unsigned long flags;
-
-	struct mmc_devfeq_clk_scaling *clk_scaling = &host->clk_scaling;
-
-	if (!clk_scaling->enable)
-		return;
-
-	if (lock_needed)
-		spin_lock_irqsave(&clk_scaling->lock, flags);
-
-	if (!clk_scaling->is_busy_started) {
-		WARN_ON(1);
-		goto out;
-	}
-
-	clk_scaling->total_busy_time_us +=
-		ktime_to_us(ktime_sub(ktime_get(),
-			clk_scaling->start_busy));
-	pr_debug("%s: accumulated busy time is %lu usec\n",
-		mmc_hostname(host), clk_scaling->total_busy_time_us);
-	clk_scaling->is_busy_started = false;
-
-out:
-	if (lock_needed)
-		spin_unlock_irqrestore(&clk_scaling->lock, flags);
-}
-
-/* mmc_cqe_clk_scaling_start_busy() - start busy timer for data requests
- * @host: pointer to mmc host structure
- * @lock_needed: flag indication if locking is needed
- *
- * This function starts the busy timer in case it was not already started.
- */
-void mmc_cqe_clk_scaling_start_busy(struct mmc_queue *mq,
-			struct mmc_host *host, bool lock_needed)
-{
-	unsigned long flags;
-
-	if (!host->clk_scaling.enable)
-		return;
-
-	if (lock_needed)
-		spin_lock_irqsave(&host->clk_scaling.lock, flags);
-
-	if (!host->clk_scaling.is_busy_started &&
-			!(mq->cqe_busy & MMC_CQE_DCMD_BUSY)) {
-		host->clk_scaling.start_busy = ktime_get();
-		host->clk_scaling.is_busy_started = true;
-	}
-
-	if (lock_needed)
-		spin_unlock_irqrestore(&host->clk_scaling.lock, flags);
-}
-EXPORT_SYMBOL(mmc_cqe_clk_scaling_start_busy);
-
-/**
- * mmc_cqe_clk_scaling_stop_busy() - stop busy timer for last data requests
- * @host: pointer to mmc host structure
- * @lock_needed: flag indication if locking is needed
- *
- * This function stops the busy timer in case it is the last data request.
- * In case the current request is not the last one, the busy time till
- * now will be accumulated and the counter will be restarted.
- */
-void mmc_cqe_clk_scaling_stop_busy(struct mmc_host *host,
-	bool lock_needed, bool is_cqe_dcmd)
-{
-	unsigned int cqe_active_reqs = 0;
-	unsigned long flags;
-
-	if (!host->clk_scaling.enable)
-		return;
-
-	cqe_active_reqs = atomic_read(&host->active_reqs);
-
-	if (lock_needed)
-		spin_lock_irqsave(&host->clk_scaling.lock, flags);
-
-	/*
-	 *  For CQ mode: In completion of DCMD request, start busy time in
-	 *  case of pending data requests
-	 */
-	if (is_cqe_dcmd) {
-		if (cqe_active_reqs && !host->clk_scaling.is_busy_started) {
-			host->clk_scaling.is_busy_started = true;
-			host->clk_scaling.start_busy = ktime_get();
-		}
-		goto out;
-	}
-
-	host->clk_scaling.total_busy_time_us +=
-		ktime_to_us(ktime_sub(ktime_get(),
-			host->clk_scaling.start_busy));
-
-	if (cqe_active_reqs) {
-		host->clk_scaling.is_busy_started = true;
-		host->clk_scaling.start_busy = ktime_get();
-	} else {
-		host->clk_scaling.is_busy_started = false;
-	}
-out:
-	if (lock_needed)
-		spin_unlock_irqrestore(&host->clk_scaling.lock, flags);
-
-}
-EXPORT_SYMBOL(mmc_cqe_clk_scaling_stop_busy);
-
-/**
- * mmc_can_scale_clk() - Check clock scaling capability
- * @host: pointer to mmc host structure
- */
-bool mmc_can_scale_clk(struct mmc_host *host)
-{
-	if (!host) {
-		pr_err("bad host parameter\n");
-		WARN_ON(1);
-		return false;
-	}
-
-	return host->caps2 & MMC_CAP2_CLK_SCALE;
-}
-EXPORT_SYMBOL(mmc_can_scale_clk);
-
-static int mmc_devfreq_get_dev_status(struct device *dev,
-		struct devfreq_dev_status *status)
-{
-	struct mmc_host *host = container_of(dev, struct mmc_host, class_dev);
-	struct mmc_devfeq_clk_scaling *clk_scaling;
-	unsigned long flags;
-
-	if (!host) {
-		pr_err("bad host parameter\n");
-		WARN_ON(1);
-		return -EINVAL;
-	}
-
-	clk_scaling = &host->clk_scaling;
-
-	if (!clk_scaling->enable)
-		return 0;
-
-	spin_lock_irqsave(&host->clk_scaling.lock, flags);
-
-	/* accumulate the busy time of ongoing work */
-	memset(status, 0, sizeof(*status));
-	if (clk_scaling->is_busy_started) {
-		if (host->cqe_on) {
-			/* the "busy-timer" will be restarted in case there
-			 * are pending data requests
-			 */
-			mmc_cqe_clk_scaling_stop_busy(host, false, false);
-		} else {
-			mmc_clk_scaling_stop_busy(host, false);
-			mmc_clk_scaling_start_busy(host, false);
-		}
-	}
-
-	status->busy_time = clk_scaling->total_busy_time_us;
-	status->total_time = ktime_to_us(ktime_sub(ktime_get(),
-		clk_scaling->measure_interval_start));
-	clk_scaling->total_busy_time_us = 0;
-	status->current_frequency = clk_scaling->curr_freq;
-	clk_scaling->measure_interval_start = ktime_get();
-
-	pr_debug("%s: status: load = %lu%% - total_time=%lu busy_time = %lu, clk=%lu\n",
-		mmc_hostname(host),
-		(status->busy_time*100)/status->total_time,
-		status->total_time, status->busy_time,
-		status->current_frequency);
-
-	spin_unlock_irqrestore(&host->clk_scaling.lock, flags);
-
-	return 0;
-}
-
-static bool mmc_is_valid_state_for_clk_scaling(struct mmc_host *host)
-{
-	struct mmc_card *card = host->card;
-	u32 status;
-
-	/*
-	 * If the current partition type is RPMB, clock switching may not
-	 * work properly as sending tuning command (CMD21) is illegal in
-	 * this mode.
-	 */
-	if (!card || (mmc_card_mmc(card) &&
-			(card->part_curr == EXT_CSD_PART_CONFIG_ACC_RPMB)))
-		return false;
-
-	if (mmc_send_status(card, &status)) {
-		pr_err("%s: Get card status fail\n", mmc_hostname(card->host));
-		return false;
-	}
-
-	return R1_CURRENT_STATE(status) == R1_STATE_TRAN;
-}
-
-int mmc_clk_update_freq(struct mmc_host *host,
-		unsigned long freq, enum mmc_load state)
-{
-	int err = 0;
-
-	if (!host) {
-		pr_err("bad host parameter\n");
-		WARN_ON(1);
-		return -EINVAL;
-	}
-
-	/* make sure the card supports the frequency we want */
-	if (unlikely(freq > host->card->clk_scaling_highest)) {
-		freq = host->card->clk_scaling_highest;
-		pr_warn("%s: %s: High freq was overridden to %lu\n",
-				mmc_hostname(host), __func__,
-				host->card->clk_scaling_highest);
-	}
-
-	if (unlikely(freq < host->card->clk_scaling_lowest)) {
-		freq = host->card->clk_scaling_lowest;
-		pr_warn("%s: %s: Low freq was overridden to %lu\n",
-			mmc_hostname(host), __func__,
-			host->card->clk_scaling_lowest);
-	}
-
-	if (freq == host->clk_scaling.curr_freq)
-		goto out;
-
-	if (host->cqe_on) {
-		err = host->cqe_ops->cqe_wait_for_idle(host);
-		if (err) {
-			pr_err("%s: %s: CQE went in recovery path\n",
-				mmc_hostname(host), __func__);
-			goto error;
-		}
-		host->cqe_ops->cqe_off(host);
-	}
-
-	if (host->ops->notify_load) {
-		err = host->ops->notify_load(host, state);
-		if (err) {
-			pr_err("%s: %s: fail on notify_load\n",
-				mmc_hostname(host), __func__);
-			goto error;
-		}
-	}
-
-	if (!mmc_is_valid_state_for_clk_scaling(host)) {
-		pr_debug("%s: invalid state for clock scaling - skipping\n",
-			mmc_hostname(host));
-		goto out;
-	}
-
-	err = host->bus_ops->change_bus_speed(host, &freq);
-	if (!err)
-		host->clk_scaling.curr_freq = freq;
-	else
-		pr_err("%s: %s: failed (%d) at freq=%lu\n",
-			mmc_hostname(host), __func__, err, freq);
-	mmc_log_string(host, "clock scale state %d freq %lu done with err %d\n",
-			state, freq, err);
-	/*
-	 * CQE would be enabled as part of CQE issueing path
-	 * So no need to unhalt it explicitly
-	 */
-
-error:
-	if (err) {
-		/* restore previous state */
-		if (host->ops->notify_load)
-			if (host->ops->notify_load(host,
-				host->clk_scaling.state))
-				pr_err("%s: %s: fail on notify_load restore\n",
-					mmc_hostname(host), __func__);
-	}
-
-out:
-	return err;
-}
-EXPORT_SYMBOL(mmc_clk_update_freq);
-
-static int mmc_devfreq_set_target(struct device *dev,
-				unsigned long *freq, u32 devfreq_flags)
-{
-	struct mmc_host *host = container_of(dev, struct mmc_host, class_dev);
-	struct mmc_devfeq_clk_scaling *clk_scaling;
-	int err = 0;
-	int abort;
-	unsigned long pflags = current->flags;
-	unsigned long flags;
-
-	/* Ensure scaling would happen even in memory pressure conditions */
-	current->flags |= PF_MEMALLOC;
-
-	if (!(host && freq)) {
-		pr_err("%s: unexpected host/freq parameter\n", __func__);
-		err = -EINVAL;
-		goto out;
-	}
-
-	clk_scaling = &host->clk_scaling;
-
-	if (!clk_scaling->enable)
-		goto out;
-
-	pr_debug("%s: target freq = %lu (%s)\n", mmc_hostname(host),
-		*freq, current->comm);
-
-	spin_lock_irqsave(&clk_scaling->lock, flags);
-	if (clk_scaling->curr_freq == *freq ||
-		clk_scaling->skip_clk_scale_freq_update) {
-		spin_unlock_irqrestore(&clk_scaling->lock, flags);
-		goto out;
-	}
-
-	clk_scaling->need_freq_change = true;
-	clk_scaling->target_freq = *freq;
-	clk_scaling->state = *freq < clk_scaling->curr_freq ?
-		MMC_LOAD_LOW : MMC_LOAD_HIGH;
-	spin_unlock_irqrestore(&clk_scaling->lock, flags);
-
-	if (!clk_scaling->is_suspended && host->ios.clock)
-		abort = __mmc_claim_host(host, NULL,
-				&clk_scaling->devfreq_abort);
-	else
-		goto out;
-
-	if (abort)
-		goto out;
-
-	/*
-	 * In case we were able to claim host there is no need to
-	 * defer the frequency change. It will be done now
-	 */
-	clk_scaling->need_freq_change = false;
-
-	err = mmc_clk_update_freq(host, *freq, clk_scaling->state);
-	if (err && err != -EAGAIN)
-		pr_err("%s: clock scale to %lu failed with error %d\n",
-			mmc_hostname(host), *freq, err);
-	else
-		pr_debug("%s: clock change to %lu finished successfully (%s)\n",
-			mmc_hostname(host), *freq, current->comm);
-
-	mmc_release_host(host);
-out:
-	current_restore_flags(pflags, PF_MEMALLOC);
-	return err;
-}
-
-/**
- * mmc_deferred_scaling() - scale clocks from data path (mmc thread context)
- * @host: pointer to mmc host structure
- *
- * This function does clock scaling in case "need_freq_change" flag was set
- * by the clock scaling logic.
- */
-void mmc_deferred_scaling(struct mmc_host *host)
-{
-	unsigned long target_freq;
-	int err;
-	struct mmc_devfeq_clk_scaling clk_scaling;
-	unsigned long flags;
-
-	if (!host->clk_scaling.enable)
-		return;
-
-	spin_lock_irqsave(&host->clk_scaling.lock, flags);
-
-	if (!host->clk_scaling.need_freq_change) {
-		spin_unlock_irqrestore(&host->clk_scaling.lock, flags);
-		return;
-	}
-
-	atomic_inc(&host->clk_scaling.devfreq_abort);
-	target_freq = host->clk_scaling.target_freq;
-	/*
-	 * Store the clock scaling state while the lock is acquired so that
-	 * if devfreq context modifies clk_scaling, it will get reflected only
-	 * in the next deferred scaling check.
-	 */
-	clk_scaling = host->clk_scaling;
-	host->clk_scaling.need_freq_change = false;
-	spin_unlock_irqrestore(&host->clk_scaling.lock, flags);
-
-	pr_debug("%s: doing deferred frequency change (%lu) (%s)\n",
-				mmc_hostname(host),
-				target_freq, current->comm);
-	mmc_log_string(host,
-		"doing deferred frequency change (%lu) (%s)\n",
-		target_freq, current->comm);
-	err = mmc_clk_update_freq(host, target_freq, clk_scaling.state);
-	if (err && err != -EAGAIN)
-		pr_err("%s: failed on deferred scale clocks (%d)\n",
-			mmc_hostname(host), err);
-	else
-		pr_debug("%s: clocks were successfully scaled to %lu (%s)\n",
-			mmc_hostname(host),
-			target_freq, current->comm);
-	atomic_dec(&host->clk_scaling.devfreq_abort);
-}
-EXPORT_SYMBOL(mmc_deferred_scaling);
-
-static int mmc_devfreq_create_freq_table(struct mmc_host *host)
-{
-	int i;
-	struct mmc_devfeq_clk_scaling *clk_scaling = &host->clk_scaling;
-
-	pr_debug("%s: supported: lowest=%lu, highest=%lu\n",
-		mmc_hostname(host),
-		host->card->clk_scaling_lowest,
-		host->card->clk_scaling_highest);
-
-	/*
-	 * Create the frequency table and initialize it with default values.
-	 * Initialize it with platform specific frequencies if the frequency
-	 * table supplied by platform driver is present, otherwise initialize
-	 * it with min and max frequencies supported by the card.
-	 */
-	if (!clk_scaling->freq_table) {
-		if (clk_scaling->pltfm_freq_table_sz)
-			clk_scaling->freq_table_sz =
-				clk_scaling->pltfm_freq_table_sz;
-		else
-			clk_scaling->freq_table_sz = 2;
-
-		clk_scaling->freq_table = kcalloc(
-			clk_scaling->freq_table_sz,
-			sizeof(*(clk_scaling->freq_table)), GFP_KERNEL);
-		if (!clk_scaling->freq_table)
-			return -ENOMEM;
-
-		if (clk_scaling->pltfm_freq_table) {
-			memcpy(clk_scaling->freq_table,
-				clk_scaling->pltfm_freq_table,
-				(clk_scaling->pltfm_freq_table_sz *
-				sizeof(*(clk_scaling->pltfm_freq_table))));
-		} else {
-			pr_debug("%s: no frequency table defined -  setting default\n",
-				mmc_hostname(host));
-			clk_scaling->freq_table[0] =
-				host->card->clk_scaling_lowest;
-			clk_scaling->freq_table[1] =
-				host->card->clk_scaling_highest;
-			goto out;
-		}
-	}
-
-	if (host->card->clk_scaling_lowest >
-		clk_scaling->freq_table[0])
-		pr_debug("%s: frequency table undershot possible freq\n",
-			mmc_hostname(host));
-
-	for (i = 0; i < clk_scaling->freq_table_sz; i++) {
-		if (clk_scaling->freq_table[i] <=
-			host->card->clk_scaling_highest)
-			continue;
-		clk_scaling->freq_table[i] =
-			host->card->clk_scaling_highest;
-		clk_scaling->freq_table_sz = i + 1;
-		pr_debug("%s: frequency table overshot possible freq (%d)\n",
-				mmc_hostname(host), clk_scaling->freq_table[i]);
-		break;
-	}
-
-	if (mmc_card_sd(host->card) && (clk_scaling->freq_table_sz < 2)) {
-		clk_scaling->freq_table[clk_scaling->freq_table_sz] =
-				host->card->clk_scaling_highest;
-		clk_scaling->freq_table_sz++;
-	}
-
-out:
-	/**
-	 * devfreq requires unsigned long type freq_table while the
-	 * freq_table in clk_scaling is un32. Here allocates an individual
-	 * memory space for it and release it when exit clock scaling.
-	 */
-	clk_scaling->devfreq_profile.freq_table =  kcalloc(
-			clk_scaling->freq_table_sz,
-			sizeof(*(clk_scaling->devfreq_profile.freq_table)),
-			GFP_KERNEL);
-	if (!clk_scaling->devfreq_profile.freq_table) {
-		kfree(clk_scaling->freq_table);
-		return -ENOMEM;
-	}
-	clk_scaling->devfreq_profile.max_state = clk_scaling->freq_table_sz;
-
-	for (i = 0; i < clk_scaling->freq_table_sz; i++) {
-		clk_scaling->devfreq_profile.freq_table[i] =
-			clk_scaling->freq_table[i];
-		pr_debug("%s: freq[%d] = %u\n",
-			mmc_hostname(host), i, clk_scaling->freq_table[i]);
-	}
-
-	return 0;
-}
-
-/**
- * mmc_init_devfreq_clk_scaling() - Initialize clock scaling
- * @host: pointer to mmc host structure
- *
- * Initialize clock scaling for supported hosts. It is assumed that the caller
- * ensure clock is running at maximum possible frequency before calling this
- * function. Shall use struct devfreq_simple_ondemand_data to configure
- * governor.
- */
-int mmc_init_clk_scaling(struct mmc_host *host)
-{
-	int err;
-	struct devfreq *devfreq;
-
-	if (!host || !host->card) {
-		pr_err("%s: unexpected host/card parameters\n",
-			__func__);
-		return -EINVAL;
-	}
-
-	if (!mmc_can_scale_clk(host) ||
-		!host->bus_ops->change_bus_speed) {
-		pr_debug("%s: clock scaling is not supported\n",
-			mmc_hostname(host));
-		return 0;
-	}
-
-	pr_debug("registering %s dev (%pK) to devfreq\n",
-		mmc_hostname(host),
-		mmc_classdev(host));
-
-	if (host->clk_scaling.devfreq) {
-		pr_err("%s: dev is already registered for dev %pK\n",
-			mmc_hostname(host),
-			mmc_dev(host));
-		return -EPERM;
-	}
-	spin_lock_init(&host->clk_scaling.lock);
-	atomic_set(&host->clk_scaling.devfreq_abort, 0);
-	host->clk_scaling.curr_freq = host->ios.clock;
-	host->clk_scaling.need_freq_change = false;
-	host->clk_scaling.is_busy_started = false;
-
-	host->clk_scaling.devfreq_profile.polling_ms =
-		host->clk_scaling.polling_delay_ms;
-	host->clk_scaling.devfreq_profile.get_dev_status =
-		mmc_devfreq_get_dev_status;
-	host->clk_scaling.devfreq_profile.target = mmc_devfreq_set_target;
-	host->clk_scaling.devfreq_profile.initial_freq = host->ios.clock;
-
-	host->clk_scaling.ondemand_gov_data.upthreshold =
-		host->clk_scaling.upthreshold;
-	host->clk_scaling.ondemand_gov_data.downdifferential =
-		host->clk_scaling.upthreshold - host->clk_scaling.downthreshold;
-
-	err = mmc_devfreq_create_freq_table(host);
-	if (err) {
-		pr_err("%s: fail to create devfreq frequency table\n",
-			mmc_hostname(host));
-		return err;
-	}
-
-	dev_pm_opp_add(mmc_classdev(host),
-		host->clk_scaling.devfreq_profile.freq_table[0], 0);
-	dev_pm_opp_add(mmc_classdev(host),
-		host->clk_scaling.devfreq_profile.freq_table[1], 0);
-
-	pr_debug("%s: adding devfreq with: upthreshold=%u downthreshold=%u polling=%u\n",
-		mmc_hostname(host),
-		host->clk_scaling.ondemand_gov_data.upthreshold,
-		host->clk_scaling.ondemand_gov_data.downdifferential,
-		host->clk_scaling.devfreq_profile.polling_ms);
-
-	devfreq = devfreq_add_device(
-		mmc_classdev(host),
-		&host->clk_scaling.devfreq_profile,
-		"simple_ondemand",
-		&host->clk_scaling.ondemand_gov_data);
-
-	if (IS_ERR(devfreq)) {
-		pr_err("%s: unable to register with devfreq\n",
-			mmc_hostname(host));
-		dev_pm_opp_remove(mmc_classdev(host),
-			host->clk_scaling.devfreq_profile.freq_table[0]);
-		dev_pm_opp_remove(mmc_classdev(host),
-			host->clk_scaling.devfreq_profile.freq_table[1]);
-		return PTR_ERR(devfreq);
-	}
-
-	host->clk_scaling.devfreq = devfreq;
-	pr_debug("%s: clk scaling is enabled for device %s (%pK) with devfreq %pK (clock = %uHz)\n",
-		mmc_hostname(host),
-		dev_name(mmc_classdev(host)),
-		mmc_classdev(host),
-		host->clk_scaling.devfreq,
-		host->ios.clock);
-
-	host->clk_scaling.enable = true;
-	host->clk_scaling.is_suspended = false;
-
-	return err;
-}
-EXPORT_SYMBOL(mmc_init_clk_scaling);
-
-/**
- * mmc_suspend_clk_scaling() - suspend clock scaling
- * @host: pointer to mmc host structure
- *
- * This API will suspend devfreq feature for the specific host.
- * The statistics collected by mmc will be cleared.
- * This function is intended to be called by the pm callbacks
- * (e.g. runtime_suspend, suspend) of the mmc device
- */
-int mmc_suspend_clk_scaling(struct mmc_host *host)
-{
-	int err;
-
-	if (!host) {
-		WARN(1, "bad host parameter\n");
-		return -EINVAL;
-	}
-
-	if (!mmc_can_scale_clk(host) || !host->clk_scaling.enable ||
-			host->clk_scaling.is_suspended)
-		return 0;
-
-	if (!host->clk_scaling.devfreq) {
-		pr_err("%s: %s: no devfreq is assosiated with this device\n",
-			mmc_hostname(host), __func__);
-		return -EPERM;
-	}
-
-	atomic_inc(&host->clk_scaling.devfreq_abort);
-	wake_up(&host->wq);
-	err = devfreq_suspend_device(host->clk_scaling.devfreq);
-	if (err) {
-		pr_err("%s: %s: failed to suspend devfreq\n",
-			mmc_hostname(host), __func__);
-		return err;
-	}
-	host->clk_scaling.is_suspended = true;
-
-	host->clk_scaling.total_busy_time_us = 0;
-
-	pr_debug("%s: devfreq was removed\n", mmc_hostname(host));
-
-	return 0;
-}
-EXPORT_SYMBOL(mmc_suspend_clk_scaling);
-
-/**
- * mmc_resume_clk_scaling() - resume clock scaling
- * @host: pointer to mmc host structure
- *
- * This API will resume devfreq feature for the specific host.
- * This API is intended to be called by the pm callbacks
- * (e.g. runtime_suspend, suspend) of the mmc device
- */
-int mmc_resume_clk_scaling(struct mmc_host *host)
-{
-	int err = 0;
-	u32 max_clk_idx = 0;
-	u32 devfreq_max_clk = 0;
-	u32 devfreq_min_clk = 0;
-
-	if (!host) {
-		WARN(1, "bad host parameter\n");
-		return -EINVAL;
-	}
-
-	if (!mmc_can_scale_clk(host))
-		return 0;
-
-	/*
-	 * If clock scaling is already exited when resume is called, like
-	 * during mmc shutdown, it is not an error and should not fail the
-	 * API calling this.
-	 */
-	if (!host->clk_scaling.devfreq) {
-		pr_warn("%s: %s: no devfreq is assosiated with this device\n",
-			mmc_hostname(host), __func__);
-		return 0;
-	}
-
-	atomic_set(&host->clk_scaling.devfreq_abort, 0);
-
-	max_clk_idx = host->clk_scaling.freq_table_sz - 1;
-	devfreq_max_clk = host->clk_scaling.freq_table[max_clk_idx];
-	devfreq_min_clk = host->clk_scaling.freq_table[0];
-
-	host->clk_scaling.curr_freq = devfreq_max_clk;
-	if (host->ios.clock < host->clk_scaling.freq_table[max_clk_idx])
-		host->clk_scaling.curr_freq = devfreq_min_clk;
-	host->clk_scaling.target_freq = host->clk_scaling.curr_freq;
-
-	err = devfreq_resume_device(host->clk_scaling.devfreq);
-	if (err) {
-		pr_err("%s: %s: failed to resume devfreq (%d)\n",
-			mmc_hostname(host), __func__, err);
-	} else {
-		host->clk_scaling.is_suspended = false;
-		pr_debug("%s: devfreq resumed\n", mmc_hostname(host));
-	}
-
-	return err;
-}
-EXPORT_SYMBOL(mmc_resume_clk_scaling);
-
-/**
- * mmc_exit_devfreq_clk_scaling() - Disable clock scaling
- * @host: pointer to mmc host structure
- *
- * Disable clock scaling permanently.
- */
-int mmc_exit_clk_scaling(struct mmc_host *host)
-{
-	int err;
-
-	if (!host) {
-		pr_err("%s: bad host parameter\n", __func__);
-		WARN_ON(1);
-		return -EINVAL;
-	}
-
-	if (!mmc_can_scale_clk(host))
-		return 0;
-
-	if (!host->clk_scaling.devfreq) {
-		pr_err("%s: %s: no devfreq is assosiated with this device\n",
-			mmc_hostname(host), __func__);
-		return -EPERM;
-	}
-
-	err = mmc_suspend_clk_scaling(host);
-	if (err) {
-		pr_err("%s: %s: fail to suspend clock scaling (%d)\n",
-			mmc_hostname(host), __func__,  err);
-		return err;
-	}
-
-	err = devfreq_remove_device(host->clk_scaling.devfreq);
-	if (err) {
-		pr_err("%s: remove devfreq failed (%d)\n",
-			mmc_hostname(host), err);
-		return err;
-	}
-
-	dev_pm_opp_remove(mmc_classdev(host),
-		host->clk_scaling.devfreq_profile.freq_table[0]);
-	dev_pm_opp_remove(mmc_classdev(host),
-		host->clk_scaling.devfreq_profile.freq_table[1]);
-
-	kfree(host->clk_scaling.devfreq_profile.freq_table);
-
-	host->clk_scaling.devfreq = NULL;
-	atomic_set(&host->clk_scaling.devfreq_abort, 1);
-
-	kfree(host->clk_scaling.freq_table);
-	host->clk_scaling.freq_table = NULL;
-
-	pr_debug("%s: devfreq was removed\n", mmc_hostname(host));
-
-	return 0;
-}
-EXPORT_SYMBOL(mmc_exit_clk_scaling);
-#endif
-
 static inline void mmc_complete_cmd(struct mmc_request *mrq)
 {
 	if (mrq->cap_cmd_during_tfr && !completion_done(&mrq->cmd_completion))
@@ -941,10 +140,7 @@ void mmc_request_done(struct mmc_host *host, struct mmc_request *mrq)
 {
 	struct mmc_command *cmd = mrq->cmd;
 	int err = cmd->error;
-#if defined(CONFIG_SDC_QTI)
-	if (host->clk_scaling.is_busy_started)
-		mmc_clk_scaling_stop_busy(host, true);
-#endif
+
 	/* Flag re-tuning needed on CRC errors */
 	if (cmd->opcode != MMC_SEND_TUNING_BLOCK &&
 	    cmd->opcode != MMC_SEND_TUNING_BLOCK_HS200 &&
@@ -1155,12 +351,7 @@ int mmc_start_request(struct mmc_host *host, struct mmc_request *mrq)
 	err = mmc_mrq_prep(host, mrq);
 	if (err)
 		return err;
-#if defined(CONFIG_SDC_QTI)
-	if (mmc_is_data_request(mrq)) {
-		mmc_deferred_scaling(host);
-		mmc_clk_scaling_start_busy(host, true);
-	}
-#endif
+
 	led_trigger_event(host->led, LED_FULL);
 	__mmc_start_request(host, mrq);
 
@@ -1213,23 +404,6 @@ void mmc_wait_for_req_done(struct mmc_host *host, struct mmc_request *mrq)
 
 		cmd = mrq->cmd;
 
-		/*
-		 * If host has timed out waiting for the sanitize
-		 * to complete, card might be still in programming state
-		 * so let's try to bring the card out of programming
-		 * state.
-		 */
-		if (cmd->sanitize_busy && cmd->error == -ETIMEDOUT) {
-			if (!mmc_interrupt_hpi(host->card)) {
-				pr_warn("%s: %s: Interrupted sanitize\n",
-					mmc_hostname(host), __func__);
-				cmd->error = 0;
-				break;
-			} else {
-				pr_err("%s: %s: Failed to interrupt sanitize\n",
-				       mmc_hostname(host), __func__);
-			}
-		}
 		if (!cmd->error || !cmd->retries ||
 		    mmc_card_removed(host->card))
 			break;
@@ -1380,7 +554,7 @@ int mmc_cqe_recovery(struct mmc_host *host)
 	cmd.busy_timeout = MMC_CQE_RECOVERY_TIMEOUT;
 	mmc_wait_for_cmd(host, &cmd, MMC_CMD_RETRIES);
 
-	mmc_poll_for_busy(host->card, MMC_CQE_RECOVERY_TIMEOUT, true, true);
+	mmc_poll_for_busy(host->card, MMC_CQE_RECOVERY_TIMEOUT, MMC_BUSY_IO);
 
 	memset(&cmd, 0, sizeof(cmd));
 	cmd.opcode       = MMC_CMDQ_TASK_MGMT;
@@ -1649,47 +823,6 @@ int __mmc_claim_host(struct mmc_host *host, struct mmc_ctx *ctx,
 }
 EXPORT_SYMBOL(__mmc_claim_host);
 
-#if defined(CONFIG_SDC_QTI)
-/**
- *   mmc_try_claim_host - try exclusively to claim a host
- *   and keep trying for given time, with a gap of 10ms
- *   @host: mmc host to claim
- *   @dealy_ms: delay in ms
- *
- *   Returns %1 if the host is claimed, %0 otherwise.
- */
-int mmc_try_claim_host(struct mmc_host *host, struct mmc_ctx *ctx,
-		     unsigned int delay_ms)
-{
-	int claimed_host = 0;
-	struct task_struct *task = ctx ? NULL : current;
-	unsigned long flags;
-	int retry_cnt = delay_ms/10;
-	bool pm = false;
-
-	do {
-		spin_lock_irqsave(&host->lock, flags);
-		if (!host->claimed || mmc_ctx_matches(host, ctx, task)) {
-			host->claimed = 1;
-			mmc_ctx_set_claimer(host, ctx, task);
-			host->claim_cnt += 1;
-			claimed_host = 1;
-			if (host->claim_cnt == 1)
-				pm = true;
-		}
-		spin_unlock_irqrestore(&host->lock, flags);
-		if (!claimed_host)
-			mmc_delay(10);
-	} while (!claimed_host && retry_cnt--);
-
-	if (pm)
-		pm_runtime_get_sync(mmc_dev(host));
-
-	return claimed_host;
-}
-EXPORT_SYMBOL(mmc_try_claim_host);
-#endif
-
 /**
  *	mmc_release_host - release a host
  *	@host: mmc host to release
@@ -1789,6 +922,7 @@ void mmc_set_clock(struct mmc_host *host, unsigned int hz)
 	host->ios.clock = hz;
 	mmc_set_ios(host);
 }
+EXPORT_SYMBOL_GPL(mmc_set_clock);
 
 int mmc_execute_tuning(struct mmc_card *card)
 {
@@ -1868,7 +1002,10 @@ void mmc_set_initial_state(struct mmc_host *host)
 		host->ops->hs400_enhanced_strobe(host, &host->ios);
 
 	mmc_set_ios(host);
+
+	mmc_crypto_set_initial_state(host);
 }
+EXPORT_SYMBOL_GPL(mmc_set_initial_state);
 
 /**
  * mmc_vdd_to_ocrbitnum - Convert a voltage to the OCR bit number
@@ -2138,6 +1275,7 @@ void mmc_set_timing(struct mmc_host *host, unsigned int timing)
 	host->ios.timing = timing;
 	mmc_set_ios(host);
 }
+EXPORT_SYMBOL_GPL(mmc_set_timing);
 
 /*
  * Select appropriate driver type for host.
@@ -2337,12 +1475,12 @@ void mmc_detach_bus(struct mmc_host *host)
 void _mmc_detect_change(struct mmc_host *host, unsigned long delay, bool cd_irq)
 {
 	/*
-	 * If the device is configured as wakeup, we prevent a new sleep for
-	 * 5 s to give provision for user space to consume the event.
+	 * Prevent system sleep for 5s to allow user space to consume the
+	 * corresponding uevent. This is especially useful, when CD irq is used
+	 * as a system wakeup, but doesn't hurt in other cases.
 	 */
-	if (cd_irq && !(host->caps & MMC_CAP_NEEDS_POLL) &&
-		device_can_wakeup(mmc_dev(host)))
-		pm_wakeup_event(mmc_dev(host), 5000);
+	if (cd_irq && !(host->caps & MMC_CAP_NEEDS_POLL))
+		__pm_wakeup_event(host->ws, 5000);
 
 	host->detect_change = 1;
 	mmc_schedule_delayed_work(&host->detect, delay);
@@ -2528,8 +1666,6 @@ static int mmc_do_erase(struct mmc_card *card, unsigned int from,
 	struct mmc_command cmd = {};
 	unsigned int qty = 0, busy_timeout = 0;
 	bool use_r1b_resp = false;
-	unsigned long timeout;
-	int loop_udelay=64, udelay_max=32768;
 	int err;
 
 	mmc_retune_hold(card->host);
@@ -2633,38 +1769,8 @@ static int mmc_do_erase(struct mmc_card *card, unsigned int from,
 	if ((card->host->caps & MMC_CAP_WAIT_WHILE_BUSY) && use_r1b_resp)
 		goto out;
 
-	timeout = jiffies + msecs_to_jiffies(busy_timeout);
-	do {
-		memset(&cmd, 0, sizeof(struct mmc_command));
-		cmd.opcode = MMC_SEND_STATUS;
-		cmd.arg = card->rca << 16;
-		cmd.flags = MMC_RSP_R1 | MMC_CMD_AC;
-		/* Do not retry else we can't see errors */
-		err = mmc_wait_for_cmd(card->host, &cmd, 0);
-		if (err || R1_STATUS(cmd.resp[0])) {
-			pr_err("error %d requesting status %#x\n",
-				err, cmd.resp[0]);
-			err = -EIO;
-			goto out;
-		}
-
-		/* Timeout if the device never becomes ready for data and
-		 * never leaves the program state.
-		 */
-		if (time_after(jiffies, timeout)) {
-			pr_err("%s: Card stuck in programming state! %s\n",
-				mmc_hostname(card->host), __func__);
-			err =  -EIO;
-			goto out;
-		}
-		if ((cmd.resp[0] & R1_READY_FOR_DATA) &&
-		    R1_CURRENT_STATE(cmd.resp[0]) != R1_STATE_PRG)
-			break;
-
-		usleep_range(loop_udelay, loop_udelay*2);
-		if (loop_udelay < udelay_max)
-			loop_udelay *= 2;
-	} while (1);
+	/* Let's poll to find out when the erase operation completes. */
+	err = mmc_poll_for_busy(card, busy_timeout, MMC_BUSY_ERASE);
 
 out:
 	mmc_retune_release(card->host);
@@ -2734,8 +1840,7 @@ int mmc_erase(struct mmc_card *card, unsigned int from, unsigned int nr,
 	unsigned int rem, to = from + nr;
 	int err;
 
-	if (!(card->host->caps & MMC_CAP_ERASE) ||
-	    !(card->csd.cmdclass & CCC_ERASE))
+	if (!(card->csd.cmdclass & CCC_ERASE))
 		return -EOPNOTSUPP;
 
 	if (!card->erase_size)
@@ -2791,8 +1896,7 @@ EXPORT_SYMBOL(mmc_erase);
 
 int mmc_can_erase(struct mmc_card *card)
 {
-	if ((card->host->caps & MMC_CAP_ERASE) &&
-	    (card->csd.cmdclass & CCC_ERASE) && card->erase_size)
+	if (card->csd.cmdclass & CCC_ERASE && card->erase_size)
 		return 1;
 	return 0;
 }
@@ -2827,7 +1931,6 @@ int mmc_can_sanitize(struct mmc_card *card)
 		return 1;
 	return 0;
 }
-EXPORT_SYMBOL(mmc_can_sanitize);
 
 int mmc_can_secure_erase_trim(struct mmc_card *card)
 {
@@ -2985,6 +2088,16 @@ static void mmc_hw_reset_for_init(struct mmc_host *host)
 	host->ops->hw_reset(host);
 }
 
+/**
+ * mmc_hw_reset - reset the card in hardware
+ * @host: MMC host to which the card is attached
+ *
+ * Hard reset the card. This function is only for upper layers, like the
+ * block layer or card drivers. You cannot use it in host drivers (struct
+ * mmc_card might be gone then).
+ *
+ * Return: 0 on success, -errno on failure
+ */
 int mmc_hw_reset(struct mmc_host *host)
 {
 	int ret;
@@ -3194,11 +2307,6 @@ void mmc_rescan(struct work_struct *work)
 	 */
 	mmc_bus_put(host);
 
-#if defined(CONFIG_SDC_QTI)
-	if (host->corrupted_card)
-		goto out;
-#endif
-
 	mmc_claim_host(host);
 	if (mmc_card_is_removable(host) && host->ops->get_cd &&
 			host->ops->get_cd(host) == 0) {
@@ -3208,14 +2316,17 @@ void mmc_rescan(struct work_struct *work)
 	}
 
 	for (i = 0; i < ARRAY_SIZE(freqs); i++) {
-		if (!mmc_rescan_try_freq(host, max(freqs[i], host->f_min)))
+		unsigned int freq = freqs[i];
+		if (freq > host->f_max) {
+			if (i + 1 < ARRAY_SIZE(freqs))
+				continue;
+			freq = host->f_max;
+		}
+		if (!mmc_rescan_try_freq(host, max(freq, host->f_min)))
 			break;
 		if (freqs[i] <= host->f_min)
 			break;
 	}
-#if defined(CONFIG_SDC_QTI)
-	host->err_stats[MMC_ERR_CMD_TIMEOUT] = 0;
-#endif
 	mmc_release_host(host);
 
  out:
@@ -3225,9 +2336,8 @@ void mmc_rescan(struct work_struct *work)
 
 void mmc_start_host(struct mmc_host *host)
 {
-	host->f_init = max(freqs[0], host->f_min);
+	host->f_init = max(min(freqs[0], host->f_max), host->f_min);
 	host->rescan_disable = 0;
-	host->ios.power_mode = MMC_POWER_UNDEFINED;
 
 	if (!(host->caps2 & MMC_CAP2_NO_PRESCAN_POWERUP)) {
 		mmc_claim_host(host);
@@ -3241,6 +2351,9 @@ void mmc_start_host(struct mmc_host *host)
 
 void __mmc_stop_host(struct mmc_host *host)
 {
+	if (host->rescan_disable)
+		return;
+
 	if (host->slot.cd_irq >= 0) {
 		mmc_gpio_set_cd_wake(host, false);
 		disable_irq(host->slot.cd_irq);

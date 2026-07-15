@@ -171,8 +171,24 @@ EXPORT_SYMBOL_GPL(virtio_add_status);
 static int virtio_features_ok(struct virtio_device *dev)
 {
 	unsigned status;
+	int ret;
 
 	might_sleep();
+
+	ret = arch_has_restricted_virtio_memory_access();
+	if (ret) {
+		if (!virtio_has_feature(dev, VIRTIO_F_VERSION_1)) {
+			dev_warn(&dev->dev,
+				 "device must provide VIRTIO_F_VERSION_1\n");
+			return -ENODEV;
+		}
+
+		if (!virtio_has_feature(dev, VIRTIO_F_ACCESS_PLATFORM)) {
+			dev_warn(&dev->dev,
+				 "device must provide VIRTIO_F_ACCESS_PLATFORM\n");
+			return -ENODEV;
+		}
+	}
 
 	if (!virtio_has_feature(dev, VIRTIO_F_VERSION_1))
 		return 0;
@@ -367,6 +383,12 @@ out:
 }
 EXPORT_SYMBOL_GPL(register_virtio_device);
 
+bool is_virtio_device(struct device *dev)
+{
+	return dev->bus == &virtio_bus;
+}
+EXPORT_SYMBOL_GPL(is_virtio_device);
+
 void unregister_virtio_device(struct virtio_device *dev)
 {
 	int index = dev->index; /* save for after device release */
@@ -403,6 +425,13 @@ int virtio_device_restore(struct virtio_device *dev)
 	struct virtio_driver *drv = drv_to_virtio(dev->dev.driver);
 	int ret;
 
+	/* Short path for stateful devices. Here we assume that if the device
+	 * does not have a freeze callback, its state was not changed when
+	 * suspended.
+	 */
+	if (drv && !drv->freeze)
+		goto on_config_enable;
+
 	/* We always start by resetting the device, in case a previous
 	 * driver messed it up. */
 	dev->config->reset(dev);
@@ -438,6 +467,7 @@ int virtio_device_restore(struct virtio_device *dev)
 	/* Finally, tell the device we're all set */
 	virtio_add_status(dev, VIRTIO_CONFIG_S_DRIVER_OK);
 
+on_config_enable:
 	virtio_config_enable(dev);
 
 	return 0;

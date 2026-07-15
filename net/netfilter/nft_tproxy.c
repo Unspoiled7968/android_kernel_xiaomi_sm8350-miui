@@ -88,9 +88,9 @@ static void nft_tproxy_eval_v6(const struct nft_expr *expr,
 	const struct nft_tproxy *priv = nft_expr_priv(expr);
 	struct sk_buff *skb = pkt->skb;
 	const struct ipv6hdr *iph = ipv6_hdr(skb);
-	struct in6_addr taddr;
-	int thoff = pkt->xt.thoff;
+	int thoff = nft_thoff(pkt);
 	struct udphdr _hdr, *hp;
+	struct in6_addr taddr;
 	__be16 tport = 0;
 	struct sock *sk;
 	int l4proto;
@@ -225,14 +225,14 @@ static int nft_tproxy_init(const struct nft_ctx *ctx,
 
 	switch (priv->family) {
 	case NFPROTO_IPV4:
-		alen = FIELD_SIZEOF(union nf_inet_addr, in);
+		alen = sizeof_field(union nf_inet_addr, in);
 		err = nf_defrag_ipv4_enable(ctx->net);
 		if (err)
 			return err;
 		break;
 #if IS_ENABLED(CONFIG_NF_TABLES_IPV6)
 	case NFPROTO_IPV6:
-		alen = FIELD_SIZEOF(union nf_inet_addr, in6);
+		alen = sizeof_field(union nf_inet_addr, in6);
 		err = nf_defrag_ipv6_enable(ctx->net);
 		if (err)
 			return err;

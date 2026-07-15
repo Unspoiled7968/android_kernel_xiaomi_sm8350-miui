@@ -763,20 +763,13 @@ static int asus_input_mapping(struct hid_device *hdev,
 	 * This avoids a bunch of non-functional hid_input devices getting
 	 * created because of the T100CHI using HID_QUIRK_MULTI_INPUT.
 	 */
-	if (drvdata->quirks & (QUIRK_T100CHI | QUIRK_T90CHI)) {
-		if (field->application == (HID_UP_GENDESK | 0x0080) ||
-		    usage->hid == (HID_UP_GENDEVCTRLS | 0x0024) ||
-		    usage->hid == (HID_UP_GENDEVCTRLS | 0x0025) ||
-		    usage->hid == (HID_UP_GENDEVCTRLS | 0x0026))
-			return -1;
-		/*
-		 * We use the hid_input for the mouse report for the touchpad,
-		 * keep the left button, to avoid the core removing it.
-		 */
-		if (field->application == HID_GD_MOUSE &&
-		    usage->hid != (HID_UP_BUTTON | 1))
-			return -1;
-	}
+	if ((drvdata->quirks & (QUIRK_T100CHI | QUIRK_T90CHI)) &&
+	    (field->application == (HID_UP_GENDESK | 0x0080) ||
+	     field->application == HID_GD_MOUSE ||
+	     usage->hid == (HID_UP_GENDEVCTRLS | 0x0024) ||
+	     usage->hid == (HID_UP_GENDEVCTRLS | 0x0025) ||
+	     usage->hid == (HID_UP_GENDEVCTRLS | 0x0026)))
+		return -1;
 
 	/* ASUS-specific keyboard hotkeys */
 	if ((usage->hid & HID_USAGE_PAGE) == 0xff310000) {
@@ -991,8 +984,7 @@ static int asus_probe(struct hid_device *hdev, const struct hid_device_id *id)
 		drvdata->tp = &asus_t100chi_tp;
 	}
 
-	if ((drvdata->quirks & QUIRK_MEDION_E1239T) &&
-	    hid_is_using_ll_driver(hdev, &usb_hid_driver)) {
+	if ((drvdata->quirks & QUIRK_MEDION_E1239T) && hid_is_usb(hdev)) {
 		struct usb_host_interface *alt =
 			to_usb_interface(hdev->dev.parent)->altsetting;
 
@@ -1035,7 +1027,13 @@ static int asus_probe(struct hid_device *hdev, const struct hid_device_id *id)
 		return ret;
 	}
 
-	if (!drvdata->input) {
+	/*
+	 * Check that input registration succeeded. Checking that
+	 * HID_CLAIMED_INPUT is set prevents a UAF when all input devices
+	 * were freed during registration due to no usages being mapped,
+	 * leaving drvdata->input pointing to freed memory.
+	 */
+	if (!drvdata->input || !(hdev->claimed & HID_CLAIMED_INPUT)) {
 		hid_err(hdev, "Asus input not registered\n");
 		ret = -ENOMEM;
 		goto err_stop_hw;
@@ -1118,14 +1116,21 @@ static __u8 *asus_report_fixup(struct hid_device *hdev, __u8 *rdesc,
 		 */
 		if (*rsize == rsize_orig &&
 			rdesc[offs] == 0x09 && rdesc[offs + 1] == 0x76) {
-			*rsize = rsize_orig + 1;
-			rdesc = kmemdup(rdesc, *rsize, GFP_KERNEL);
-			if (!rdesc)
-				return NULL;
+			__u8 *new_rdesc;
+
+			new_rdesc = devm_kzalloc(&hdev->dev, rsize_orig + 1,
+						 GFP_KERNEL);
+			if (!new_rdesc)
+				return rdesc;
 
 			hid_info(hdev, "Fixing up %s keyb report descriptor\n",
 				drvdata->quirks & QUIRK_T100CHI ?
 				"T100CHI" : "T90CHI");
+
+			memcpy(new_rdesc, rdesc, rsize_orig);
+			*rsize = rsize_orig + 1;
+			rdesc = new_rdesc;
+
 			memmove(rdesc + offs + 4, rdesc + offs + 2, 12);
 			rdesc[offs] = 0x19;
 			rdesc[offs + 1] = 0x00;

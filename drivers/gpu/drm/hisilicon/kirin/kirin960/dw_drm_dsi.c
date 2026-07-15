@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * DesignWare MIPI DSI Host Controller v1.02 driver
  *
@@ -8,10 +9,6 @@
  *	<shizongxuan@huawei.com>
  *	<zhangxiubin@huawei.com>
  *  <lvda3@hisilicon.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  *
  */
 
@@ -40,14 +37,10 @@
 #include "../kirin_dpe_reg.h"
 
 #define DTS_COMP_DSI_NAME "hisilicon,hi3660-dsi"
-#define ROUND1(x, y)	((x) / (y) + ((x) % (y)  ? 1 : 0))
-#define DSS_REDUCE(x)	((x) > 0 ? ((x) - 1) : (x))
+#define DSS_REDUCE(x) ((x) > 0 ? ((x) - 1) : (x))
 
-#define DEFAULT_MIPI_CLK_RATE	(192 * 100000L)
-#define DEFAULT_PCLK_DSI_RATE	(120 * 1000000L)
-
-#define outp32(addr, val) writel(val, addr)
-#define inp32(addr)       readl(addr)
+#define DEFAULT_MIPI_CLK_RATE (192 * 100000L)
+#define DEFAULT_PCLK_DSI_RATE (120 * 1000000L)
 
 struct dss_rect {
 	s32 x;
@@ -68,47 +61,46 @@ static void set_reg(char __iomem *addr, uint32_t val, uint8_t bw, uint8_t bs)
 	u32 mask = (1UL << bw) - 1UL;
 	u32 tmp = 0;
 
-	tmp = inp32(addr);
+	tmp = readl(addr);
 	tmp &= ~(mask << bs);
 
-	outp32(addr, tmp | ((val & mask) << bs));
+	writel(tmp | ((val & mask) << bs), addr);
 }
 
-static enum drm_mode_status dsi_encoder_phy_mode_valid(
-					struct drm_encoder *encoder,
-					const struct drm_display_mode *mode)
+static enum drm_mode_status
+dsi_encoder_phy_mode_valid(struct drm_encoder *encoder,
+			   const struct drm_display_mode *mode)
 {
 	/* XXX HACK whitelist for now, to move it out of
 	 * common adv7511 code.  This should be replaced by
 	 * something closer to dsi_encoder_phy_mode_valid()
-	 * found in in:
+	 * found in:
 	 *   drivers/gpu/drm/hisilicon/kirin/dw_drm_dsi.c
 	 */
-	DRM_DEBUG_DRIVER("Checking mode %ix%i@%i clock: %i...",
-			mode->hdisplay, mode->vdisplay,
-			drm_mode_vrefresh(mode), mode->clock);
+	DRM_DEBUG_DRIVER("Checking mode %ix%i@%i clock: %i...", mode->hdisplay,
+			 mode->vdisplay, drm_mode_vrefresh(mode), mode->clock);
 	if ((mode->hdisplay == 1920 && mode->vdisplay == 1080 && mode->clock == 148500) ||
-	    (mode->hdisplay == 1920 && mode->vdisplay == 1080 && mode->clock == 80192)  ||
-	    (mode->hdisplay == 1920 && mode->vdisplay == 1080 && mode->clock == 74250)  ||
-	    (mode->hdisplay == 1920 && mode->vdisplay == 1080 && mode->clock == 61855)  ||
+	    (mode->hdisplay == 1920 && mode->vdisplay == 1080 && mode->clock ==  80192) ||
+	    (mode->hdisplay == 1920 && mode->vdisplay == 1080 && mode->clock ==  74250) ||
+	    (mode->hdisplay == 1920 && mode->vdisplay == 1080 && mode->clock ==  61855) ||
 	    (mode->hdisplay == 1680 && mode->vdisplay == 1050 && mode->clock == 147116) ||
 	    (mode->hdisplay == 1680 && mode->vdisplay == 1050 && mode->clock == 146250) ||
 	    (mode->hdisplay == 1680 && mode->vdisplay == 1050 && mode->clock == 144589) ||
 	    (mode->hdisplay == 1600 && mode->vdisplay == 1200 && mode->clock == 160961) ||
-	    (mode->hdisplay == 1600 && mode->vdisplay == 900  && mode->clock == 118963) ||
-	    (mode->hdisplay == 1440 && mode->vdisplay == 900  && mode->clock == 126991) ||
+	    (mode->hdisplay == 1600 && mode->vdisplay ==  900 && mode->clock == 118963) ||
+	    (mode->hdisplay == 1440 && mode->vdisplay ==  900 && mode->clock == 126991) ||
 	    (mode->hdisplay == 1280 && mode->vdisplay == 1024 && mode->clock == 128946) ||
-	    (mode->hdisplay == 1280 && mode->vdisplay == 1024 && mode->clock == 98619)  ||
-	    (mode->hdisplay == 1280 && mode->vdisplay == 960  && mode->clock == 102081) ||
-	    (mode->hdisplay == 1280 && mode->vdisplay == 800  && mode->clock == 83496)  ||
-	    (mode->hdisplay == 1280 && mode->vdisplay == 720  && mode->clock == 74440)  ||
-	    (mode->hdisplay == 1280 && mode->vdisplay == 720  && mode->clock == 74250)  ||
-	    (mode->hdisplay == 1024 && mode->vdisplay == 768  && mode->clock == 78800)  ||
-	    (mode->hdisplay == 1024 && mode->vdisplay == 768  && mode->clock == 75000)  ||
-	    (mode->hdisplay == 1024 && mode->vdisplay == 768  && mode->clock == 81833)  ||
-	    (mode->hdisplay == 800  && mode->vdisplay == 600  && mode->clock == 48907)  ||
-	    (mode->hdisplay == 800  && mode->vdisplay == 600  && mode->clock == 40000)  ||
-	    (mode->hdisplay == 800  && mode->vdisplay == 480  && mode->clock == 32000)) {
+	    (mode->hdisplay == 1280 && mode->vdisplay == 1024 && mode->clock ==  98619) ||
+	    (mode->hdisplay == 1280 && mode->vdisplay ==  960 && mode->clock == 102081) ||
+	    (mode->hdisplay == 1280 && mode->vdisplay ==  800 && mode->clock ==  83496) ||
+	    (mode->hdisplay == 1280 && mode->vdisplay ==  720 && mode->clock ==  74440) ||
+	    (mode->hdisplay == 1280 && mode->vdisplay ==  720 && mode->clock ==  74250) ||
+	    (mode->hdisplay == 1024 && mode->vdisplay ==  768 && mode->clock ==  78800) ||
+	    (mode->hdisplay == 1024 && mode->vdisplay ==  768 && mode->clock ==  75000) ||
+	    (mode->hdisplay == 1024 && mode->vdisplay ==  768 && mode->clock ==  81833) ||
+	    (mode->hdisplay ==  800 && mode->vdisplay ==  600 && mode->clock ==  48907) ||
+	    (mode->hdisplay ==  800 && mode->vdisplay ==  600 && mode->clock ==  40000) ||
+	    (mode->hdisplay ==  800 && mode->vdisplay ==  480 && mode->clock ==  32000)) {
 		DRM_DEBUG("OK\n");
 		return MODE_OK;
 	}
@@ -116,8 +108,9 @@ static enum drm_mode_status dsi_encoder_phy_mode_valid(
 	return MODE_BAD;
 }
 
-static enum drm_mode_status dsi_encoder_mode_valid(struct drm_encoder *encoder,
-					const struct drm_display_mode *mode)
+static enum drm_mode_status
+dsi_encoder_mode_valid(struct drm_encoder *encoder,
+		       const struct drm_display_mode *mode)
 
 {
 	struct drm_crtc *crtc = NULL;
@@ -137,12 +130,13 @@ static enum drm_mode_status dsi_encoder_mode_valid(struct drm_encoder *encoder,
 		 */
 		drm_mode_copy(&adj_mode, mode);
 
-		/* XXX - skip this as we're just using a whitelist
+		#if 0
+		/* XXX - skip this as we're just using a whitelist */
 		crtc_funcs = crtc->helper_private;
 		if (crtc_funcs && crtc_funcs->mode_fixup)
 			if (!crtc_funcs->mode_fixup(crtc, mode, &adj_mode))
 				return MODE_BAD;
-		*/
+		#endif
 		ret = dsi_encoder_phy_mode_valid(encoder, &adj_mode);
 		if (ret != MODE_OK)
 			return ret;
@@ -151,7 +145,7 @@ static enum drm_mode_status dsi_encoder_mode_valid(struct drm_encoder *encoder,
 }
 
 static void get_dsi_phy_ctrl(struct dw_dsi *dsi,
-							struct mipi_phy_params *phy_ctrl)
+			     struct mipi_phy_params *phy_ctrl)
 {
 	struct mipi_panel_info *mipi = NULL;
 	struct drm_display_mode *mode = NULL;
@@ -202,36 +196,40 @@ static void get_dsi_phy_ctrl(struct dw_dsi *dsi,
 	if (bpp < 0)
 		return;
 	if (mode->clock > 80000)
-	    dsi->client[id].lanes = 4;
+		dsi->client[id].lanes = 4;
 	else
-	    dsi->client[id].lanes = 3;
+		dsi->client[id].lanes = 3;
 	if (dsi->client[id].phy_clock)
 		dphy_req_kHz = dsi->client[id].phy_clock;
 	else
 		dphy_req_kHz = mode->clock * bpp / dsi->client[id].lanes;
 
 	lane_clock = dphy_req_kHz / 1000;
-	DRM_INFO("Expected : lane_clock = %llu M\n", lane_clock);
+	DRM_DEBUG("Expected : lane_clock = %llu M\n", lane_clock);
 
 	/************************  PLL parameters config  *********************/
-	/*chip spec :
-		If the output data rate is below 320 Mbps,
-		RG_BNAD_SEL should be set to 1.
-		At this mode a post divider of 1/4 will be applied to VCO.
-	*/
-	if ((320 <= lane_clock) && (lane_clock <= 2500)) {
-		phy_ctrl->rg_band_sel = 0;	/*0x1E[2]*/
+	/*
+	 * chip spec :
+	 *	If the output data rate is below 320 Mbps,
+	 *	RG_BNAD_SEL should be set to 1.
+	 *	At this mode a post divider of 1/4 will be applied to VCO.
+	 */
+	if (lane_clock >= 320 && lane_clock <= 2500) {
+		phy_ctrl->rg_band_sel = 0; /*0x1E[2]*/
 		vco_div = 1;
-	} else if ((80 <= lane_clock) && (lane_clock < 320)) {
+	} else if (lane_clock >= 80 && lane_clock < 320) {
 		phy_ctrl->rg_band_sel = 1;
 		vco_div = 4;
 	} else {
 		DRM_ERROR("80M <= lane_clock< = 2500M, not support lane_clock = %llu M\n",
-			lane_clock);
+			  lane_clock);
 	}
 
 	m_n_int = lane_clock * vco_div * 1000000UL / DEFAULT_MIPI_CLK_RATE;
-	m_n_fract = ((lane_clock * vco_div * 1000000UL * 1000UL / DEFAULT_MIPI_CLK_RATE) % 1000) * 10 / 1000;
+	m_n_fract = ((lane_clock * vco_div * 1000000UL * 1000UL /
+		      DEFAULT_MIPI_CLK_RATE) %
+		     1000) *
+		    10 / 1000;
 
 	if (m_n_int % 2 == 0) {
 		if (m_n_fract * 6 >= 50) {
@@ -270,9 +268,10 @@ static void get_dsi_phy_ctrl(struct dw_dsi *dsi,
 		} else {
 			if (n_pll == 1) {
 				n_pll *= 2;
-				phy_ctrl->pll_fbd_p = (m_pll  * 2) / 2;
+				phy_ctrl->pll_fbd_p = (m_pll * 2) / 2;
 			} else {
-				DRM_ERROR("phy m_pll not support!m_pll = %d\n", m_pll);
+				DRM_ERROR("phy m_pll not support!m_pll = %d\n",
+					  m_pll);
 				return;
 			}
 		}
@@ -296,23 +295,23 @@ static void get_dsi_phy_ctrl(struct dw_dsi *dsi,
 	phy_ctrl->pll_pre_p = n_pll;
 
 	lane_clock = m_pll * (DEFAULT_MIPI_CLK_RATE / n_pll) / vco_div;
-	DRM_INFO("Config : lane_clock = %llu\n", lane_clock);
+	DRM_DEBUG("Config : lane_clock = %llu\n", lane_clock);
 
 	/*FIXME :*/
 	phy_ctrl->rg_pll_cp = 1;		/*0x16[7:5]*/
 	phy_ctrl->rg_pll_cp_p = 3;		/*0x1E[7:5]*/
 
 	/*test_code_0x14 other parameters config*/
-	phy_ctrl->pll_enbwt = 0;	/*0x14[2]*/
+	phy_ctrl->pll_enbwt = 0;		/*0x14[2]*/
 	phy_ctrl->rg_pll_chp = 0;		/*0x14[1:0]*/
 
 	/*test_code_0x16 other parameters config,  0x16[3:2] reserved*/
-	phy_ctrl->pll_lpf_cs = 0;	/*0x16[4]*/
+	phy_ctrl->pll_lpf_cs = 0;		/*0x16[4]*/
 	phy_ctrl->rg_pll_refsel = 1;		/*0x16[1:0]*/
 
 	/*test_code_0x1E other parameters config*/
-	phy_ctrl->reload_sel = 1;			/*0x1E[4]*/
-	phy_ctrl->rg_phase_gen_en = 1;	/*0x1E[3]*/
+	phy_ctrl->reload_sel = 1;		/*0x1E[4]*/
+	phy_ctrl->rg_phase_gen_en = 1;		/*0x1E[3]*/
 	phy_ctrl->pll_power_down = 0;		/*0x1E[1]*/
 	phy_ctrl->pll_register_override = 1;	/*0x1E[0]*/
 
@@ -331,7 +330,7 @@ static void get_dsi_phy_ctrl(struct dw_dsi *dsi,
 
 	/********************  clock/data lane parameters config  ******************/
 	accuracy = 10;
-	ui =  10 * 1000000000UL * accuracy / lane_clock;
+	ui = 10 * 1000000000UL * accuracy / lane_clock;
 	/*unit of measurement*/
 	unit_tx_byte_clk_hs = 8 * ui;
 
@@ -349,64 +348,85 @@ static void get_dsi_phy_ctrl(struct dw_dsi *dsi,
 
 	/* D-PHY Specification : clk_t_hs_trial >= 60ns*/
 	/* clocked by TXBYTECLKHS*/
-	clk_t_hs_trial = 600 * accuracy + 3 * unit_tx_byte_clk_hs + mipi->clk_t_hs_trial_adjust * ui;
+	clk_t_hs_trial = 600 * accuracy + 3 * unit_tx_byte_clk_hs +
+			 mipi->clk_t_hs_trial_adjust * ui;
 
 	/* D-PHY Specification : 38ns <= clk_t_hs_prepare <= 95ns*/
 	/* clocked by TXBYTECLKHS*/
 	if (mipi->clk_t_hs_prepare_adjust == 0)
 		mipi->clk_t_hs_prepare_adjust = 43;
 
-	clk_t_hs_prepare = ((380 * accuracy + mipi->clk_t_hs_prepare_adjust * ui) <= (950 * accuracy - 8 * ui)) ?
-		(380 * accuracy + mipi->clk_t_hs_prepare_adjust * ui) : (950 * accuracy - 8 * ui);
+	clk_t_hs_prepare =
+		((380 * accuracy + mipi->clk_t_hs_prepare_adjust * ui) <=
+		 (950 * accuracy - 8 * ui)) ?
+			(380 * accuracy + mipi->clk_t_hs_prepare_adjust * ui) :
+			(950 * accuracy - 8 * ui);
 
 	/* clocked by TXBYTECLKHS*/
 	data_post_delay = 0 + mipi->data_post_delay_adjust * ui;
 
 	/* D-PHY Specification : data_t_hs_trial >= max( n*8*UI, 60ns + n*4*UI ), n = 1*/
 	/* clocked by TXBYTECLKHS*/
-	data_t_hs_trial = ((600 * accuracy + 4 * ui) >= (8 * ui) ? (600 * accuracy + 4 * ui) : (8 * ui)) + 8 * ui +
-		3 * unit_tx_byte_clk_hs + mipi->data_t_hs_trial_adjust * ui;
+	data_t_hs_trial = ((600 * accuracy + 4 * ui) >= (8 * ui) ?
+				   (600 * accuracy + 4 * ui) :
+				   (8 * ui)) +
+			  8 * ui + 3 * unit_tx_byte_clk_hs +
+			  mipi->data_t_hs_trial_adjust * ui;
 
 	/* D-PHY Specification : 40ns + 4*UI <= data_t_hs_prepare <= 85ns + 6*UI*/
 	/* clocked by TXBYTECLKHS*/
 	if (mipi->data_t_hs_prepare_adjust == 0)
 		mipi->data_t_hs_prepare_adjust = 35;
 
-	data_t_hs_prepare = ((400  * accuracy + 4 * ui + mipi->data_t_hs_prepare_adjust * ui) <= (850 * accuracy + 6 * ui - 8 * ui)) ?
-		(400  * accuracy + 4 * ui + mipi->data_t_hs_prepare_adjust * ui) : (850 * accuracy + 6 * ui - 8 * ui);
+	data_t_hs_prepare = ((400 * accuracy + 4 * ui +
+			      mipi->data_t_hs_prepare_adjust * ui) <=
+			     (850 * accuracy + 6 * ui - 8 * ui)) ?
+				    (400 * accuracy + 4 * ui +
+				     mipi->data_t_hs_prepare_adjust * ui) :
+				    (850 * accuracy + 6 * ui - 8 * ui);
 
 	/* D-PHY chip spec : clk_t_lpx + clk_t_hs_prepare > 200ns*/
 	/* D-PHY Specification : clk_t_lpx >= 50ns*/
 	/* clocked by TXBYTECLKHS*/
 	clk_t_lpx = (((2000 * accuracy - clk_t_hs_prepare) >= 500 * accuracy) ?
-		((2000 * accuracy - clk_t_hs_prepare)) : (500 * accuracy)) +
-		mipi->clk_t_lpx_adjust * ui;
+			     ((2000 * accuracy - clk_t_hs_prepare)) :
+			     (500 * accuracy)) +
+		    mipi->clk_t_lpx_adjust * ui;
 
 	/* D-PHY Specification : clk_t_hs_zero + clk_t_hs_prepare >= 300 ns*/
 	/* clocked by TXBYTECLKHS*/
-	clk_t_hs_zero = 3000 * accuracy - clk_t_hs_prepare + 3 * unit_tx_byte_clk_hs + mipi->clk_t_hs_zero_adjust * ui;
+	clk_t_hs_zero = 3000 * accuracy - clk_t_hs_prepare +
+			3 * unit_tx_byte_clk_hs +
+			mipi->clk_t_hs_zero_adjust * ui;
 
 	/* D-PHY chip spec : data_t_lpx + data_t_hs_prepare > 200ns*/
 	/* D-PHY Specification : data_t_lpx >= 50ns*/
 	/* clocked by TXBYTECLKHS*/
-	data_t_lpx = clk_t_lpx + mipi->data_t_lpx_adjust * ui; /*2000 * accuracy - data_t_hs_prepare;*/
+	data_t_lpx =
+		clk_t_lpx + mipi->data_t_lpx_adjust *
+				    ui; /*2000 * accuracy - data_t_hs_prepare;*/
 
 	/* D-PHY Specification : data_t_hs_zero + data_t_hs_prepare >= 145ns + 10*UI*/
 	/* clocked by TXBYTECLKHS*/
 	data_t_hs_zero = 1450 * accuracy + 10 * ui - data_t_hs_prepare +
-		3 * unit_tx_byte_clk_hs + mipi->data_t_hs_zero_adjust * ui;
+			 3 * unit_tx_byte_clk_hs +
+			 mipi->data_t_hs_zero_adjust * ui;
 
-	phy_ctrl->clk_pre_delay = ROUND1(clk_pre_delay, unit_tx_byte_clk_hs);
-	phy_ctrl->clk_t_hs_prepare = ROUND1(clk_t_hs_prepare, unit_tx_byte_clk_hs);
-	phy_ctrl->clk_t_lpx = ROUND1(clk_t_lpx, unit_tx_byte_clk_hs);
-	phy_ctrl->clk_t_hs_zero = ROUND1(clk_t_hs_zero, unit_tx_byte_clk_hs);
-	phy_ctrl->clk_t_hs_trial = ROUND1(clk_t_hs_trial, unit_tx_byte_clk_hs);
+	phy_ctrl->clk_pre_delay = DIV_ROUND_UP(clk_pre_delay, unit_tx_byte_clk_hs);
+	phy_ctrl->clk_t_hs_prepare =
+		DIV_ROUND_UP(clk_t_hs_prepare, unit_tx_byte_clk_hs);
+	phy_ctrl->clk_t_lpx = DIV_ROUND_UP(clk_t_lpx, unit_tx_byte_clk_hs);
+	phy_ctrl->clk_t_hs_zero = DIV_ROUND_UP(clk_t_hs_zero, unit_tx_byte_clk_hs);
+	phy_ctrl->clk_t_hs_trial = DIV_ROUND_UP(clk_t_hs_trial, unit_tx_byte_clk_hs);
 
-	phy_ctrl->data_post_delay = ROUND1(data_post_delay, unit_tx_byte_clk_hs);
-	phy_ctrl->data_t_hs_prepare = ROUND1(data_t_hs_prepare, unit_tx_byte_clk_hs);
-	phy_ctrl->data_t_lpx = ROUND1(data_t_lpx, unit_tx_byte_clk_hs);
-	phy_ctrl->data_t_hs_zero = ROUND1(data_t_hs_zero, unit_tx_byte_clk_hs);
-	phy_ctrl->data_t_hs_trial = ROUND1(data_t_hs_trial, unit_tx_byte_clk_hs);
+	phy_ctrl->data_post_delay =
+		DIV_ROUND_UP(data_post_delay, unit_tx_byte_clk_hs);
+	phy_ctrl->data_t_hs_prepare =
+		DIV_ROUND_UP(data_t_hs_prepare, unit_tx_byte_clk_hs);
+	phy_ctrl->data_t_lpx = DIV_ROUND_UP(data_t_lpx, unit_tx_byte_clk_hs);
+	phy_ctrl->data_t_hs_zero = DIV_ROUND_UP(data_t_hs_zero, unit_tx_byte_clk_hs);
+	phy_ctrl->data_t_hs_trial =
+		DIV_ROUND_UP(data_t_hs_trial, unit_tx_byte_clk_hs);
 	phy_ctrl->data_t_ta_go = 4;
 	phy_ctrl->data_t_ta_get = 5;
 
@@ -415,78 +435,79 @@ static void get_dsi_phy_ctrl(struct dw_dsi *dsi,
 	data_t_hs_zero_reality = phy_ctrl->data_t_hs_zero + 4;
 	data_post_delay_reality = phy_ctrl->data_post_delay + 4;
 
-	phy_ctrl->clk_post_delay = phy_ctrl->data_t_hs_trial + ROUND1(clk_post, unit_tx_byte_clk_hs);
+	phy_ctrl->clk_post_delay = phy_ctrl->data_t_hs_trial +
+				   DIV_ROUND_UP(clk_post, unit_tx_byte_clk_hs);
 	phy_ctrl->data_pre_delay = clk_pre_delay_reality + phy_ctrl->clk_t_lpx +
-		phy_ctrl->clk_t_hs_prepare + clk_t_hs_zero_reality + ROUND1(clk_pre, unit_tx_byte_clk_hs) ;
+				   phy_ctrl->clk_t_hs_prepare +
+				   clk_t_hs_zero_reality +
+				   DIV_ROUND_UP(clk_pre, unit_tx_byte_clk_hs);
 
 	clk_post_delay_reality = phy_ctrl->clk_post_delay + 4;
 	data_pre_delay_reality = phy_ctrl->data_pre_delay + 2;
 
-	phy_ctrl->clk_lane_lp2hs_time = clk_pre_delay_reality + phy_ctrl->clk_t_lpx +
+	phy_ctrl->clk_lane_lp2hs_time =
+		clk_pre_delay_reality + phy_ctrl->clk_t_lpx +
 		phy_ctrl->clk_t_hs_prepare + clk_t_hs_zero_reality + 3;
-	phy_ctrl->clk_lane_hs2lp_time = clk_post_delay_reality + phy_ctrl->clk_t_hs_trial + 3;
-	phy_ctrl->data_lane_lp2hs_time = data_pre_delay_reality + phy_ctrl->data_t_lpx +
+	phy_ctrl->clk_lane_hs2lp_time =
+		clk_post_delay_reality + phy_ctrl->clk_t_hs_trial + 3;
+	phy_ctrl->data_lane_lp2hs_time =
+		data_pre_delay_reality + phy_ctrl->data_t_lpx +
 		phy_ctrl->data_t_hs_prepare + data_t_hs_zero_reality + 3;
-	phy_ctrl->data_lane_hs2lp_time = data_post_delay_reality + phy_ctrl->data_t_hs_trial + 3;
-	phy_ctrl->phy_stop_wait_time = clk_post_delay_reality +
-		phy_ctrl->clk_t_hs_trial + ROUND1(clk_t_hs_exit, unit_tx_byte_clk_hs) -
+	phy_ctrl->data_lane_hs2lp_time =
+		data_post_delay_reality + phy_ctrl->data_t_hs_trial + 3;
+	phy_ctrl->phy_stop_wait_time =
+		clk_post_delay_reality + phy_ctrl->clk_t_hs_trial +
+		DIV_ROUND_UP(clk_t_hs_exit, unit_tx_byte_clk_hs) -
 		(data_post_delay_reality + phy_ctrl->data_t_hs_trial) + 3;
 
 	phy_ctrl->lane_byte_clk = lane_clock / 8;
-	phy_ctrl->clk_division = (((phy_ctrl->lane_byte_clk / 2) % mipi->max_tx_esc_clk) > 0) ?
-		(phy_ctrl->lane_byte_clk / 2 / mipi->max_tx_esc_clk + 1) :
-		(phy_ctrl->lane_byte_clk / 2 / mipi->max_tx_esc_clk);
+	phy_ctrl->clk_division =
+		(((phy_ctrl->lane_byte_clk / 2) % mipi->max_tx_esc_clk) > 0) ?
+			(phy_ctrl->lane_byte_clk / 2 / mipi->max_tx_esc_clk +
+			 1) :
+			(phy_ctrl->lane_byte_clk / 2 / mipi->max_tx_esc_clk);
 
-	DRM_INFO("PHY clock_lane and data_lane config : \n"
-		"rg_vrefsel_vcm=%u\n"
-		"clk_pre_delay=%u\n"
-		"clk_post_delay=%u\n"
-		"clk_t_hs_prepare=%u\n"
-		"clk_t_lpx=%u\n"
-		"clk_t_hs_zero=%u\n"
-		"clk_t_hs_trial=%u\n"
-		"data_pre_delay=%u\n"
-		"data_post_delay=%u\n"
-		"data_t_hs_prepare=%u\n"
-		"data_t_lpx=%u\n"
-		"data_t_hs_zero=%u\n"
-		"data_t_hs_trial=%u\n"
-		"data_t_ta_go=%u\n"
-		"data_t_ta_get=%u\n",
-		phy_ctrl->rg_vrefsel_vcm,
-		phy_ctrl->clk_pre_delay,
-		phy_ctrl->clk_post_delay,
-		phy_ctrl->clk_t_hs_prepare,
-		phy_ctrl->clk_t_lpx,
-		phy_ctrl->clk_t_hs_zero,
-		phy_ctrl->clk_t_hs_trial,
-		phy_ctrl->data_pre_delay,
-		phy_ctrl->data_post_delay,
-		phy_ctrl->data_t_hs_prepare,
-		phy_ctrl->data_t_lpx,
-		phy_ctrl->data_t_hs_zero,
-		phy_ctrl->data_t_hs_trial,
-		phy_ctrl->data_t_ta_go,
-		phy_ctrl->data_t_ta_get);
-	DRM_INFO("clk_lane_lp2hs_time=%u\n"
-		"clk_lane_hs2lp_time=%u\n"
-		"data_lane_lp2hs_time=%u\n"
-		"data_lane_hs2lp_time=%u\n"
-		"phy_stop_wait_time=%u\n",
-		phy_ctrl->clk_lane_lp2hs_time,
-		phy_ctrl->clk_lane_hs2lp_time,
-		phy_ctrl->data_lane_lp2hs_time,
-		phy_ctrl->data_lane_hs2lp_time,
-		phy_ctrl->phy_stop_wait_time);
+	DRM_DEBUG("PHY clock_lane and data_lane config :\n"
+		 "rg_vrefsel_vcm=%u\n"
+		 "clk_pre_delay=%u\n"
+		 "clk_post_delay=%u\n"
+		 "clk_t_hs_prepare=%u\n"
+		 "clk_t_lpx=%u\n"
+		 "clk_t_hs_zero=%u\n"
+		 "clk_t_hs_trial=%u\n"
+		 "data_pre_delay=%u\n"
+		 "data_post_delay=%u\n"
+		 "data_t_hs_prepare=%u\n"
+		 "data_t_lpx=%u\n"
+		 "data_t_hs_zero=%u\n"
+		 "data_t_hs_trial=%u\n"
+		 "data_t_ta_go=%u\n"
+		 "data_t_ta_get=%u\n",
+		 phy_ctrl->rg_vrefsel_vcm, phy_ctrl->clk_pre_delay,
+		 phy_ctrl->clk_post_delay, phy_ctrl->clk_t_hs_prepare,
+		 phy_ctrl->clk_t_lpx, phy_ctrl->clk_t_hs_zero,
+		 phy_ctrl->clk_t_hs_trial, phy_ctrl->data_pre_delay,
+		 phy_ctrl->data_post_delay, phy_ctrl->data_t_hs_prepare,
+		 phy_ctrl->data_t_lpx, phy_ctrl->data_t_hs_zero,
+		 phy_ctrl->data_t_hs_trial, phy_ctrl->data_t_ta_go,
+		 phy_ctrl->data_t_ta_get);
+	DRM_DEBUG("clk_lane_lp2hs_time=%u\n"
+		 "clk_lane_hs2lp_time=%u\n"
+		 "data_lane_lp2hs_time=%u\n"
+		 "data_lane_hs2lp_time=%u\n"
+		 "phy_stop_wait_time=%u\n",
+		 phy_ctrl->clk_lane_lp2hs_time, phy_ctrl->clk_lane_hs2lp_time,
+		 phy_ctrl->data_lane_lp2hs_time, phy_ctrl->data_lane_hs2lp_time,
+		 phy_ctrl->phy_stop_wait_time);
 }
 
 static void dsi_set_burst_mode(void __iomem *base, unsigned long flags)
 {
 	u32 val;
 	u32 mode_mask = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_BURST |
-		MIPI_DSI_MODE_VIDEO_SYNC_PULSE;
-	u32 non_burst_sync_pulse = MIPI_DSI_MODE_VIDEO |
-		MIPI_DSI_MODE_VIDEO_SYNC_PULSE;
+			MIPI_DSI_MODE_VIDEO_SYNC_PULSE;
+	u32 non_burst_sync_pulse =
+		MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_SYNC_PULSE;
 	u32 non_burst_sync_event = MIPI_DSI_MODE_VIDEO;
 
 	/*
@@ -547,7 +568,7 @@ static void dsi_mipi_init(struct dw_dsi *dsi, char __iomem *mipi_dsi_base)
 	mipi = &dsi->mipi;
 
 	if (mipi->max_tx_esc_clk == 0) {
-		DRM_INFO("max_tx_esc_clk is invalid!");
+		DRM_ERROR("max_tx_esc_clk is invalid!");
 		mipi->max_tx_esc_clk = DEFAULT_MAX_TX_ESC_CLK;
 	}
 
@@ -562,27 +583,30 @@ static void dsi_mipi_init(struct dw_dsi *dsi, char __iomem *mipi_dsi_base)
 	/***************Configure the DPHY start**************/
 
 	set_reg(mipi_dsi_base + MIPIDSI_PHY_IF_CFG_OFFSET, lanes, 2, 0);
-	set_reg(mipi_dsi_base + MIPIDSI_CLKMGR_CFG_OFFSET, dsi->phy.clk_division, 8, 0);
-	set_reg(mipi_dsi_base + MIPIDSI_CLKMGR_CFG_OFFSET, dsi->phy.clk_division, 8, 8);
+	set_reg(mipi_dsi_base + MIPIDSI_CLKMGR_CFG_OFFSET,
+		dsi->phy.clk_division, 8, 0);
+	set_reg(mipi_dsi_base + MIPIDSI_CLKMGR_CFG_OFFSET,
+		dsi->phy.clk_division, 8, 8);
 
-	outp32(mipi_dsi_base + MIPIDSI_PHY_RSTZ_OFFSET, 0x00000000);
+	writel(0x00000000, mipi_dsi_base + MIPIDSI_PHY_RSTZ_OFFSET);
 
-	outp32(mipi_dsi_base + MIPIDSI_PHY_TST_CTRL0_OFFSET, 0x00000000);
-	outp32(mipi_dsi_base + MIPIDSI_PHY_TST_CTRL0_OFFSET, 0x00000001);
-	outp32(mipi_dsi_base + MIPIDSI_PHY_TST_CTRL0_OFFSET, 0x00000000);
+	writel(0x00000000, mipi_dsi_base + MIPIDSI_PHY_TST_CTRL0_OFFSET);
+	writel(0x00000001, mipi_dsi_base + MIPIDSI_PHY_TST_CTRL0_OFFSET);
+	writel(0x00000000, mipi_dsi_base + MIPIDSI_PHY_TST_CTRL0_OFFSET);
 
 	/* physical configuration PLL I*/
-	dsi_phy_tst_set(mipi_dsi_base, 0x14,
-		(dsi->phy.pll_fbd_s << 4) + (dsi->phy.rg_pll_enswc << 3) +
-		(dsi->phy.pll_enbwt << 2) + dsi->phy.rg_pll_chp);
+	dsi_phy_tst_set(mipi_dsi_base, 0x14, (dsi->phy.pll_fbd_s << 4) +
+					     (dsi->phy.rg_pll_enswc << 3) +
+					     (dsi->phy.pll_enbwt << 2) +
+					     dsi->phy.rg_pll_chp);
 
 	/* physical configuration PLL II, M*/
 	dsi_phy_tst_set(mipi_dsi_base, 0x15, dsi->phy.pll_fbd_p);
 
 	/* physical configuration PLL III*/
-	dsi_phy_tst_set(mipi_dsi_base, 0x16,
-		(dsi->phy.rg_pll_cp << 5) + (dsi->phy.pll_lpf_cs << 4) +
-		dsi->phy.rg_pll_refsel);
+	dsi_phy_tst_set(mipi_dsi_base, 0x16, (dsi->phy.rg_pll_cp << 5) +
+					     (dsi->phy.pll_lpf_cs << 4) +
+					     dsi->phy.rg_pll_refsel);
 
 	/* physical configuration PLL IV, N*/
 	dsi_phy_tst_set(mipi_dsi_base, 0x17, dsi->phy.pll_pre_p);
@@ -591,28 +615,34 @@ static void dsi_mipi_init(struct dw_dsi *dsi, char __iomem *mipi_dsi_base)
 	dsi_phy_tst_set(mipi_dsi_base, 0x1D, dsi->phy.rg_vrefsel_vcm);
 
 	/* MISC AFE Configuration*/
-	dsi_phy_tst_set(mipi_dsi_base, 0x1E,
-		(dsi->phy.rg_pll_cp_p << 5) + (dsi->phy.reload_sel << 4) +
-		(dsi->phy.rg_phase_gen_en << 3) + (dsi->phy.rg_band_sel << 2) +
-		(dsi->phy.pll_power_down << 1) + dsi->phy.pll_register_override);
+	dsi_phy_tst_set(mipi_dsi_base, 0x1E, (dsi->phy.rg_pll_cp_p << 5) +
+					     (dsi->phy.reload_sel << 4) +
+					     (dsi->phy.rg_phase_gen_en << 3) +
+					     (dsi->phy.rg_band_sel << 2) +
+					     (dsi->phy.pll_power_down << 1) +
+					     dsi->phy.pll_register_override);
 
 	/*reload_command*/
 	dsi_phy_tst_set(mipi_dsi_base, 0x1F, dsi->phy.load_command);
 
 	/* pre_delay of clock lane request setting*/
-	dsi_phy_tst_set(mipi_dsi_base, 0x20, DSS_REDUCE(dsi->phy.clk_pre_delay));
+	dsi_phy_tst_set(mipi_dsi_base, 0x20,
+			DSS_REDUCE(dsi->phy.clk_pre_delay));
 
 	/* post_delay of clock lane request setting*/
-	dsi_phy_tst_set(mipi_dsi_base, 0x21, DSS_REDUCE(dsi->phy.clk_post_delay));
+	dsi_phy_tst_set(mipi_dsi_base, 0x21,
+			DSS_REDUCE(dsi->phy.clk_post_delay));
 
 	/* clock lane timing ctrl - t_lpx*/
 	dsi_phy_tst_set(mipi_dsi_base, 0x22, DSS_REDUCE(dsi->phy.clk_t_lpx));
 
 	/* clock lane timing ctrl - t_hs_prepare*/
-	dsi_phy_tst_set(mipi_dsi_base, 0x23, DSS_REDUCE(dsi->phy.clk_t_hs_prepare));
+	dsi_phy_tst_set(mipi_dsi_base, 0x23,
+			DSS_REDUCE(dsi->phy.clk_t_hs_prepare));
 
 	/* clock lane timing ctrl - t_hs_zero*/
-	dsi_phy_tst_set(mipi_dsi_base, 0x24, DSS_REDUCE(dsi->phy.clk_t_hs_zero));
+	dsi_phy_tst_set(mipi_dsi_base, 0x24,
+			DSS_REDUCE(dsi->phy.clk_t_hs_zero));
 
 	/* clock lane timing ctrl - t_hs_trial*/
 	dsi_phy_tst_set(mipi_dsi_base, 0x25, dsi->phy.clk_t_hs_trial);
@@ -620,52 +650,59 @@ static void dsi_mipi_init(struct dw_dsi *dsi, char __iomem *mipi_dsi_base)
 	for (i = 0; i <= lanes; i++) {
 		/* data lane pre_delay*/
 		tmp = 0x30 + (i << 4);
-		dsi_phy_tst_set(mipi_dsi_base, tmp, DSS_REDUCE(dsi->phy.data_pre_delay));
+		dsi_phy_tst_set(mipi_dsi_base, tmp,
+				DSS_REDUCE(dsi->phy.data_pre_delay));
 
 		/*data lane post_delay*/
 		tmp = 0x31 + (i << 4);
-		dsi_phy_tst_set(mipi_dsi_base, tmp, DSS_REDUCE(dsi->phy.data_post_delay));
+		dsi_phy_tst_set(mipi_dsi_base, tmp,
+				DSS_REDUCE(dsi->phy.data_post_delay));
 
 		/* data lane timing ctrl - t_lpx*/
-		dsi_phy_tst_set(mipi_dsi_base, tmp, DSS_REDUCE(dsi->phy.data_t_lpx));
+		dsi_phy_tst_set(mipi_dsi_base, tmp,
+				DSS_REDUCE(dsi->phy.data_t_lpx));
 
 		/* data lane timing ctrl - t_hs_prepare*/
 		tmp = 0x33 + (i << 4);
-		dsi_phy_tst_set(mipi_dsi_base, tmp, DSS_REDUCE(dsi->phy.data_t_hs_prepare));
+		dsi_phy_tst_set(mipi_dsi_base, tmp,
+				DSS_REDUCE(dsi->phy.data_t_hs_prepare));
 
 		/* data lane timing ctrl - t_hs_zero*/
 		tmp = 0x34 + (i << 4);
-		dsi_phy_tst_set(mipi_dsi_base, tmp, DSS_REDUCE(dsi->phy.data_t_hs_zero));
+		dsi_phy_tst_set(mipi_dsi_base, tmp,
+				DSS_REDUCE(dsi->phy.data_t_hs_zero));
 
 		/* data lane timing ctrl - t_hs_trial*/
 		tmp = 0x35 + (i << 4);
-		dsi_phy_tst_set(mipi_dsi_base, tmp, DSS_REDUCE(dsi->phy.data_t_hs_trial));
+		dsi_phy_tst_set(mipi_dsi_base, tmp,
+				DSS_REDUCE(dsi->phy.data_t_hs_trial));
 
 		/* data lane timing ctrl - t_ta_go*/
 		tmp = 0x36 + (i << 4);
-		dsi_phy_tst_set(mipi_dsi_base, tmp, DSS_REDUCE(dsi->phy.data_t_ta_go));
+		dsi_phy_tst_set(mipi_dsi_base, tmp,
+				DSS_REDUCE(dsi->phy.data_t_ta_go));
 
 		/* data lane timing ctrl - t_ta_get*/
 		tmp = 0x37 + (i << 4);
-		dsi_phy_tst_set(mipi_dsi_base, tmp, DSS_REDUCE(dsi->phy.data_t_ta_get));
+		dsi_phy_tst_set(mipi_dsi_base, tmp,
+				DSS_REDUCE(dsi->phy.data_t_ta_get));
 	}
 
-	outp32(mipi_dsi_base + MIPIDSI_PHY_RSTZ_OFFSET, 0x00000007);
+	writel(0x00000007, mipi_dsi_base + MIPIDSI_PHY_RSTZ_OFFSET);
 
 	is_ready = false;
 	dw_jiffies = jiffies + HZ / 2;
 	do {
-		tmp = inp32(mipi_dsi_base + MIPIDSI_PHY_STATUS_OFFSET);
+		tmp = readl(mipi_dsi_base + MIPIDSI_PHY_STATUS_OFFSET);
 		if ((tmp & 0x00000001) == 0x00000001) {
 			is_ready = true;
 			break;
 		}
 	} while (time_after(dw_jiffies, jiffies));
 
-	if (!is_ready) {
-		DRM_INFO("phylock is not ready!MIPIDSI_PHY_STATUS_OFFSET=0x%x.\n",
-			tmp);
-	}
+	if (!is_ready)
+		DRM_ERROR("phylock is not ready!MIPIDSI_PHY_STATUS_OFFSET=0x%x.\n",
+			 tmp);
 
 	if (lanes >= DSI_4_LANES)
 		cmp_stopstate_val = (BIT(4) | BIT(7) | BIT(9) | BIT(11));
@@ -679,42 +716,46 @@ static void dsi_mipi_init(struct dw_dsi *dsi, char __iomem *mipi_dsi_base)
 	is_ready = false;
 	dw_jiffies = jiffies + HZ / 2;
 	do {
-		tmp = inp32(mipi_dsi_base + MIPIDSI_PHY_STATUS_OFFSET);
+		tmp = readl(mipi_dsi_base + MIPIDSI_PHY_STATUS_OFFSET);
 		if ((tmp & cmp_stopstate_val) == cmp_stopstate_val) {
 			is_ready = true;
 			break;
 		}
 	} while (time_after(dw_jiffies, jiffies));
 
-	if (!is_ready) {
-		DRM_INFO("phystopstateclklane is not ready! MIPIDSI_PHY_STATUS_OFFSET=0x%x.\n",
-			tmp);
-	}
+	if (!is_ready)
+		DRM_ERROR("phystopstateclklane is not ready! MIPIDSI_PHY_STATUS_OFFSET=0x%x.\n",
+			 tmp);
 
 	/*************************Configure the DPHY end*************************/
 
 	/* phy_stop_wait_time*/
-	set_reg(mipi_dsi_base + MIPIDSI_PHY_IF_CFG_OFFSET, dsi->phy.phy_stop_wait_time, 8, 8);
+	set_reg(mipi_dsi_base + MIPIDSI_PHY_IF_CFG_OFFSET,
+		dsi->phy.phy_stop_wait_time, 8, 8);
 
 	/*--------------configuring the DPI packet transmission----------------*/
 	/*
-	** 2. Configure the DPI Interface:
-	** This defines how the DPI interface interacts with the controller.
-	*/
+	 * 2. Configure the DPI Interface:
+	 * This defines how the DPI interface interacts with the controller.
+	 */
 	set_reg(mipi_dsi_base + MIPIDSI_DPI_VCID_OFFSET, mipi->vc, 2, 0);
-	set_reg(mipi_dsi_base + MIPIDSI_DPI_COLOR_CODING_OFFSET, mipi->color_mode, 4, 0);
+	set_reg(mipi_dsi_base + MIPIDSI_DPI_COLOR_CODING_OFFSET,
+		mipi->color_mode, 4, 0);
 
-	set_reg(mipi_dsi_base + MIPIDSI_DPI_CFG_POL_OFFSET, dsi->ldi.data_en_plr, 1, 0);
-	set_reg(mipi_dsi_base + MIPIDSI_DPI_CFG_POL_OFFSET, dsi->ldi.vsync_plr, 1, 1);
-	set_reg(mipi_dsi_base + MIPIDSI_DPI_CFG_POL_OFFSET, dsi->ldi.hsync_plr, 1, 2);
+	set_reg(mipi_dsi_base + MIPIDSI_DPI_CFG_POL_OFFSET,
+		dsi->ldi.data_en_plr, 1, 0);
+	set_reg(mipi_dsi_base + MIPIDSI_DPI_CFG_POL_OFFSET, dsi->ldi.vsync_plr,
+		1, 1);
+	set_reg(mipi_dsi_base + MIPIDSI_DPI_CFG_POL_OFFSET, dsi->ldi.hsync_plr,
+		1, 2);
 	set_reg(mipi_dsi_base + MIPIDSI_DPI_CFG_POL_OFFSET, 0x0, 1, 3);
 	set_reg(mipi_dsi_base + MIPIDSI_DPI_CFG_POL_OFFSET, 0x0, 1, 4);
 
 	/*
-	** 3. Select the Video Transmission Mode:
-	** This defines how the processor requires the video line to be
-	** transported through the DSI link.
-	*/
+	 * 3. Select the Video Transmission Mode:
+	 * This defines how the processor requires the video line to be
+	 * transported through the DSI link.
+	 */
 	/* video mode: low power mode*/
 	set_reg(mipi_dsi_base + MIPIDSI_VID_MODE_CFG_OFFSET, 0x3f, 6, 8);
 	/* set_reg(mipi_dsi_base + MIPIDSI_VID_MODE_CFG_OFFSET, 0x0, 1, 14); */
@@ -732,52 +773,67 @@ static void dsi_mipi_init(struct dw_dsi *dsi, char __iomem *mipi_dsi_base)
 	set_reg(mipi_dsi_base + MIPIDSI_PCKHDL_CFG_OFFSET, 0x1, 1, 2);
 
 	/*
-	** 4. Define the DPI Horizontal timing configuration:
-	**
-	** Hsa_time = HSA*(PCLK period/Clk Lane Byte Period);
-	** Hbp_time = HBP*(PCLK period/Clk Lane Byte Period);
-	** Hline_time = (HSA+HBP+HACT+HFP)*(PCLK period/Clk Lane Byte Period);
-	*/
+	 * 4. Define the DPI Horizontal timing configuration:
+	 *
+	 * Hsa_time = HSA*(PCLK period/Clk Lane Byte Period);
+	 * Hbp_time = HBP*(PCLK period/Clk Lane Byte Period);
+	 * Hline_time = (HSA+HBP+HACT+HFP)*(PCLK period/Clk Lane Byte Period);
+	 */
 	pixel_clk = dsi->cur_mode.clock * 1000;
 	/*htot = dsi->cur_mode.htotal;*/
 	/*vtot = dsi->cur_mode.vtotal;*/
-	dsi->ldi.h_front_porch = dsi->cur_mode.hsync_start - dsi->cur_mode.hdisplay;
+	dsi->ldi.h_front_porch =
+		dsi->cur_mode.hsync_start - dsi->cur_mode.hdisplay;
 	dsi->ldi.h_back_porch = dsi->cur_mode.htotal - dsi->cur_mode.hsync_end;
-	dsi->ldi.h_pulse_width = dsi->cur_mode.hsync_end - dsi->cur_mode.hsync_start;
-	dsi->ldi.v_front_porch = dsi->cur_mode.vsync_start - dsi->cur_mode.vdisplay;
+	dsi->ldi.h_pulse_width =
+		dsi->cur_mode.hsync_end - dsi->cur_mode.hsync_start;
+	dsi->ldi.v_front_porch =
+		dsi->cur_mode.vsync_start - dsi->cur_mode.vdisplay;
 	dsi->ldi.v_back_porch = dsi->cur_mode.vtotal - dsi->cur_mode.vsync_end;
-	dsi->ldi.v_pulse_width = dsi->cur_mode.vsync_end - dsi->cur_mode.vsync_start;
+	dsi->ldi.v_pulse_width =
+		dsi->cur_mode.vsync_end - dsi->cur_mode.vsync_start;
 	if (dsi->ldi.v_pulse_width > 15) {
 		DRM_DEBUG_DRIVER("vsw exceeded 15\n");
 		dsi->ldi.v_pulse_width = 15;
 	}
 	hsa_time = dsi->ldi.h_pulse_width * dsi->phy.lane_byte_clk / pixel_clk;
 	hbp_time = dsi->ldi.h_back_porch * dsi->phy.lane_byte_clk / pixel_clk;
-	hline_time = ROUND1((dsi->ldi.h_pulse_width + dsi->ldi.h_back_porch +
-		rect.w + dsi->ldi.h_front_porch) * dsi->phy.lane_byte_clk, pixel_clk);
+	hline_time = DIV_ROUND_UP((dsi->ldi.h_pulse_width + dsi->ldi.h_back_porch +
+			     rect.w + dsi->ldi.h_front_porch) *
+				    dsi->phy.lane_byte_clk,
+			    pixel_clk);
 
-	DRM_INFO("hsa_time=%d, hbp_time=%d, hline_time=%d\n",
-	    hsa_time, hbp_time, hline_time);
-	DRM_INFO("lane_byte_clk=%llu, pixel_clk=%llu\n",
-	    dsi->phy.lane_byte_clk, pixel_clk);
+	DRM_DEBUG("hsa_time=%d, hbp_time=%d, hline_time=%d\n", hsa_time,
+		 hbp_time, hline_time);
+	DRM_DEBUG("lane_byte_clk=%llu, pixel_clk=%llu\n", dsi->phy.lane_byte_clk,
+		 pixel_clk);
 	set_reg(mipi_dsi_base + MIPIDSI_VID_HSA_TIME_OFFSET, hsa_time, 12, 0);
 	set_reg(mipi_dsi_base + MIPIDSI_VID_HBP_TIME_OFFSET, hbp_time, 12, 0);
-	set_reg(mipi_dsi_base + MIPIDSI_VID_HLINE_TIME_OFFSET, hline_time, 15, 0);
+	set_reg(mipi_dsi_base + MIPIDSI_VID_HLINE_TIME_OFFSET, hline_time, 15,
+		0);
 
 	/* Define the Vertical line configuration*/
-	set_reg(mipi_dsi_base + MIPIDSI_VID_VSA_LINES_OFFSET, dsi->ldi.v_pulse_width, 10, 0);
-	set_reg(mipi_dsi_base + MIPIDSI_VID_VBP_LINES_OFFSET, dsi->ldi.v_back_porch, 10, 0);
-	set_reg(mipi_dsi_base + MIPIDSI_VID_VFP_LINES_OFFSET, dsi->ldi.v_front_porch, 10, 0);
-	set_reg(mipi_dsi_base + MIPIDSI_VID_VACTIVE_LINES_OFFSET, rect.h, 14, 0);
+	set_reg(mipi_dsi_base + MIPIDSI_VID_VSA_LINES_OFFSET,
+		dsi->ldi.v_pulse_width, 10, 0);
+	set_reg(mipi_dsi_base + MIPIDSI_VID_VBP_LINES_OFFSET,
+		dsi->ldi.v_back_porch, 10, 0);
+	set_reg(mipi_dsi_base + MIPIDSI_VID_VFP_LINES_OFFSET,
+		dsi->ldi.v_front_porch, 10, 0);
+	set_reg(mipi_dsi_base + MIPIDSI_VID_VACTIVE_LINES_OFFSET, rect.h, 14,
+		0);
 	set_reg(mipi_dsi_base + MIPIDSI_TO_CNT_CFG_OFFSET, 0x7FF, 16, 0);
 
 	/* Configure core's phy parameters*/
-	set_reg(mipi_dsi_base + MIPIDSI_PHY_TMR_LPCLK_CFG_OFFSET, dsi->phy.clk_lane_lp2hs_time, 10, 0);
-	set_reg(mipi_dsi_base + MIPIDSI_PHY_TMR_LPCLK_CFG_OFFSET, dsi->phy.clk_lane_hs2lp_time, 10, 16);
+	set_reg(mipi_dsi_base + MIPIDSI_PHY_TMR_LPCLK_CFG_OFFSET,
+		dsi->phy.clk_lane_lp2hs_time, 10, 0);
+	set_reg(mipi_dsi_base + MIPIDSI_PHY_TMR_LPCLK_CFG_OFFSET,
+		dsi->phy.clk_lane_hs2lp_time, 10, 16);
 
 	set_reg(mipi_dsi_base + MIPIDSI_PHY_TMR_RD_CFG_OFFSET, 0x7FFF, 15, 0);
-	set_reg(mipi_dsi_base + MIPIDSI_PHY_TMR_CFG_OFFSET, dsi->phy.data_lane_lp2hs_time, 10, 0);
-	set_reg(mipi_dsi_base + MIPIDSI_PHY_TMR_CFG_OFFSET, dsi->phy.data_lane_hs2lp_time, 10, 16);
+	set_reg(mipi_dsi_base + MIPIDSI_PHY_TMR_CFG_OFFSET,
+		dsi->phy.data_lane_lp2hs_time, 10, 0);
+	set_reg(mipi_dsi_base + MIPIDSI_PHY_TMR_CFG_OFFSET,
+		dsi->phy.data_lane_hs2lp_time, 10, 16);
 
 	/* Waking up Core*/
 	set_reg(mipi_dsi_base + MIPIDSI_PWR_UP_OFFSET, 0x1, 1, 0);
@@ -785,11 +841,9 @@ static void dsi_mipi_init(struct dw_dsi *dsi, char __iomem *mipi_dsi_base)
 
 static int mipi_dsi_on_sub1(struct dw_dsi *dsi, char __iomem *mipi_dsi_base)
 {
-	WARN_ON(!mipi_dsi_base);
-
 	/* mipi init */
 	dsi_mipi_init(dsi, mipi_dsi_base);
-	DRM_INFO("dsi_mipi_init ok\n");
+	DRM_DEBUG("dsi_mipi_init ok\n");
 	/* switch to cmd mode */
 	set_reg(mipi_dsi_base + MIPIDSI_MODE_CFG_OFFSET, 0x1, 1, 0);
 	/* cmd mode: low power mode */
@@ -805,8 +859,6 @@ static int mipi_dsi_on_sub1(struct dw_dsi *dsi, char __iomem *mipi_dsi_base)
 
 static int mipi_dsi_on_sub2(struct dw_dsi *dsi, char __iomem *mipi_dsi_base)
 {
-	WARN_ON(!mipi_dsi_base);
-
 	/* switch to video mode */
 	set_reg(mipi_dsi_base + MIPIDSI_MODE_CFG_OFFSET, 0x0, 1, 0);
 
@@ -865,9 +917,9 @@ static int dsi_host_attach(struct mipi_dsi_host *host,
 	dsi->client[id].lanes = mdsi->lanes;
 	dsi->client[id].format = mdsi->format;
 	dsi->client[id].mode_flags = mdsi->mode_flags;
-	dsi->client[id].phy_clock = 0;//mdsi->phy_clock;
+	dsi->client[id].phy_clock = 0; //mdsi->phy_clock;
 
-	DRM_INFO("host attach, client name=[%s], id=%d\n", mdsi->name, id);
+	DRM_DEBUG("host attach, client name=[%s], id=%d\n", mdsi->name, id);
 
 	return 0;
 }
@@ -946,8 +998,8 @@ static int dsi_dcs_long_write(void __iomem *base,
 			len -= pld_data_bytes;
 		}
 
-		ret = readx_poll_timeout(readl, base + CMD_PKT_STATUS,
-					 status, !(status & GEN_PLD_W_FULL), 1000,
+		ret = readx_poll_timeout(readl, base + CMD_PKT_STATUS, status,
+					 !(status & GEN_PLD_W_FULL), 1000,
 					 CMD_PKT_STATUS_TIMEOUT_US);
 		if (ret < 0) {
 			DRM_ERROR("failed to get available write payload FIFO\n");
@@ -959,7 +1011,7 @@ static int dsi_dcs_long_write(void __iomem *base,
 }
 
 static ssize_t dsi_host_transfer(struct mipi_dsi_host *host,
-				    const struct mipi_dsi_msg *msg)
+				 const struct mipi_dsi_msg *msg)
 {
 	struct dw_dsi *dsi = host_to_dsi(host);
 	struct dsi_hw_ctx *ctx = dsi->ctx;
@@ -1037,7 +1089,7 @@ static int dsi_parse_bridge_endpoint(struct dw_dsi *dsi,
 
 	bridge = of_drm_find_bridge(bridge_node);
 	if (!bridge) {
-		DRM_INFO("wait for external HDMI bridge driver.\n");
+		DRM_DEBUG("wait for external HDMI bridge driver.\n");
 		return -EPROBE_DEFER;
 	}
 	dsi->bridge = bridge;
@@ -1068,8 +1120,7 @@ static int dsi_parse_panel_endpoint(struct dw_dsi *dsi,
 	return 0;
 }
 
-static int dsi_parse_endpoint(struct dw_dsi *dsi,
-			      struct device_node *np,
+static int dsi_parse_endpoint(struct dw_dsi *dsi, struct device_node *np,
 			      enum dsi_output_client client)
 {
 	struct device_node *ep_node;
@@ -1130,31 +1181,27 @@ static int dsi_parse_dt(struct platform_device *pdev, struct dw_dsi *dsi)
 	if (ret)
 		return ret;
 
-
-
 	/* parse panel endpoint */
 	ret = dsi_parse_endpoint(dsi, np, OUT_PANEL);
 	if (ret)
 		return ret;
-	
 
 	np = of_find_compatible_node(NULL, NULL, DTS_COMP_DSI_NAME);
 	if (!np) {
-			DRM_ERROR("NOT FOUND device node %s!\n",
-				    DTS_COMP_DSI_NAME);
-			return -ENXIO;
+		DRM_ERROR("NOT FOUND device node %s!\n", DTS_COMP_DSI_NAME);
+		return -ENXIO;
 	}
 
 	ctx->base = of_iomap(np, 0);
 	if (!(ctx->base)) {
-			DRM_ERROR ("failed to get base resource.\n");
-			return -ENXIO;
+		DRM_ERROR("failed to get base resource.\n");
+		return -ENXIO;
 	}
 
 	ctx->peri_crg_base = of_iomap(np, 1);
 	if (!(ctx->peri_crg_base)) {
-			DRM_ERROR ("failed to get peri_crg_base resource.\n");
-			return -ENXIO;
+		DRM_ERROR("failed to get peri_crg_base resource.\n");
+		return -ENXIO;
 	}
 
 	dsi->gpio_mux = devm_gpiod_get(&pdev->dev, "mux", GPIOD_OUT_HIGH);
@@ -1165,7 +1212,7 @@ static int dsi_parse_dt(struct platform_device *pdev, struct dw_dsi *dsi)
 
 	/*dis-reset*/
 	/*ip_reset_dis_dsi0, ip_reset_dis_dsi1*/
-	outp32(ctx->peri_crg_base + PERRSTDIS3, 0x30000000);
+	writel(0x30000000, ctx->peri_crg_base + PERRSTDIS3);
 
 	ctx->dss_dphy0_ref_clk = devm_clk_get(&pdev->dev, "clk_txdphy0_ref");
 	if (IS_ERR(ctx->dss_dphy0_ref_clk)) {
@@ -1176,12 +1223,12 @@ static int dsi_parse_dt(struct platform_device *pdev, struct dw_dsi *dsi)
 	ret = clk_set_rate(ctx->dss_dphy0_ref_clk, DEFAULT_MIPI_CLK_RATE);
 	if (ret < 0) {
 		DRM_ERROR("dss_dphy0_ref_clk clk_set_rate(%lu) failed, error=%d!\n",
-			DEFAULT_MIPI_CLK_RATE, ret);
+			  DEFAULT_MIPI_CLK_RATE, ret);
 		return -EINVAL;
 	}
 
-	DRM_DEBUG("dss_dphy0_ref_clk:[%lu]->[%lu].\n",
-		DEFAULT_MIPI_CLK_RATE, clk_get_rate(ctx->dss_dphy0_ref_clk));
+	DRM_DEBUG("dss_dphy0_ref_clk:[%lu]->[%lu].\n", DEFAULT_MIPI_CLK_RATE,
+		  clk_get_rate(ctx->dss_dphy0_ref_clk));
 
 	ctx->dss_dphy0_cfg_clk = devm_clk_get(&pdev->dev, "clk_txdphy0_cfg");
 	if (IS_ERR(ctx->dss_dphy0_cfg_clk)) {
@@ -1191,13 +1238,14 @@ static int dsi_parse_dt(struct platform_device *pdev, struct dw_dsi *dsi)
 
 	ret = clk_set_rate(ctx->dss_dphy0_cfg_clk, DEFAULT_MIPI_CLK_RATE);
 	if (ret < 0) {
-		DRM_ERROR("dss_dphy0_cfg_clk clk_set_rate(%lu) failed, error=%d!\n",
+		DRM_ERROR(
+			"dss_dphy0_cfg_clk clk_set_rate(%lu) failed, error=%d!\n",
 			DEFAULT_MIPI_CLK_RATE, ret);
 		return -EINVAL;
 	}
 
-	DRM_DEBUG("dss_dphy0_cfg_clk:[%lu]->[%lu].\n",
-		DEFAULT_MIPI_CLK_RATE, clk_get_rate(ctx->dss_dphy0_cfg_clk));
+	DRM_DEBUG("dss_dphy0_cfg_clk:[%lu]->[%lu].\n", DEFAULT_MIPI_CLK_RATE,
+		  clk_get_rate(ctx->dss_dphy0_cfg_clk));
 
 	ctx->dss_pclk_dsi0_clk = devm_clk_get(&pdev->dev, "pclk_dsi0");
 	if (IS_ERR(ctx->dss_pclk_dsi0_clk)) {

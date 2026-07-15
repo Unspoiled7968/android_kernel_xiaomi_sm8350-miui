@@ -17,7 +17,6 @@
 #ifndef _UAPI__ASM_SIGCONTEXT_H
 #define _UAPI__ASM_SIGCONTEXT_H
 
-#ifdef CONFIG_64BIT
 #ifndef __ASSEMBLY__
 
 #include <linux/types.h>
@@ -180,7 +179,7 @@ struct sve_context {
  * The same convention applies when returning from a signal: a caller
  * will need to remove or resize the sve_context block if it wants to
  * make the SVE registers live when they were previously non-live or
- * vice-versa.  This may require the the caller to allocate fresh
+ * vice-versa.  This may require the caller to allocate fresh
  * memory and/or move other context blocks in the signal frame.
  *
  * Changing the vector length during signal return is not permitted:
@@ -249,36 +248,5 @@ struct sve_context {
 
 #define SVE_SIG_CONTEXT_SIZE(vq) \
 		(SVE_SIG_REGS_OFFSET + SVE_SIG_REGS_SIZE(vq))
-#else /* CONFIG_64BIT */
-
-/*
- * Signal context structure - contains all info to do with the state
- * before the signal handler was invoked.  Note: only add new entries
- * to the end of the structure.
- */
-struct sigcontext {
-	unsigned long trap_no;
-	unsigned long error_code;
-	unsigned long oldmask;
-	unsigned long arm_r0;
-	unsigned long arm_r1;
-	unsigned long arm_r2;
-	unsigned long arm_r3;
-	unsigned long arm_r4;
-	unsigned long arm_r5;
-	unsigned long arm_r6;
-	unsigned long arm_r7;
-	unsigned long arm_r8;
-	unsigned long arm_r9;
-	unsigned long arm_r10;
-	unsigned long arm_fp;
-	unsigned long arm_ip;
-	unsigned long arm_sp;
-	unsigned long arm_lr;
-	unsigned long arm_pc;
-	unsigned long arm_cpsr;
-	unsigned long fault_address;
-};
-#endif /* CONFIG_64BIT */
 
 #endif /* _UAPI__ASM_SIGCONTEXT_H */

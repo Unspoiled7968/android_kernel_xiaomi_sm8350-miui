@@ -1,6 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 #ifndef __KIRIN_DRM_DSI_H__
 #define __KIRIN_DRM_DSI_H__
-
 
 #include <linux/clk.h>
 #include <linux/component.h>
@@ -18,23 +18,16 @@
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_panel.h>
 
-#define ROUND(x, y)		((x) / (y) + \
-				((x) % (y) * 10 / (y) >= 5 ? 1 : 0))
-#define PHY_REF_CLK_RATE	19200000
-#define PHY_REF_CLK_PERIOD_PS	(1000000000 / (PHY_REF_CLK_RATE / 1000))
+#define ROUND(x, y) ((x) / (y) + ((x) % (y) * 10 / (y) >= 5 ? 1 : 0))
+#define PHY_REF_CLK_RATE 19200000
+#define PHY_REF_CLK_PERIOD_PS (1000000000 / (PHY_REF_CLK_RATE / 1000))
 
-#define encoder_to_dsi(encoder) \
-	container_of(encoder, struct dw_dsi, encoder)
-#define host_to_dsi(host) \
-	container_of(host, struct dw_dsi, host)
-#define connector_to_dsi(connector) \
+#define encoder_to_dsi(encoder) container_of(encoder, struct dw_dsi, encoder)
+#define host_to_dsi(host) container_of(host, struct dw_dsi, host)
+#define connector_to_dsi(connector)                                            \
 	container_of(connector, struct dw_dsi, connector)
-	
-enum dsi_output_client {
-	OUT_HDMI = 0,
-	OUT_PANEL,
-	OUT_MAX
-};
+
+enum dsi_output_client { OUT_HDMI = 0, OUT_PANEL, OUT_MAX };
 
 struct dsi_phy_range {
 	u32 min_range_kHz;
@@ -185,9 +178,9 @@ struct ldi_panel_info {
 	u32 h_pulse_width;
 
 	/*
-	** note: vbp > 8 if used overlay compose,
-	** also lcd vbp > 8 in lcd power on sequence
-	*/
+	 * note: vbp > 8 if used overlay compose,
+	 * also lcd vbp > 8 in lcd power on sequence
+	 */
 	u32 v_back_porch;
 	u32 v_front_porch;
 	u32 v_pulse_width;
@@ -245,8 +238,9 @@ struct kirin_dsi_ops {
 	int (*parse_dt)(struct platform_device *pdev, struct dw_dsi *dsi);
 	int (*host_init)(struct device *dev, struct dw_dsi *dsi);
 	void (*encoder_enable)(struct drm_encoder *encoder);
-	enum drm_mode_status(*encoder_valid)(struct drm_encoder *encoder,
-					const struct drm_display_mode *mode);
+	enum drm_mode_status (*encoder_valid)(
+		struct drm_encoder *encoder,
+		const struct drm_display_mode *mode);
 };
 
 #ifdef CONFIG_DRM_HISI_KIRIN960

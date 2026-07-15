@@ -933,14 +933,14 @@ csio_scsis_aborting(struct csio_ioreq *req, enum csio_scsi_ev evt)
 		 *    abort for that I/O by the FW crossed each other.
 		 *    The FW returned FW_EINVAL. The original I/O would have
 		 *    returned with FW_SUCCESS or any other SCSI error.
-		 * 3. The FW couldnt sent the abort out on the wire, as there
+		 * 3. The FW couldn't sent the abort out on the wire, as there
 		 *    was an I-T nexus loss (link down, remote device logged
 		 *    out etc). FW sent back an appropriate IT nexus loss status
 		 *    for the abort.
 		 * 4. FW sent an abort, but abort timed out (remote device
 		 *    didnt respond). FW replied back with
 		 *    FW_SCSI_ABORT_TIMEDOUT.
-		 * 5. FW couldnt genuinely abort the request for some reason,
+		 * 5. FW couldn't genuinely abort the request for some reason,
 		 *    and sent us an error.
 		 *
 		 * The first 3 scenarios are treated as  succesful abort
@@ -1859,7 +1859,7 @@ csio_queuecommand(struct Scsi_Host *host, struct scsi_cmnd *cmnd)
 	spin_unlock_irqrestore(&hw->lock, flags);
 
 	if (retval != 0) {
-		csio_err(hw, "ioreq: %p couldnt be started, status:%d\n",
+		csio_err(hw, "ioreq: %p couldn't be started, status:%d\n",
 			 ioreq, retval);
 		CSIO_INC_STATS(scsim, n_busy_error);
 		goto err_put_req;
@@ -2070,7 +2070,7 @@ csio_eh_lun_reset_handler(struct scsi_cmnd *cmnd)
 	struct csio_scsi_level_data sld;
 
 	if (!rn)
-		goto fail;
+		goto fail_ret;
 
 	csio_dbg(hw, "Request to reset LUN:%llu (ssni:0x%x tgtid:%d)\n",
 		      cmnd->device->lun, rn->flowid, rn->scsi_id);
@@ -2215,6 +2215,7 @@ fail_ret_ioreq:
 	csio_put_scsi_ioreq_lock(hw, scsim, ioreq);
 fail:
 	CSIO_INC_STATS(rn, n_lun_rst_fail);
+fail_ret:
 	return FAILED;
 }
 

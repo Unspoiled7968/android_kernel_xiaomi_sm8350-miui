@@ -1,20 +1,54 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Copyright (c) 2010, 2014, 2019 The Linux Foundation. All rights reserved.  */
+/* Copyright (c) 2010, 2014 The Linux Foundation. All rights reserved.  */
 
+#include <linux/console.h>
 #include <linux/init.h>
 #include <linux/kfifo.h>
-#include <linux/spinlock.h>
 #include <linux/moduleparam.h>
-#include <linux/console.h>
+#include <linux/serial.h>
+#include <linux/serial_core.h>
+#include <linux/spinlock.h>
 
 #include <asm/dcc.h>
 #include <asm/processor.h>
 
 #include "hvc_console.h"
 
+/*
+ * Disable DCC driver at runtime. Want driver enabled for GKI, but some devices
+ * do not support the registers and crash when driver pokes the registers
+ */
+static bool enable;
+module_param(enable, bool, 0444);
+
 /* DCC Status Bits */
 #define DCC_STATUS_RX		(1 << 30)
 #define DCC_STATUS_TX		(1 << 29)
+
+static void dcc_uart_console_putchar(struct uart_port *port, int ch)
+{
+	while (__dcc_getstatus() & DCC_STATUS_TX)
+		cpu_relax();
+
+	__dcc_putchar(ch);
+}
+
+static void dcc_early_write(struct console *con, const char *s, unsigned n)
+{
+	struct earlycon_device *dev = con->data;
+
+	uart_console_write(&dev->port, s, n, dcc_uart_console_putchar);
+}
+
+static int __init dcc_early_console_setup(struct earlycon_device *device,
+					  const char *opt)
+{
+	device->con->write = dcc_early_write;
+
+	return 0;
+}
+
+EARLYCON_DECLARE(dcc, dcc_early_console_setup);
 
 static int hvc_dcc_put_chars(uint32_t vt, const char *buf, int count)
 {
@@ -48,55 +82,37 @@ static int hvc_dcc_get_chars(uint32_t vt, char *buf, int count)
  * then we assume then this function will be called first on core 0.  That
  * way, dcc_core0_available will be true only if it's available on core 0.
  */
-#ifndef CONFIG_HVC_DCC_SERIALIZE_SMP
 static bool hvc_dcc_check(void)
 {
 	unsigned long time = jiffies + (HZ / 10);
-
-	/* Write a test character to check if it is handled */
-	__dcc_putchar('\n');
-
-	while (time_is_after_jiffies(time)) {
-		if (!(__dcc_getstatus() & DCC_STATUS_TX))
-			return true;
-	}
-
-	return false;
-}
-#endif
 
 #ifdef CONFIG_HVC_DCC_SERIALIZE_SMP
-static bool hvc_dcc_check(void)
-{
-	unsigned long time = jiffies + (HZ / 10);
-
 	static bool dcc_core0_available;
-
-	preempt_disable();
 
 	/*
 	 * If we're not on core 0, but we previously confirmed that DCC is
 	 * active, then just return true.
 	 */
-	if (smp_processor_id() && dcc_core0_available) {
-		preempt_enable();
+	if (smp_processor_id() && dcc_core0_available)
 		return true;
-	}
-
-	preempt_enable();
+#endif
 
 	/* Write a test character to check if it is handled */
 	__dcc_putchar('\n');
 
 	while (time_is_after_jiffies(time)) {
 		if (!(__dcc_getstatus() & DCC_STATUS_TX)) {
+#ifdef CONFIG_HVC_DCC_SERIALIZE_SMP
 			dcc_core0_available = true;
+#endif
 			return true;
 		}
 	}
 
 	return false;
 }
+
+#ifdef CONFIG_HVC_DCC_SERIALIZE_SMP
 
 static void dcc_put_work_fn(struct work_struct *work);
 static void dcc_get_work_fn(struct work_struct *work);
@@ -205,7 +221,7 @@ static int hvc_dcc0_get_chars(uint32_t vt, char *buf, int count)
 		 * that we haven't read yet.  Schedule a workqueue to fill
 		 * the input FIFO, so that the next time this function is
 		 * called, we'll have data.
-		 */
+		*/
 		if (!len)
 			schedule_work_on(0, &dcc_gwork);
 
@@ -240,7 +256,7 @@ static int __init hvc_dcc_console_init(void)
 {
 	int ret;
 
-	if (!hvc_dcc_check())
+	if (!enable || !hvc_dcc_check())
 		return -ENODEV;
 
 	/* Returns -1 if error */
@@ -254,7 +270,7 @@ static int __init hvc_dcc_init(void)
 {
 	struct hvc_struct *p;
 
-	if (!hvc_dcc_check())
+	if (!enable || !hvc_dcc_check())
 		return -ENODEV;
 
 	p = hvc_alloc(0, 0, &hvc_dcc_get_put_ops, 128);

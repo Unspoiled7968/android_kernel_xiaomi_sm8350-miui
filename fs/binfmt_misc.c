@@ -177,7 +177,6 @@ static int load_misc_binary(struct linux_binprm *bprm)
 	Node *fmt;
 	struct file *interp_file = NULL;
 	int retval;
-	int fd_binary = -1;
 
 	retval = -ENOEXEC;
 	if (!enabled)
@@ -192,57 +191,33 @@ static int load_misc_binary(struct linux_binprm *bprm)
 	if (bprm->interp_flags & BINPRM_FLAGS_PATH_INACCESSIBLE)
 		goto ret;
 
-	if (!(fmt->flags & MISC_FMT_PRESERVE_ARGV0)) {
+	if (fmt->flags & MISC_FMT_PRESERVE_ARGV0) {
+		bprm->interp_flags |= BINPRM_FLAGS_PRESERVE_ARGV0;
+	} else {
 		retval = remove_arg_zero(bprm);
 		if (retval)
 			goto ret;
 	}
 
-	if (fmt->flags & MISC_FMT_OPEN_BINARY) {
+	if (fmt->flags & MISC_FMT_OPEN_BINARY)
+		bprm->have_execfd = 1;
 
-		/* if the binary should be opened on behalf of the
-		 * interpreter than keep it open and assign descriptor
-		 * to it
-		 */
-		fd_binary = get_unused_fd_flags(0);
-		if (fd_binary < 0) {
-			retval = fd_binary;
-			goto ret;
-		}
-		fd_install(fd_binary, bprm->file);
-
-		/* if the binary is not readable than enforce mm->dumpable=0
-		   regardless of the interpreter's permissions */
-		would_dump(bprm, bprm->file);
-
-		allow_write_access(bprm->file);
-		bprm->file = NULL;
-
-		/* mark the bprm that fd should be passed to interp */
-		bprm->interp_flags |= BINPRM_FLAGS_EXECFD;
-		bprm->interp_data = fd_binary;
-
-	} else {
-		allow_write_access(bprm->file);
-		fput(bprm->file);
-		bprm->file = NULL;
-	}
 	/* make argv[1] be the path to the binary */
-	retval = copy_strings_kernel(1, &bprm->interp, bprm);
+	retval = copy_string_kernel(bprm->interp, bprm);
 	if (retval < 0)
-		goto error;
+		goto ret;
 	bprm->argc++;
 
 	/* add the interp as argv[0] */
-	retval = copy_strings_kernel(1, &fmt->interpreter, bprm);
+	retval = copy_string_kernel(fmt->interpreter, bprm);
 	if (retval < 0)
-		goto error;
+		goto ret;
 	bprm->argc++;
 
 	/* Update interp in case binfmt_script needs it. */
 	retval = bprm_change_interp(fmt->interpreter, bprm);
 	if (retval < 0)
-		goto error;
+		goto ret;
 
 	if (fmt->flags & MISC_FMT_OPEN_FILE) {
 		interp_file = file_clone_open(fmt->interp_file);
@@ -253,29 +228,13 @@ static int load_misc_binary(struct linux_binprm *bprm)
 	}
 	retval = PTR_ERR(interp_file);
 	if (IS_ERR(interp_file))
-		goto error;
+		goto ret;
 
-	bprm->file = interp_file;
-	if (fmt->flags & MISC_FMT_CREDENTIALS) {
-		loff_t pos = 0;
+	bprm->interpreter = interp_file;
+	if (fmt->flags & MISC_FMT_CREDENTIALS)
+		bprm->execfd_creds = 1;
 
-		/*
-		 * No need to call prepare_binprm(), it's already been
-		 * done.  bprm->buf is stale, update from interp_file.
-		 */
-		memset(bprm->buf, 0, BINPRM_BUF_SIZE);
-		retval = kernel_read(bprm->file, bprm->buf, BINPRM_BUF_SIZE,
-				&pos);
-	} else
-		retval = prepare_binprm(bprm);
-
-	if (retval < 0)
-		goto error;
-
-	retval = search_binary_handler(bprm);
-	if (retval < 0)
-		goto error;
-
+	retval = 0;
 ret:
 
 	/*
@@ -288,12 +247,6 @@ ret:
 	put_binfmt_handler(fmt);
 
 	return retval;
-error:
-	if (fd_binary > 0)
-		ksys_close(fd_binary);
-	bprm->interp_flags = 0;
-	bprm->interp_data = 0;
-	goto ret;
 }
 
 /* Command parsers */
@@ -1001,3 +954,4 @@ static void __exit exit_misc_binfmt(void)
 core_initcall(init_misc_binfmt);
 module_exit(exit_misc_binfmt);
 MODULE_LICENSE("GPL");
+MODULE_IMPORT_NS(ANDROID_GKI_VFS_EXPORT_ONLY);

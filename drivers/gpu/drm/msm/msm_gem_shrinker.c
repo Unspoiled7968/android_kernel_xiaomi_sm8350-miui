@@ -6,6 +6,7 @@
 
 #include "msm_drv.h"
 #include "msm_gem.h"
+#include "msm_gpu_trace.h"
 
 static bool msm_gem_shrinker_lock(struct drm_device *dev, bool *unlock)
 {
@@ -50,10 +51,14 @@ msm_gem_shrinker_count(struct shrinker *shrinker, struct shrink_control *sc)
 	if (!msm_gem_shrinker_lock(dev, &unlock))
 		return 0;
 
+	mutex_lock(&priv->mm_lock);
+
 	list_for_each_entry(msm_obj, &priv->inactive_list, mm_list) {
 		if (is_purgeable(msm_obj))
 			count += msm_obj->base.size >> PAGE_SHIFT;
 	}
+
+	mutex_unlock(&priv->mm_lock);
 
 	if (unlock)
 		mutex_unlock(&dev->struct_mutex);
@@ -74,6 +79,8 @@ msm_gem_shrinker_scan(struct shrinker *shrinker, struct shrink_control *sc)
 	if (!msm_gem_shrinker_lock(dev, &unlock))
 		return SHRINK_STOP;
 
+	mutex_lock(&priv->mm_lock);
+
 	list_for_each_entry(msm_obj, &priv->inactive_list, mm_list) {
 		if (freed >= sc->nr_to_scan)
 			break;
@@ -83,11 +90,13 @@ msm_gem_shrinker_scan(struct shrinker *shrinker, struct shrink_control *sc)
 		}
 	}
 
+	mutex_unlock(&priv->mm_lock);
+
 	if (unlock)
 		mutex_unlock(&dev->struct_mutex);
 
 	if (freed > 0)
-		pr_info_ratelimited("Purging %lu bytes\n", freed << PAGE_SHIFT);
+		trace_msm_gem_purge(freed << PAGE_SHIFT);
 
 	return freed;
 }
@@ -105,6 +114,8 @@ msm_gem_shrinker_vmap(struct notifier_block *nb, unsigned long event, void *ptr)
 	if (!msm_gem_shrinker_lock(dev, &unlock))
 		return NOTIFY_DONE;
 
+	mutex_lock(&priv->mm_lock);
+
 	list_for_each_entry(msm_obj, &priv->inactive_list, mm_list) {
 		if (is_vunmapable(msm_obj)) {
 			msm_gem_vunmap(&msm_obj->base, OBJ_LOCK_SHRINKER);
@@ -117,13 +128,15 @@ msm_gem_shrinker_vmap(struct notifier_block *nb, unsigned long event, void *ptr)
 		}
 	}
 
+	mutex_unlock(&priv->mm_lock);
+
 	if (unlock)
 		mutex_unlock(&dev->struct_mutex);
 
 	*(unsigned long *)ptr += unmapped;
 
 	if (unmapped > 0)
-		pr_info_ratelimited("Purging %u vmaps\n", unmapped);
+		trace_msm_gem_purge_vmaps(unmapped);
 
 	return NOTIFY_DONE;
 }

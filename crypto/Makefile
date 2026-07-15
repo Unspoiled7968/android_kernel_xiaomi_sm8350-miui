@@ -4,7 +4,7 @@
 #
 
 obj-$(CONFIG_CRYPTO) += crypto.o
-crypto-y := api.o cipher.o compress.o memneq.o
+crypto-y := api.o cipher.o compress.o
 
 obj-$(CONFIG_CRYPTO_ENGINE) += crypto_engine.o
 obj-$(CONFIG_CRYPTO_FIPS) += fips.o
@@ -14,11 +14,9 @@ crypto_algapi-y := algapi.o scatterwalk.o $(crypto_algapi-y)
 obj-$(CONFIG_CRYPTO_ALGAPI2) += crypto_algapi.o
 
 obj-$(CONFIG_CRYPTO_AEAD2) += aead.o
+obj-$(CONFIG_CRYPTO_AEAD2) += geniv.o
 
-crypto_blkcipher-y := ablkcipher.o
-crypto_blkcipher-y += blkcipher.o
-crypto_blkcipher-y += skcipher.o
-obj-$(CONFIG_CRYPTO_BLKCIPHER2) += crypto_blkcipher.o
+obj-$(CONFIG_CRYPTO_SKCIPHER2) += skcipher.o
 obj-$(CONFIG_CRYPTO_SEQIV) += seqiv.o
 obj-$(CONFIG_CRYPTO_ECHAINIV) += echainiv.o
 
@@ -43,6 +41,14 @@ rsa_generic-y += rsa.o
 rsa_generic-y += rsa_helper.o
 rsa_generic-y += rsa-pkcs1pad.o
 obj-$(CONFIG_CRYPTO_RSA) += rsa_generic.o
+
+$(obj)/sm2signature.asn1.o: $(obj)/sm2signature.asn1.c $(obj)/sm2signature.asn1.h
+$(obj)/sm2.o: $(obj)/sm2signature.asn1.h
+
+sm2_generic-y += sm2signature.asn1.o
+sm2_generic-y += sm2.o
+
+obj-$(CONFIG_CRYPTO_SM2) += sm2_generic.o
 
 crypto_acompress-y := acompress.o
 crypto_acompress-y += scompress.o
@@ -74,8 +80,8 @@ obj-$(CONFIG_CRYPTO_STREEBOG) += streebog_generic.o
 obj-$(CONFIG_CRYPTO_WP512) += wp512.o
 CFLAGS_wp512.o := $(call cc-option,-fno-schedule-insns)  # https://gcc.gnu.org/bugzilla/show_bug.cgi?id=79149
 obj-$(CONFIG_CRYPTO_TGR192) += tgr192.o
-obj-$(CONFIG_CRYPTO_BLAKE2S) += blake2s_generic.o
 obj-$(CONFIG_CRYPTO_BLAKE2B) += blake2b_generic.o
+obj-$(CONFIG_CRYPTO_BLAKE2S) += blake2s_generic.o
 obj-$(CONFIG_CRYPTO_GF128MUL) += gf128mul.o
 obj-$(CONFIG_CRYPTO_ECB) += ecb.o
 obj-$(CONFIG_CRYPTO_CBC) += cbc.o
@@ -168,6 +174,7 @@ obj-$(CONFIG_CRYPTO_ZSTD) += zstd.o
 obj-$(CONFIG_CRYPTO_OFB) += ofb.o
 obj-$(CONFIG_CRYPTO_ECC) += ecc.o
 obj-$(CONFIG_CRYPTO_ESSIV) += essiv.o
+obj-$(CONFIG_CRYPTO_CURVE25519) += curve25519-generic.o
 
 ecdh_generic-y += ecdh.o
 ecdh_generic-y += ecdh_helper.o
@@ -190,3 +197,58 @@ obj-$(CONFIG_ASYMMETRIC_KEY_TYPE) += asymmetric_keys/
 obj-$(CONFIG_CRYPTO_HASH_INFO) += hash_info.o
 crypto_simd-y := simd.o
 obj-$(CONFIG_CRYPTO_SIMD) += crypto_simd.o
+
+ifneq ($(CONFIG_CRYPTO_FIPS140_MOD),)
+
+FIPS140_CFLAGS := -D__DISABLE_EXPORTS -DBUILD_FIPS140_KO -include fips140-defs.h
+
+CFLAGS_jitterentropy-fips.o := -O0
+KASAN_SANITIZE_jitterentropy-fips.o = n
+UBSAN_SANITIZE_jitterentropy-fips.o = n
+
+#
+# Create a separate FIPS archive containing a duplicate of each builtin generic
+# module that is in scope for FIPS 140-2 certification
+#
+crypto-fips-objs := drbg.o ecb.o cbc.o ctr.o cts.o gcm.o xts.o hmac.o cmac.o \
+		    gf128mul.o aes_generic.o lib-crypto-aes.o \
+		    jitterentropy.o jitterentropy-kcapi.o \
+		    sha1_generic.o sha256_generic.o sha512_generic.o \
+		    lib-memneq.o lib-sha1.o lib-crypto-sha256.o
+crypto-fips-objs := $(foreach o,$(crypto-fips-objs),$(o:.o=-fips.o))
+
+# get the arch to add its objects to $(crypto-fips-objs)
+include $(srctree)/arch/$(ARCH)/crypto/Kbuild.fips140
+
+extra-$(CONFIG_CRYPTO_FIPS140_MOD) += crypto-fips.a
+
+$(obj)/%-fips.o: KBUILD_CFLAGS += $(FIPS140_CFLAGS)
+$(obj)/%-fips.o: $(src)/%.c FORCE
+	$(call if_changed_rule,cc_o_c)
+$(obj)/lib-%-fips.o: $(srctree)/lib/%.c FORCE
+	$(call if_changed_rule,cc_o_c)
+$(obj)/lib-crypto-%-fips.o: $(srctree)/lib/crypto/%.c FORCE
+	$(call if_changed_rule,cc_o_c)
+
+$(obj)/crypto-fips.a: $(addprefix $(obj)/,$(crypto-fips-objs)) FORCE
+	$(call if_changed,ar_and_symver)
+
+fips140-objs := \
+	fips140-alg-registration.o \
+	fips140-module.o \
+	fips140-refs.o \
+	fips140-selftests.o \
+	crypto-fips.a
+fips140-$(CONFIG_CRYPTO_FIPS140_MOD_EVAL_TESTING) += \
+	fips140-eval-testing.o
+obj-m += fips140.o
+
+CFLAGS_fips140-alg-registration.o += $(FIPS140_CFLAGS)
+CFLAGS_fips140-module.o += $(FIPS140_CFLAGS)
+CFLAGS_fips140-selftests.o += $(FIPS140_CFLAGS)
+CFLAGS_fips140-eval-testing.o += $(FIPS140_CFLAGS)
+
+hostprogs-always-y := fips140_gen_hmac
+HOSTLDLIBS_fips140_gen_hmac := -lcrypto -lelf
+
+endif

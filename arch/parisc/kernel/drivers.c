@@ -30,6 +30,7 @@
 #include <linux/spinlock.h>
 #include <linux/string.h>
 #include <linux/export.h>
+#include <linux/dma-map-ops.h>
 #include <asm/hardware.h>
 #include <asm/io.h>
 #include <asm/pdc.h>
@@ -434,7 +435,7 @@ struct parisc_device * __init create_tree_node(char id, struct device *parent)
 	dev->dev.dma_mask = &dev->dma_mask;
 	dev->dev.coherent_dma_mask = dev->dma_mask;
 	if (device_register(&dev->dev)) {
-		kfree(dev);
+		put_device(&dev->dev);
 		return NULL;
 	}
 

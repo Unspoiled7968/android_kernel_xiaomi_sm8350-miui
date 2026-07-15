@@ -40,39 +40,6 @@ static u32 tcp_clamp_rto_to_user_timeout(const struct sock *sk)
 	return min_t(u32, icsk->icsk_rto, msecs_to_jiffies(remaining));
 }
 
-static void set_tcp_default(void)
-{
-	sysctl_tcp_delack_seg = TCP_DELACK_SEG;
-}
-
-/*sysctl handler for tcp_ack realted master control */
-int tcp_proc_delayed_ack_control(struct ctl_table *table, int write,
-				 void __user *buffer, size_t *length,
-				 loff_t *ppos)
-{
-	int ret = proc_dointvec_minmax(table, write, buffer, length, ppos);
-
-	/* The ret value will be 0 if the input validation is successful
-	 * and the values are written to sysctl table. If not, the stack
-	 * will continue to work with currently configured values
-	 */
-	return ret;
-}
-
-/*sysctl handler for tcp_ack realted master control */
-int tcp_use_userconfig_sysctl_handler(struct ctl_table *table, int write,
-				      void __user *buffer, size_t *length,
-				      loff_t *ppos)
-{
-	int ret = proc_dointvec_minmax(table, write, buffer, length, ppos);
-
-	if (write && ret == 0) {
-		if (!sysctl_tcp_use_userconfig)
-			set_tcp_default();
-	}
-	return ret;
-}
-
 u32 tcp_clamp_probe0_to_user_timeout(const struct sock *sk, u32 when)
 {
 	struct inet_connection_sock *icsk = inet_csk(sk);
@@ -97,6 +64,7 @@ u32 tcp_clamp_probe0_to_user_timeout(const struct sock *sk, u32 when)
  *
  *  Returns: Nothing (void)
  */
+
 static void tcp_write_err(struct sock *sk)
 {
 	sk->sk_err = sk->sk_err_soft ? : ETIMEDOUT;
@@ -269,11 +237,8 @@ static int tcp_write_timeout(struct sock *sk)
 	int retry_until;
 
 	if ((1 << sk->sk_state) & (TCPF_SYN_SENT | TCPF_SYN_RECV)) {
-		if (icsk->icsk_retransmits) {
-			dst_negative_advice(sk);
-		} else {
-			sk_rethink_txhash(sk);
-		}
+		if (icsk->icsk_retransmits)
+			__dst_negative_advice(sk);
 		retry_until = icsk->icsk_syn_retries ? : net->ipv4.sysctl_tcp_syn_retries;
 		expired = icsk->icsk_retransmits >= retry_until;
 	} else {
@@ -281,9 +246,7 @@ static int tcp_write_timeout(struct sock *sk)
 			/* Black hole detection */
 			tcp_mtu_probing(icsk, sk);
 
-			dst_negative_advice(sk);
-		} else {
-			sk_rethink_txhash(sk);
+			__dst_negative_advice(sk);
 		}
 
 		retry_until = READ_ONCE(net->ipv4.sysctl_tcp_retries2);
@@ -312,6 +275,11 @@ static int tcp_write_timeout(struct sock *sk)
 		/* Has it gone just too far? */
 		tcp_write_err(sk);
 		return 1;
+	}
+
+	if (sk_rethink_txhash(sk)) {
+		tp->timeout_rehash++;
+		__NET_INC_STATS(sock_net(sk), LINUX_MIB_TCPTIMEOUTREHASH);
 	}
 
 	return 0;
@@ -358,7 +326,7 @@ out:
 
 /**
  *  tcp_delack_timer() - The TCP delayed ACK timeout handler
- *  @data:  Pointer to the current socket. (gets casted to struct sock *)
+ *  @t:  Pointer to the timer. (gets casted to struct sock *)
  *
  *  This function gets (indirectly) called when the kernel timer for a TCP packet
  *  of this socket expires. Calls tcp_delack_timer_handler() to do the actual work.
@@ -375,7 +343,6 @@ static void tcp_delack_timer(struct timer_list *t)
 	if (!sock_owned_by_user(sk)) {
 		tcp_delack_timer_handler(sk);
 	} else {
-		icsk->icsk_ack.blocked = 1;
 		__NET_INC_STATS(sock_net(sk), LINUX_MIB_DELAYEDACKLOCKED);
 		/* deleguate our work to tcp_release_cb() */
 		if (!test_and_set_bit(TCP_DELACK_TIMER_DEFERRED, &sk->sk_tsq_flags))
@@ -830,8 +797,14 @@ static enum hrtimer_restart tcp_compressed_ack_kick(struct hrtimer *timer)
 
 	bh_lock_sock(sk);
 	if (!sock_owned_by_user(sk)) {
-		if (tp->compressed_ack > TCP_FASTRETRANS_THRESH)
+		if (tp->compressed_ack) {
+			/* Since we have to send one ack finally,
+			 * substract one from tp->compressed_ack to keep
+			 * LINUX_MIB_TCPACKCOMPRESSED accurate.
+			 */
+			tp->compressed_ack--;
 			tcp_send_ack(sk);
+		}
 	} else {
 		if (!test_and_set_bit(TCP_DELACK_TIMER_DEFERRED,
 				      &sk->sk_tsq_flags))

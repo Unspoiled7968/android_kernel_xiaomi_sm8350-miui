@@ -191,7 +191,7 @@ static unsigned long pvr2fb_map;
 
 #ifdef CONFIG_PVR2_DMA
 static unsigned int shdma = PVR2_CASCADE_CHAN;
-static unsigned int pvr2dma = ONCHIP_NR_DMA_CHANNELS;
+static unsigned int pvr2dma = CONFIG_NR_ONCHIP_DMA_CHANNELS;
 #endif
 
 static struct fb_videomode pvr2_modedb[] = {
@@ -652,10 +652,24 @@ static ssize_t pvr2fb_write(struct fb_info *info, const char *buf,
 	if (!pages)
 		return -ENOMEM;
 
-	ret = get_user_pages_fast((unsigned long)buf, nr_pages, FOLL_WRITE, pages);
+	ret = pin_user_pages_fast((unsigned long)buf, nr_pages, FOLL_WRITE, pages);
 	if (ret < nr_pages) {
-		nr_pages = ret;
-		ret = -EINVAL;
+		if (ret < 0) {
+			/*
+			 *  Clamp the unsigned nr_pages to zero so that the
+			 *  error handling works. And leave ret at whatever
+			 *  -errno value was returned from GUP.
+			 */
+			nr_pages = 0;
+		} else {
+			nr_pages = ret;
+			/*
+			 * Use -EINVAL to represent a mildly desperate guess at
+			 * why we got fewer pages (maybe even zero pages) than
+			 * requested.
+			 */
+			ret = -EINVAL;
+		}
 		goto out_unmap;
 	}
 
@@ -698,16 +712,14 @@ out:
 	ret = count;
 
 out_unmap:
-	for (i = 0; i < nr_pages; i++)
-		put_page(pages[i]);
-
+	unpin_user_pages(pages, nr_pages);
 	kfree(pages);
 
 	return ret;
 }
 #endif /* CONFIG_PVR2_DMA */
 
-static struct fb_ops pvr2fb_ops = {
+static const struct fb_ops pvr2fb_ops = {
 	.owner		= THIS_MODULE,
 	.fb_setcolreg	= pvr2fb_setcolreg,
 	.fb_blank	= pvr2fb_blank,
@@ -770,7 +782,7 @@ static int __maybe_unused pvr2fb_common_init(void)
 	struct pvr2fb_par *par = currentpar;
 	unsigned long modememused, rev;
 
-	fb_info->screen_base = ioremap_nocache(pvr2_fix.smem_start,
+	fb_info->screen_base = ioremap(pvr2_fix.smem_start,
 					       pvr2_fix.smem_len);
 
 	if (!fb_info->screen_base) {
@@ -778,7 +790,7 @@ static int __maybe_unused pvr2fb_common_init(void)
 		goto out_err;
 	}
 
-	par->mmio_base = ioremap_nocache(pvr2_fix.mmio_start,
+	par->mmio_base = ioremap(pvr2_fix.mmio_start,
 					 pvr2_fix.mmio_len);
 	if (!par->mmio_base) {
 		printk(KERN_ERR "pvr2fb: Failed to remap mmio space\n");

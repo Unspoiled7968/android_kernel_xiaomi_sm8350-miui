@@ -95,7 +95,7 @@ static DEFINE_SPINLOCK(ubi_devices_lock);
 static ssize_t version_show(struct class *class, struct class_attribute *attr,
 			    char *buf)
 {
-	return scnprintf(buf, PAGE_SIZE, "%d\n", UBI_VERSION);
+	return sprintf(buf, "%d\n", UBI_VERSION);
 }
 static CLASS_ATTR_RO(version);
 
@@ -114,9 +114,6 @@ struct class ubi_class = {
 
 static ssize_t dev_attribute_show(struct device *dev,
 				  struct device_attribute *attr, char *buf);
-static ssize_t dev_attribute_store(struct device *dev,
-				   struct device_attribute *attr,
-				   const char *buf, size_t count);
 
 /* UBI device attributes (correspond to files in '/<sysfs>/class/ubi/ubiX') */
 static struct device_attribute dev_eraseblock_size =
@@ -143,13 +140,6 @@ static struct device_attribute dev_mtd_num =
 	__ATTR(mtd_num, S_IRUGO, dev_attribute_show, NULL);
 static struct device_attribute dev_ro_mode =
 	__ATTR(ro_mode, S_IRUGO, dev_attribute_show, NULL);
-static struct device_attribute dev_mtd_trigger_scrub =
-	__ATTR(scrub_all, 0644,
-		dev_attribute_show, dev_attribute_store);
-static struct device_attribute dev_mtd_max_scrub_sqnum =
-	__ATTR(scrub_max_sqnum, 0444, dev_attribute_show, NULL);
-static struct device_attribute dev_mtd_min_scrub_sqnum =
-	__ATTR(scrub_min_sqnum, 0444, dev_attribute_show, NULL);
 
 /**
  * ubi_volume_notify - send a volume change notification.
@@ -342,17 +332,6 @@ int ubi_major2num(int major)
 	return ubi_num;
 }
 
-static unsigned long long get_max_sqnum(struct ubi_device *ubi)
-{
-	unsigned long long max_sqnum;
-
-	spin_lock(&ubi->ltree_lock);
-	max_sqnum = ubi->global_sqnum - 1;
-	spin_unlock(&ubi->ltree_lock);
-
-	return max_sqnum;
-}
-
 /* "Show" method for files in '/<sysfs>/class/ubi/ubiX/' */
 static ssize_t dev_attribute_show(struct device *dev,
 				  struct device_attribute *attr, char *buf)
@@ -373,50 +352,29 @@ static ssize_t dev_attribute_show(struct device *dev,
 	ubi = container_of(dev, struct ubi_device, dev);
 
 	if (attr == &dev_eraseblock_size)
-		ret = scnprintf(buf, PAGE_SIZE, "%d\n",
-				ubi->leb_size);
+		ret = sprintf(buf, "%d\n", ubi->leb_size);
 	else if (attr == &dev_avail_eraseblocks)
-		ret = scnprintf(buf, PAGE_SIZE, "%d\n",
-				ubi->avail_pebs);
+		ret = sprintf(buf, "%d\n", ubi->avail_pebs);
 	else if (attr == &dev_total_eraseblocks)
-		ret = scnprintf(buf, PAGE_SIZE, "%d\n",
-				ubi->good_peb_count);
+		ret = sprintf(buf, "%d\n", ubi->good_peb_count);
 	else if (attr == &dev_volumes_count)
-		ret = scnprintf(buf, PAGE_SIZE, "%d\n",
-			ubi->vol_count - UBI_INT_VOL_COUNT);
+		ret = sprintf(buf, "%d\n", ubi->vol_count - UBI_INT_VOL_COUNT);
 	else if (attr == &dev_max_ec)
-		ret = scnprintf(buf, PAGE_SIZE, "%d\n",
-				ubi->max_ec);
+		ret = sprintf(buf, "%d\n", ubi->max_ec);
 	else if (attr == &dev_reserved_for_bad)
-		ret = scnprintf(buf, PAGE_SIZE, "%d\n",
-				ubi->beb_rsvd_pebs);
+		ret = sprintf(buf, "%d\n", ubi->beb_rsvd_pebs);
 	else if (attr == &dev_bad_peb_count)
-		ret = scnprintf(buf, PAGE_SIZE, "%d\n",
-				ubi->bad_peb_count);
+		ret = sprintf(buf, "%d\n", ubi->bad_peb_count);
 	else if (attr == &dev_max_vol_count)
-		ret = scnprintf(buf, PAGE_SIZE, "%d\n",
-				ubi->vtbl_slots);
+		ret = sprintf(buf, "%d\n", ubi->vtbl_slots);
 	else if (attr == &dev_min_io_size)
-		ret = scnprintf(buf, PAGE_SIZE, "%d\n",
-				ubi->min_io_size);
+		ret = sprintf(buf, "%d\n", ubi->min_io_size);
 	else if (attr == &dev_bgt_enabled)
-		ret = scnprintf(buf, PAGE_SIZE, "%d\n",
-				ubi->thread_enabled);
+		ret = sprintf(buf, "%d\n", ubi->thread_enabled);
 	else if (attr == &dev_mtd_num)
-		ret = scnprintf(buf, PAGE_SIZE, "%d\n",
-				ubi->mtd->index);
+		ret = sprintf(buf, "%d\n", ubi->mtd->index);
 	else if (attr == &dev_ro_mode)
-		ret = scnprintf(buf, PAGE_SIZE, "%d\n",
-				ubi->ro_mode);
-	else if (attr == &dev_mtd_trigger_scrub)
-		ret = scnprintf(buf, PAGE_SIZE, "%d\n",
-				atomic_read(&ubi->scrub_work_count));
-	else if (attr == &dev_mtd_max_scrub_sqnum)
-		ret = scnprintf(buf, PAGE_SIZE, "%llu\n",
-				get_max_sqnum(ubi));
-	else if (attr == &dev_mtd_min_scrub_sqnum)
-		ret = scnprintf(buf, PAGE_SIZE, "%llu\n",
-				ubi_wl_scrub_get_min_sqnum(ubi));
+		ret = sprintf(buf, "%d\n", ubi->ro_mode);
 	else
 		ret = -EINVAL;
 
@@ -436,45 +394,9 @@ static struct attribute *ubi_dev_attrs[] = {
 	&dev_bgt_enabled.attr,
 	&dev_mtd_num.attr,
 	&dev_ro_mode.attr,
-	&dev_mtd_trigger_scrub.attr,
-	&dev_mtd_max_scrub_sqnum.attr,
-	&dev_mtd_min_scrub_sqnum.attr,
 	NULL
 };
 ATTRIBUTE_GROUPS(ubi_dev);
-
-static ssize_t dev_attribute_store(struct device *dev,
-			   struct device_attribute *attr,
-			   const char *buf, size_t count)
-{
-	int ret = 0;
-	struct ubi_device *ubi;
-	unsigned long long scrub_sqnum;
-
-	ubi = container_of(dev, struct ubi_device, dev);
-	ubi = ubi_get_device(ubi->ubi_num);
-	if (!ubi)
-		return -ENODEV;
-
-	if (attr == &dev_mtd_trigger_scrub) {
-		if (kstrtoull(buf, 10, &scrub_sqnum)) {
-			ret = -EINVAL;
-			goto out;
-		}
-		if (!ubi->lookuptbl) {
-			pr_err("lookuptbl is null\n");
-			ret = -ENOENT;
-			goto out;
-		}
-		ret = ubi_wl_scrub_all(ubi, scrub_sqnum);
-		if (ret == 0)
-			ret = count;
-	}
-
-out:
-	ubi_put_device(ubi);
-	return ret;
-}
 
 static void dev_release(struct device *dev)
 {
@@ -512,8 +434,7 @@ static int uif_init(struct ubi_device *ubi)
 	int i, err;
 	dev_t dev;
 
-	scnprintf(ubi->ubi_name, sizeof(ubi->ubi_name),
-			UBI_NAME_STR "%d", ubi->ubi_num);
+	sprintf(ubi->ubi_name, UBI_NAME_STR "%d", ubi->ubi_num);
 
 	/*
 	 * Major numbers for the UBI character devices are allocated
@@ -579,19 +500,40 @@ static void uif_close(struct ubi_device *ubi)
 }
 
 /**
+ * ubi_free_volumes_from - free volumes from specific index.
+ * @ubi: UBI device description object
+ * @from: the start index used for volume free.
+ */
+static void ubi_free_volumes_from(struct ubi_device *ubi, int from)
+{
+	int i;
+
+	for (i = from; i < ubi->vtbl_slots + UBI_INT_VOL_COUNT; i++) {
+		if (!ubi->volumes[i])
+			continue;
+		ubi_eba_replace_table(ubi->volumes[i], NULL);
+		ubi_fastmap_destroy_checkmap(ubi->volumes[i]);
+		kfree(ubi->volumes[i]);
+		ubi->volumes[i] = NULL;
+	}
+}
+
+/**
+ * ubi_free_all_volumes - free all volumes.
+ * @ubi: UBI device description object
+ */
+void ubi_free_all_volumes(struct ubi_device *ubi)
+{
+	ubi_free_volumes_from(ubi, 0);
+}
+
+/**
  * ubi_free_internal_volumes - free internal volumes.
  * @ubi: UBI device description object
  */
 void ubi_free_internal_volumes(struct ubi_device *ubi)
 {
-	int i;
-
-	for (i = ubi->vtbl_slots;
-	     i < ubi->vtbl_slots + UBI_INT_VOL_COUNT; i++) {
-		ubi_eba_replace_table(ubi->volumes[i], NULL);
-		ubi_fastmap_destroy_checkmap(ubi->volumes[i]);
-		kfree(ubi->volumes[i]);
-	}
+	ubi_free_volumes_from(ubi, ubi->vtbl_slots);
 }
 
 static int get_bad_peb_limit(const struct ubi_device *ubi, int max_beb_per1024)
@@ -937,8 +879,11 @@ int ubi_attach_mtd_dev(struct mtd_info *mtd, int ubi_num,
 	 * Both UBI and UBIFS have been designed for SLC NAND and NOR flashes.
 	 * MLC NAND is different and needs special care, otherwise UBI or UBIFS
 	 * will die soon and you will lose all your data.
+	 * Relax this rule if the partition we're attaching to operates in SLC
+	 * mode.
 	 */
-	if (mtd->type == MTD_MLCNANDFLASH) {
+	if (mtd->type == MTD_MLCNANDFLASH &&
+	    !(mtd->flags & MTD_SLC_ON_MLC_EMULATION)) {
 		pr_err("ubi: refuse attaching mtd%d - MLC NAND is not supported\n",
 			mtd->index);
 		return -EINVAL;
@@ -1108,7 +1053,7 @@ out_uif:
 	uif_close(ubi);
 out_detach:
 	ubi_wl_close(ubi);
-	ubi_free_internal_volumes(ubi);
+	ubi_free_all_volumes(ubi);
 	vfree(ubi->vtbl);
 out_free:
 	vfree(ubi->peb_buf);
@@ -1254,7 +1199,7 @@ static struct mtd_info * __init open_mtd_device(const char *mtd_dev)
 		 * MTD device name.
 		 */
 		mtd = get_mtd_device_nm(mtd_dev);
-		if (IS_ERR(mtd) && PTR_ERR(mtd) == -ENODEV)
+		if (PTR_ERR(mtd) == -ENODEV)
 			/* Probably this is an MTD character device node path */
 			mtd = open_mtd_by_chdev(mtd_dev);
 	} else
@@ -1416,10 +1361,10 @@ static int bytes_str_to_int(const char *str)
 	switch (*endp) {
 	case 'G':
 		result *= 1024;
-		/* fall through */
+		fallthrough;
 	case 'M':
 		result *= 1024;
-		/* fall through */
+		fallthrough;
 	case 'K':
 		result *= 1024;
 		if (endp[1] == 'i' && endp[2] == 'B')
@@ -1471,7 +1416,7 @@ static int ubi_mtd_param_parse(const char *val, const struct kernel_param *kp)
 		return 0;
 	}
 
-	strlcpy(buf, val, sizeof(buf));
+	strcpy(buf, val);
 
 	/* Get rid of the final newline */
 	if (buf[len - 1] == '\n')
@@ -1486,7 +1431,7 @@ static int ubi_mtd_param_parse(const char *val, const struct kernel_param *kp)
 	}
 
 	p = &mtd_dev_param[mtd_devs];
-	strlcpy(&p->name[0], tokens[0], MTD_PARAM_LEN_MAX);
+	strcpy(&p->name[0], tokens[0]);
 
 	token = tokens[1];
 	if (token) {
@@ -1547,3 +1492,4 @@ MODULE_VERSION(__stringify(UBI_VERSION));
 MODULE_DESCRIPTION("UBI - Unsorted Block Images");
 MODULE_AUTHOR("Artem Bityutskiy");
 MODULE_LICENSE("GPL");
+MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);

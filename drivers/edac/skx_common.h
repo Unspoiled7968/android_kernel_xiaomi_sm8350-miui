@@ -36,7 +36,6 @@
 #define I10NM_NUM_CHANNELS	2
 #define I10NM_NUM_DIMMS		2
 
-#define MAX(a, b)	((a) > (b) ? (a) : (b))
 #define NUM_IMC		MAX(SKX_NUM_IMC, I10NM_NUM_IMC)
 #define NUM_CHANNELS	MAX(SKX_NUM_CHANNELS, I10NM_NUM_CHANNELS)
 #define NUM_DIMMS	MAX(SKX_NUM_DIMMS, I10NM_NUM_DIMMS)
@@ -122,6 +121,14 @@ struct decoded_addr {
 	int	bank_group;
 };
 
+struct res_config {
+	enum type type;
+	/* Configuration agent device ID */
+	unsigned int decs_did;
+	/* Default bus number configuration register offset */
+	int busno_cfg_offset;
+};
+
 typedef int (*get_dimm_config_f)(struct mem_ctl_info *mci);
 typedef bool (*skx_decode_f)(struct decoded_addr *res);
 typedef void (*skx_show_retry_log_f)(struct decoded_addr *res, char *msg, int len);
@@ -134,8 +141,7 @@ void skx_set_mem_cfg(bool mem_cfg_2lm);
 int skx_get_src_id(struct skx_dev *d, int off, u8 *id);
 int skx_get_node_id(struct skx_dev *d, u8 *id);
 
-int skx_get_all_bus_mappings(unsigned int did, int off, enum type,
-			     struct list_head **list);
+int skx_get_all_bus_mappings(struct res_config *cfg, struct list_head **list);
 
 int skx_get_hi_lo(unsigned int did, int off[], u64 *tolm, u64 *tohm);
 

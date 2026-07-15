@@ -12,9 +12,6 @@ obj-$(CONFIG_RAW_DRIVER)	+= raw.o
 obj-$(CONFIG_MSPEC)		+= mspec.o
 obj-$(CONFIG_UV_MMTIMER)	+= uv_mmtimer.o
 obj-$(CONFIG_IBM_BSR)		+= bsr.o
-obj-$(CONFIG_SGI_MBCS)		+= mbcs.o
-obj-$(CONFIG_BFIN_OTP)		+= bfin-otp.o
-obj-$(CONFIG_MSM_SMD_PKT)       += msm_smd_pkt.o
 
 obj-$(CONFIG_PRINTER)		+= lp.o
 
@@ -23,9 +20,7 @@ obj-$(CONFIG_APM_EMULATION)	+= apm-emulation.o
 obj-$(CONFIG_DTLK)		+= dtlk.o
 obj-$(CONFIG_APPLICOM)		+= applicom.o
 obj-$(CONFIG_SONYPI)		+= sonypi.o
-obj-$(CONFIG_RTC)		+= rtc.o
 obj-$(CONFIG_HPET)		+= hpet.o
-obj-$(CONFIG_EFI_RTC)		+= efirtc.o
 obj-$(CONFIG_XILINX_HWICAP)	+= xilinx_hwicap/
 obj-$(CONFIG_NVRAM)		+= nvram.o
 obj-$(CONFIG_TOSHIBA)		+= toshiba.o
@@ -49,22 +44,6 @@ obj-$(CONFIG_TCG_TPM)		+= tpm/
 
 obj-$(CONFIG_PS3_FLASH)		+= ps3flash.o
 
-obj-$(CONFIG_JS_RTC)		+= js-rtc.o
-js-rtc-y = rtc.o
-
 obj-$(CONFIG_XILLYBUS)		+= xillybus/
 obj-$(CONFIG_POWERNV_OP_PANEL)	+= powernv-op-panel.o
-frpc-adsprpc-objs		+= adsprpc.o
-ifdef CONFIG_COMPAT
-  frpc-adsprpc-objs		+= adsprpc_compat.o
-endif
-obj-$(CONFIG_MSM_ADSPRPC)	+= frpc-adsprpc.o
-vfastrpc-objs			+= virtio_fastrpc.o
-ifdef CONFIG_COMPAT
-  vfastrpc-objs			+= adsprpc_compat.o
-endif
-obj-$(CONFIG_VIRTIO_FASTRPC)	+= vfastrpc.o
 obj-$(CONFIG_ADI)		+= adi.o
-obj-$(CONFIG_MSM_RDBG)		+= rdbg.o
-obj-$(CONFIG_MSM_FASTCVPD)	+= fastcvpd.o
-obj-$(CONFIG_VIRTIO_EAVB)       += virtio_eavb/

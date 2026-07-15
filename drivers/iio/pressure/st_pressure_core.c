@@ -14,7 +14,6 @@
 #include <linux/types.h>
 #include <linux/interrupt.h>
 #include <linux/i2c.h>
-#include <linux/gpio.h>
 #include <linux/irq.h>
 #include <linux/delay.h>
 #include <linux/iio/iio.h>
@@ -684,20 +683,15 @@ EXPORT_SYMBOL(st_press_get_settings);
 int st_press_common_probe(struct iio_dev *indio_dev)
 {
 	struct st_sensor_data *press_data = iio_priv(indio_dev);
-	struct st_sensors_platform_data *pdata =
-		(struct st_sensors_platform_data *)press_data->dev->platform_data;
+	struct st_sensors_platform_data *pdata = dev_get_platdata(press_data->dev);
 	int err;
 
 	indio_dev->modes = INDIO_DIRECT_MODE;
 	indio_dev->info = &press_info;
 
-	err = st_sensors_power_enable(indio_dev);
-	if (err)
-		return err;
-
 	err = st_sensors_verify_id(indio_dev);
 	if (err < 0)
-		goto st_press_power_off;
+		return err;
 
 	/*
 	 * Skip timestamping channel while declaring available channels to
@@ -709,9 +703,7 @@ int st_press_common_probe(struct iio_dev *indio_dev)
 	indio_dev->channels = press_data->sensor_settings->ch;
 	indio_dev->num_channels = press_data->sensor_settings->num_ch;
 
-	press_data->current_fullscale =
-		(struct st_sensor_fullscale_avl *)
-			&press_data->sensor_settings->fs.fs_avl[0];
+	press_data->current_fullscale = &press_data->sensor_settings->fs.fs_avl[0];
 
 	press_data->odr = press_data->sensor_settings->odr.odr_avl[0].hz;
 
@@ -722,11 +714,11 @@ int st_press_common_probe(struct iio_dev *indio_dev)
 
 	err = st_sensors_init_sensor(indio_dev, pdata);
 	if (err < 0)
-		goto st_press_power_off;
+		return err;
 
 	err = st_press_allocate_ring(indio_dev);
 	if (err < 0)
-		goto st_press_power_off;
+		return err;
 
 	if (press_data->irq > 0) {
 		err = st_sensors_allocate_trigger(indio_dev,
@@ -749,9 +741,6 @@ st_press_device_register_error:
 		st_sensors_deallocate_trigger(indio_dev);
 st_press_probe_trigger_error:
 	st_press_deallocate_ring(indio_dev);
-st_press_power_off:
-	st_sensors_power_disable(indio_dev);
-
 	return err;
 }
 EXPORT_SYMBOL(st_press_common_probe);
@@ -759,8 +748,6 @@ EXPORT_SYMBOL(st_press_common_probe);
 void st_press_common_remove(struct iio_dev *indio_dev)
 {
 	struct st_sensor_data *press_data = iio_priv(indio_dev);
-
-	st_sensors_power_disable(indio_dev);
 
 	iio_device_unregister(indio_dev);
 	if (press_data->irq > 0)

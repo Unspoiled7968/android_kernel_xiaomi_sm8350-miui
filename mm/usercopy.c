@@ -43,7 +43,7 @@ static noinline int check_stack_object(const void *obj, unsigned long len)
 
 	/*
 	 * Reject: object partially overlaps the stack (passing the
-	 * the check above means at least one end is within the stack,
+	 * check above means at least one end is within the stack,
 	 * so if this check fails, the other end is outside the stack).
 	 */
 	if (obj < stack || stackend < obj + len)
@@ -164,8 +164,6 @@ static inline void check_page_span(const void *ptr, unsigned long n,
 	const void *end = ptr + n - 1;
 	struct page *endpage;
 	bool is_reserved, is_cma;
-	const void * const stack = task_stack_page(current);
-	const void * const stackend = stack + THREAD_SIZE;
 
 	/*
 	 * Sometimes the kernel data regions are not marked Reserved (see
@@ -188,10 +186,6 @@ static inline void check_page_span(const void *ptr, unsigned long n,
 	/* Allow kernel bss region (if not marked as Reserved). */
 	if (ptr >= (const void *)__bss_start &&
 	    end <= (const void *)__bss_stop)
-		return;
-
-	/* Allow stack region to span multiple pages */
-	if (ptr >= stack && end <= stackend)
 		return;
 
 	/* Is the object wholly within one base page? */

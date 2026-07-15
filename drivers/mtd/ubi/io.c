@@ -1056,15 +1056,6 @@ int ubi_io_write_vid_hdr(struct ubi_device *ubi, int pnum,
 	dbg_io("write VID header to PEB %d", pnum);
 	ubi_assert(pnum >= 0 &&  pnum < ubi->peb_count);
 
-	/*
-	 * Re-erase the PEB before using it. This should minimize any issues
-	 * from decay of charge in this block.
-	 */
-	if (ubi->wl_is_inited) {
-		err = ubi_wl_re_erase_peb(ubi, pnum);
-		if (err)
-			return err;
-	}
 	err = self_check_peb_ec_hdr(ubi, pnum);
 	if (err)
 		return err;
@@ -1083,8 +1074,6 @@ int ubi_io_write_vid_hdr(struct ubi_device *ubi, int pnum,
 
 	err = ubi_io_write(ubi, p, pnum, ubi->vid_hdr_aloffset,
 			   ubi->vid_hdr_alsize);
-	if (!err && ubi->wl_is_inited)
-		ubi_wl_update_peb_sqnum(ubi, pnum, vid_hdr);
 	return err;
 }
 
@@ -1308,7 +1297,7 @@ static int self_check_write(struct ubi_device *ubi, const void *buf, int pnum,
 	if (!ubi_dbg_chk_io(ubi))
 		return 0;
 
-	buf1 = __vmalloc(len, GFP_NOFS, PAGE_KERNEL);
+	buf1 = __vmalloc(len, GFP_NOFS);
 	if (!buf1) {
 		ubi_err(ubi, "cannot allocate memory to check writes");
 		return 0;
@@ -1372,7 +1361,7 @@ int ubi_self_check_all_ff(struct ubi_device *ubi, int pnum, int offset, int len)
 	if (!ubi_dbg_chk_io(ubi))
 		return 0;
 
-	buf = __vmalloc(len, GFP_NOFS, PAGE_KERNEL);
+	buf = __vmalloc(len, GFP_NOFS);
 	if (!buf) {
 		ubi_err(ubi, "cannot allocate memory to check for 0xFFs");
 		return 0;

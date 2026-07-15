@@ -110,6 +110,17 @@ int clk_notifier_register(struct clk *clk, struct notifier_block *nb);
 int clk_notifier_unregister(struct clk *clk, struct notifier_block *nb);
 
 /**
+ * devm_clk_notifier_register - register a managed rate-change notifier callback
+ * @dev: device for clock "consumer"
+ * @clk: clock whose rate we are interested in
+ * @nb: notifier block with callback function pointer
+ *
+ * Returns 0 on success, -EERROR otherwise
+ */
+int devm_clk_notifier_register(struct device *dev, struct clk *clk,
+			       struct notifier_block *nb);
+
+/**
  * clk_get_accuracy - obtain the clock accuracy in ppb (parts per billion)
  *		      for a clock source.
  * @clk: clock source
@@ -205,6 +216,23 @@ int clk_rate_exclusive_get(struct clk *clk);
  */
 void clk_rate_exclusive_put(struct clk *clk);
 
+/**
+ * clk_save_context - save clock context for poweroff
+ *
+ * Saves the context of the clock register for powerstates in which the
+ * contents of the registers will be lost. Occurs deep within the suspend
+ * code so locking is not necessary.
+ */
+int clk_save_context(void);
+
+/**
+ * clk_restore_context - restore clock context after poweroff
+ *
+ * This occurs with all clocks enabled. Occurs deep within the resume code
+ * so locking is not necessary.
+ */
+void clk_restore_context(void);
+
 #else
 
 static inline int clk_notifier_register(struct clk *clk,
@@ -215,6 +243,13 @@ static inline int clk_notifier_register(struct clk *clk,
 
 static inline int clk_notifier_unregister(struct clk *clk,
 					  struct notifier_block *nb)
+{
+	return -ENOTSUPP;
+}
+
+static inline int devm_clk_notifier_register(struct device *dev,
+					     struct clk *clk,
+					     struct notifier_block *nb)
 {
 	return -ENOTSUPP;
 }
@@ -257,6 +292,13 @@ static inline int clk_rate_exclusive_get(struct clk *clk)
 }
 
 static inline void clk_rate_exclusive_put(struct clk *clk) {}
+
+static inline int clk_save_context(void)
+{
+	return 0;
+}
+
+static inline void clk_restore_context(void) {}
 
 #endif
 
@@ -720,6 +762,9 @@ long clk_round_rate(struct clk *clk, unsigned long rate);
  * @clk: clock source
  * @rate: desired clock rate in Hz
  *
+ * Updating the rate starts at the top-most affected clock and then
+ * walks the tree down to the bottom-most clock that needs updating.
+ *
  * Returns success (0) or negative errno.
  */
 int clk_set_rate(struct clk *clk, unsigned long rate);
@@ -815,23 +860,6 @@ struct clk *clk_get_parent(struct clk *clk);
  * clk_get_sys should not be called from within interrupt context.
  */
 struct clk *clk_get_sys(const char *dev_id, const char *con_id);
-
-/**
- * clk_save_context - save clock context for poweroff
- *
- * Saves the context of the clock register for powerstates in which the
- * contents of the registers will be lost. Occurs deep within the suspend
- * code so locking is not necessary.
- */
-int clk_save_context(void);
-
-/**
- * clk_restore_context - restore clock context after poweroff
- *
- * This occurs with all clocks enabled. Occurs deep within the resume code
- * so locking is not necessary.
- */
-void clk_restore_context(void);
 
 #else /* !CONFIG_HAVE_CLK */
 
@@ -999,13 +1027,6 @@ static inline struct clk *clk_get_sys(const char *dev_id, const char *con_id)
 	return NULL;
 }
 
-static inline int clk_save_context(void)
-{
-	return 0;
-}
-
-static inline void clk_restore_context(void) {}
-
 #endif
 
 /* clk_prepare_enable helps cases using clk_enable in non-atomic context. */
@@ -1089,13 +1110,6 @@ static inline struct clk *of_clk_get_from_provider(struct of_phandle_args *clksp
 {
 	return ERR_PTR(-ENOENT);
 }
-#endif
-
-#ifdef CONFIG_COMMON_CLK_QCOM_DEBUG
-/* Debugfs API to print the enabled clocks */
-void clock_debug_print_enabled(void);
-#else
-static inline void clock_debug_print_enabled(void){}
 #endif
 
 #endif

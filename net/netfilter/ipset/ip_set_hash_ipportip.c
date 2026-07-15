@@ -46,7 +46,7 @@ struct hash_ipportip4_elem {
 	u8 padding;
 };
 
-static inline bool
+static bool
 hash_ipportip4_data_equal(const struct hash_ipportip4_elem *ip1,
 			  const struct hash_ipportip4_elem *ip2,
 			  u32 *multi)
@@ -72,7 +72,7 @@ nla_put_failure:
 	return true;
 }
 
-static inline void
+static void
 hash_ipportip4_data_next(struct hash_ipportip4_elem *next,
 			 const struct hash_ipportip4_elem *d)
 {
@@ -107,11 +107,11 @@ static int
 hash_ipportip4_uadt(struct ip_set *set, struct nlattr *tb[],
 		    enum ipset_adt adt, u32 *lineno, u32 flags, bool retried)
 {
-	const struct hash_ipportip4 *h = set->data;
+	struct hash_ipportip4 *h = set->data;
 	ipset_adtfn adtfn = set->variant->adt[adt];
 	struct hash_ipportip4_elem e = { .ip = 0 };
 	struct ip_set_ext ext = IP_SET_INIT_UEXT(set);
-	u32 ip, ip_to = 0, p = 0, port, port_to;
+	u32 ip, ip_to = 0, p = 0, port, port_to, i = 0;
 	bool with_ports = false;
 	int ret;
 
@@ -184,9 +184,13 @@ hash_ipportip4_uadt(struct ip_set *set, struct nlattr *tb[],
 	for (; ip <= ip_to; ip++) {
 		p = retried && ip == ntohl(h->next.ip) ? ntohs(h->next.port)
 						       : port;
-		for (; p <= port_to; p++) {
+		for (; p <= port_to; p++, i++) {
 			e.ip = htonl(ip);
 			e.port = htons(p);
+			if (i > IPSET_MAX_RANGE) {
+				hash_ipportip4_data_next(&h->next, &e);
+				return -ERANGE;
+			}
 			ret = adtfn(set, &e, &ext, &ext, flags);
 
 			if (ret && !ip_set_eexist(ret, flags))
@@ -210,7 +214,7 @@ struct hash_ipportip6_elem {
 
 /* Common functions */
 
-static inline bool
+static bool
 hash_ipportip6_data_equal(const struct hash_ipportip6_elem *ip1,
 			  const struct hash_ipportip6_elem *ip2,
 			  u32 *multi)
@@ -236,7 +240,7 @@ nla_put_failure:
 	return true;
 }
 
-static inline void
+static void
 hash_ipportip6_data_next(struct hash_ipportip6_elem *next,
 			 const struct hash_ipportip6_elem *d)
 {

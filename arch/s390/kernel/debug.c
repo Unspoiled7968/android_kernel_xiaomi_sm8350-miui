@@ -2,7 +2,7 @@
 /*
  *   S/390 debug facility
  *
- *    Copyright IBM Corp. 1999, 2012
+ *    Copyright IBM Corp. 1999, 2020
  *
  *    Author(s): Michael Holzheu (holzheu@de.ibm.com),
  *		 Holger Smolinski (Holger.Smolinski@de.ibm.com)
@@ -24,6 +24,7 @@
 #include <linux/export.h>
 #include <linux/init.h>
 #include <linux/fs.h>
+#include <linux/minmax.h>
 #include <linux/debugfs.h>
 
 #include <asm/debug.h>
@@ -90,26 +91,12 @@ static int debug_input_flush_fn(debug_info_t *id, struct debug_view *view,
 				size_t user_buf_size, loff_t *offset);
 static int debug_hex_ascii_format_fn(debug_info_t *id, struct debug_view *view,
 				     char *out_buf, const char *in_buf);
-static int debug_raw_format_fn(debug_info_t *id,
-			       struct debug_view *view, char *out_buf,
-			       const char *in_buf);
-static int debug_raw_header_fn(debug_info_t *id, struct debug_view *view,
-			       int area, debug_entry_t *entry, char *out_buf);
-
 static int debug_sprintf_format_fn(debug_info_t *id, struct debug_view *view,
 				   char *out_buf, debug_sprintf_entry_t *curr_event);
+static void debug_areas_swap(debug_info_t *a, debug_info_t *b);
+static void debug_events_append(debug_info_t *dest, debug_info_t *src);
 
 /* globals */
-
-struct debug_view debug_raw_view = {
-	"raw",
-	NULL,
-	&debug_raw_header_fn,
-	&debug_raw_format_fn,
-	NULL,
-	NULL
-};
-EXPORT_SYMBOL(debug_raw_view);
 
 struct debug_view debug_hex_ascii_view = {
 	"hex_ascii",
@@ -414,7 +401,7 @@ static int debug_format_entry(file_private_info_t *p_info)
 	act_entry = (debug_entry_t *) ((char *)id_snap->areas[p_info->act_area]
 				       [p_info->act_page] + p_info->act_entry);
 
-	if (act_entry->id.stck == 0LL)
+	if (act_entry->clock == 0LL)
 		goto out; /* empty entry */
 	if (view->header_proc)
 		len += view->header_proc(id_snap, view, p_info->act_area,
@@ -752,35 +739,28 @@ EXPORT_SYMBOL(debug_unregister);
  */
 static int debug_set_size(debug_info_t *id, int nr_areas, int pages_per_area)
 {
-	debug_entry_t ***new_areas;
+	debug_info_t *new_id;
 	unsigned long flags;
-	int rc = 0;
 
 	if (!id || (nr_areas <= 0) || (pages_per_area < 0))
 		return -EINVAL;
-	if (pages_per_area > 0) {
-		new_areas = debug_areas_alloc(pages_per_area, nr_areas);
-		if (!new_areas) {
-			pr_info("Allocating memory for %i pages failed\n",
-				pages_per_area);
-			rc = -ENOMEM;
-			goto out;
-		}
-	} else {
-		new_areas = NULL;
+
+	new_id = debug_info_alloc("", pages_per_area, nr_areas, id->buf_size,
+				  id->level, ALL_AREAS);
+	if (!new_id) {
+		pr_info("Allocating memory for %i pages failed\n",
+			pages_per_area);
+		return -ENOMEM;
 	}
+
 	spin_lock_irqsave(&id->lock, flags);
-	debug_areas_free(id);
-	id->areas = new_areas;
-	id->nr_areas = nr_areas;
-	id->pages_per_area = pages_per_area;
-	id->active_area = 0;
-	memset(id->active_entries, 0, sizeof(int)*id->nr_areas);
-	memset(id->active_pages, 0, sizeof(int)*id->nr_areas);
+	debug_events_append(new_id, id);
+	debug_areas_swap(new_id, id);
+	debug_info_free(new_id);
 	spin_unlock_irqrestore(&id->lock, flags);
 	pr_info("%s: set new size (%i pages)\n", id->name, pages_per_area);
-out:
-	return rc;
+
+	return 0;
 }
 
 /**
@@ -847,6 +827,42 @@ static inline debug_entry_t *get_active_entry(debug_info_t *id)
 				  id->active_entries[id->active_area]);
 }
 
+/* Swap debug areas of a and b. */
+static void debug_areas_swap(debug_info_t *a, debug_info_t *b)
+{
+	swap(a->nr_areas, b->nr_areas);
+	swap(a->pages_per_area, b->pages_per_area);
+	swap(a->areas, b->areas);
+	swap(a->active_area, b->active_area);
+	swap(a->active_pages, b->active_pages);
+	swap(a->active_entries, b->active_entries);
+}
+
+/* Append all debug events in active area from source to destination log. */
+static void debug_events_append(debug_info_t *dest, debug_info_t *src)
+{
+	debug_entry_t *from, *to, *last;
+
+	if (!src->areas || !dest->areas)
+		return;
+
+	/* Loop over all entries in src, starting with oldest. */
+	from = get_active_entry(src);
+	last = from;
+	do {
+		if (from->clock != 0LL) {
+			to = get_active_entry(dest);
+			memset(to, 0, dest->entry_size);
+			memcpy(to, from, min(src->entry_size,
+					     dest->entry_size));
+			proceed_active_entry(dest);
+		}
+
+		proceed_active_entry(src);
+		from = get_active_entry(src);
+	} while (from != last);
+}
+
 /*
  * debug_finish_entry:
  * - set timestamp, caller address, cpu number etc.
@@ -855,12 +871,17 @@ static inline debug_entry_t *get_active_entry(debug_info_t *id)
 static inline void debug_finish_entry(debug_info_t *id, debug_entry_t *active,
 				      int level, int exception)
 {
-	active->id.stck = get_tod_clock_fast() -
-		*(unsigned long long *) &tod_clock_base[1];
-	active->id.fields.cpuid = smp_processor_id();
+	unsigned char clk[STORE_CLOCK_EXT_SIZE];
+	unsigned long timestamp;
+
+	get_tod_clock_ext(clk);
+	timestamp = *(unsigned long *) &clk[0] >> 4;
+	timestamp -= TOD_UNIX_EPOCH >> 12;
+	active->clock = timestamp;
+	active->cpu = smp_processor_id();
 	active->caller = __builtin_return_address(0);
-	active->id.fields.exception = exception;
-	active->id.fields.level = level;
+	active->exception = exception;
+	active->level = level;
 	proceed_active_entry(id);
 	if (exception)
 		proceed_active_area(id);
@@ -878,7 +899,7 @@ static int debug_active = 1;
  * if debug_active is already off
  */
 static int s390dbf_procactive(struct ctl_table *table, int write,
-			      void __user *buffer, size_t *lenp, loff_t *ppos)
+			      void *buffer, size_t *lenp, loff_t *ppos)
 {
 	if (!write || debug_stoppable || !debug_active)
 		return proc_dointvec(table, write, buffer, lenp, ppos);
@@ -1396,32 +1417,6 @@ out:
 }
 
 /*
- * prints debug header in raw format
- */
-static int debug_raw_header_fn(debug_info_t *id, struct debug_view *view,
-			       int area, debug_entry_t *entry, char *out_buf)
-{
-	int rc;
-
-	rc = sizeof(debug_entry_t);
-	memcpy(out_buf, entry, sizeof(debug_entry_t));
-	return rc;
-}
-
-/*
- * prints debug data in raw format
- */
-static int debug_raw_format_fn(debug_info_t *id, struct debug_view *view,
-			       char *out_buf, const char *in_buf)
-{
-	int rc;
-
-	rc = id->buf_size;
-	memcpy(out_buf, in_buf, id->buf_size);
-	return rc;
-}
-
-/*
  * prints debug data in hex/ascii format
  */
 static int debug_hex_ascii_format_fn(debug_info_t *id, struct debug_view *view,
@@ -1450,25 +1445,24 @@ static int debug_hex_ascii_format_fn(debug_info_t *id, struct debug_view *view,
 int debug_dflt_header_fn(debug_info_t *id, struct debug_view *view,
 			 int area, debug_entry_t *entry, char *out_buf)
 {
-	unsigned long base, sec, usec;
+	unsigned long sec, usec;
 	unsigned long caller;
 	unsigned int level;
 	char *except_str;
 	int rc = 0;
 
-	level = entry->id.fields.level;
-	base = (*(unsigned long *) &tod_clock_base[0]) >> 4;
-	sec = (entry->id.stck >> 12) + base - (TOD_UNIX_EPOCH >> 12);
+	level = entry->level;
+	sec = entry->clock;
 	usec = do_div(sec, USEC_PER_SEC);
 
-	if (entry->id.fields.exception)
+	if (entry->exception)
 		except_str = "*";
 	else
 		except_str = "-";
 	caller = (unsigned long) entry->caller;
-	rc += sprintf(out_buf, "%02i %011ld:%06lu %1u %1s %02i %pK  ",
+	rc += sprintf(out_buf, "%02i %011ld:%06lu %1u %1s %04u %pK  ",
 		      area, sec, usec, level, except_str,
-		      entry->id.fields.cpuid, (void *)caller);
+		      entry->cpu, (void *)caller);
 	return rc;
 }
 EXPORT_SYMBOL(debug_dflt_header_fn);

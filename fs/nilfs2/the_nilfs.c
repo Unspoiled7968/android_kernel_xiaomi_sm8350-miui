@@ -193,6 +193,34 @@ static int nilfs_store_log_cursor(struct the_nilfs *nilfs,
 }
 
 /**
+ * nilfs_get_blocksize - get block size from raw superblock data
+ * @sb: super block instance
+ * @sbp: superblock raw data buffer
+ * @blocksize: place to store block size
+ *
+ * nilfs_get_blocksize() calculates the block size from the block size
+ * exponent information written in @sbp and stores it in @blocksize,
+ * or aborts with an error message if it's too large.
+ *
+ * Return Value: On success, 0 is returned. If the block size is too
+ * large, -EINVAL is returned.
+ */
+static int nilfs_get_blocksize(struct super_block *sb,
+			       struct nilfs_super_block *sbp, int *blocksize)
+{
+	unsigned int shift_bits = le32_to_cpu(sbp->s_log_block_size);
+
+	if (unlikely(shift_bits >
+		     ilog2(NILFS_MAX_BLOCK_SIZE) - BLOCK_SIZE_BITS)) {
+		nilfs_err(sb, "too large filesystem blocksize: 2 ^ %u KiB",
+			  shift_bits);
+		return -EINVAL;
+	}
+	*blocksize = BLOCK_SIZE << shift_bits;
+	return 0;
+}
+
+/**
  * load_nilfs - load and recover the nilfs
  * @nilfs: the_nilfs structure to be released
  * @sb: super block isntance used to recover past segment
@@ -245,11 +273,15 @@ int load_nilfs(struct the_nilfs *nilfs, struct super_block *sb)
 		nilfs->ns_sbwtime = le64_to_cpu(sbp[0]->s_wtime);
 
 		/* verify consistency between two super blocks */
-		blocksize = BLOCK_SIZE << le32_to_cpu(sbp[0]->s_log_block_size);
+		err = nilfs_get_blocksize(sb, sbp[0], &blocksize);
+		if (err)
+			goto scan_error;
+
 		if (blocksize != nilfs->ns_blocksize) {
 			nilfs_warn(sb,
 				   "blocksize differs between two super blocks (%d != %d)",
 				   blocksize, nilfs->ns_blocksize);
+			err = -EINVAL;
 			goto scan_error;
 		}
 
@@ -447,7 +479,7 @@ static int nilfs_store_disk_layout(struct the_nilfs *nilfs,
 
 	nsegments = le64_to_cpu(sbp->s_nsegments);
 	if (nsegments > nilfs_max_segment_count(nilfs)) {
-		nilfs_msg(nilfs->ns_sb, KERN_ERR,
+		nilfs_err(nilfs->ns_sb,
 			  "segment count %llu exceeds upper limit (%llu segments)",
 			  (unsigned long long)nsegments,
 			  (unsigned long long)nilfs_max_segment_count(nilfs));
@@ -465,7 +497,7 @@ static int nilfs_store_disk_layout(struct the_nilfs *nilfs,
 		 */
 
 		if (nblocks < min_block_count) {
-			nilfs_msg(nilfs->ns_sb, KERN_ERR,
+			nilfs_err(nilfs->ns_sb,
 				  "total number of segment blocks %llu exceeds device size (%llu blocks)",
 				  (unsigned long long)min_block_count,
 				  (unsigned long long)nblocks);
@@ -570,7 +602,7 @@ static int nilfs_load_super_block(struct the_nilfs *nilfs,
 	int valid[2], swp = 0;
 
 	if (devsize < NILFS_SEG_MIN_BLOCKS * NILFS_MIN_BLOCK_SIZE + 4096) {
-		nilfs_msg(sb, KERN_ERR, "device size too small");
+		nilfs_err(sb, "device size too small");
 		return -EINVAL;
 	}
 	sb2off = NILFS_SB2_OFFSET_BYTES(devsize);
@@ -669,9 +701,11 @@ int init_nilfs(struct the_nilfs *nilfs, struct super_block *sb, char *data)
 	if (err)
 		goto failed_sbh;
 
-	blocksize = BLOCK_SIZE << le32_to_cpu(sbp->s_log_block_size);
-	if (blocksize < NILFS_MIN_BLOCK_SIZE ||
-	    blocksize > NILFS_MAX_BLOCK_SIZE) {
+	err = nilfs_get_blocksize(sb, sbp, &blocksize);
+	if (err)
+		goto failed_sbh;
+
+	if (blocksize < NILFS_MIN_BLOCK_SIZE) {
 		nilfs_err(sb,
 			  "couldn't mount because of unsupported filesystem blocksize %d",
 			  blocksize);
@@ -690,7 +724,7 @@ int init_nilfs(struct the_nilfs *nilfs, struct super_block *sb, char *data)
 		}
 		nilfs_release_super_block(nilfs);
 		if (!sb_set_blocksize(sb, blocksize)) {
-			nilfs_msg(sb, KERN_ERR, "bad blocksize %d", blocksize);
+			nilfs_err(sb, "bad blocksize %d", blocksize);
 			err = -EINVAL;
 			goto out;
 		}

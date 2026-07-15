@@ -728,11 +728,10 @@ mpt3sas_transport_port_add(struct MPT3SAS_ADAPTER *ioc, u16 handle,
 		sas_device_put(sas_device);
 	}
 
-	if ((ioc->logging_level & MPT_DEBUG_TRANSPORT))
-		dev_printk(KERN_INFO, &rphy->dev,
-			"add: handle(0x%04x), sas_addr(0x%016llx)\n",
-			handle, (unsigned long long)
-		    mpt3sas_port->remote_identify.sas_address);
+	dev_info(&rphy->dev,
+	    "add: handle(0x%04x), sas_addr(0x%016llx)\n", handle,
+	    (unsigned long long)mpt3sas_port->remote_identify.sas_address);
+
 	mpt3sas_port->rphy = rphy;
 	spin_lock_irqsave(&ioc->sas_node_lock, flags);
 	list_add_tail(&mpt3sas_port->port_list, &sas_node->sas_port_list);
@@ -812,11 +811,9 @@ mpt3sas_transport_port_remove(struct MPT3SAS_ADAPTER *ioc, u64 sas_address,
 	list_for_each_entry_safe(mpt3sas_phy, next_phy,
 	    &mpt3sas_port->phy_list, port_siblings) {
 		if ((ioc->logging_level & MPT_DEBUG_TRANSPORT))
-			dev_printk(KERN_INFO, &mpt3sas_port->port->dev,
-			    "remove: sas_addr(0x%016llx), phy(%d)\n",
-			    (unsigned long long)
-			    mpt3sas_port->remote_identify.sas_address,
-			    mpt3sas_phy->phy_id);
+			ioc_info(ioc, "remove: sas_addr(0x%016llx), phy(%d)\n",
+				(unsigned long long) mpt3sas_port->remote_identify.sas_address,
+					mpt3sas_phy->phy_id);
 		mpt3sas_phy->phy_belongs_to_port = 0;
 		if (!ioc->remove_host)
 			sas_port_delete_phy(mpt3sas_port->port,
@@ -825,6 +822,8 @@ mpt3sas_transport_port_remove(struct MPT3SAS_ADAPTER *ioc, u64 sas_address,
 	}
 	if (!ioc->remove_host)
 		sas_port_delete(mpt3sas_port->port);
+	ioc_info(ioc, "%s: removed: sas_addr(0x%016llx)\n",
+	    __func__, (unsigned long long)sas_address);
 	kfree(mpt3sas_port);
 }
 

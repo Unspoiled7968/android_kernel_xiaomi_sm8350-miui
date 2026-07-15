@@ -1,9 +1,9 @@
 config GKI_HIDDEN_DRM_CONFIGS
 	bool "Hidden DRM configs needed for GKI"
 	select DRM_KMS_HELPER if (HAS_IOMEM && DRM)
+	select DRM_GEM_SHMEM_HELPER if (DRM)
 	select DRM_GEM_CMA_HELPER
 	select DRM_KMS_CMA_HELPER
-	select DRM_GEM_SHMEM_HELPER
 	select DRM_MIPI_DSI
 	select DRM_TTM if (HAS_IOMEM && DRM)
 	select VIDEOMODE_HELPERS
@@ -37,6 +37,7 @@ config GKI_HIDDEN_SND_CONFIGS
 	select SND_PCM_ELD
 	select SND_JACK
 	select SND_JACK_INPUT_DEV
+	select SND_INTEL_NHLT if (ACPI)
 	help
 	  Dummy config option used to enable hidden SND configs.
 	  These are normally selected implicitly when a module
@@ -48,6 +49,7 @@ config GKI_HIDDEN_SND_SOC_CONFIGS
 	select SND_PCM_IEC958
 	select SND_SOC_COMPRESS if (SND_SOC && SND)
 	select SND_SOC_TOPOLOGY if (SND_SOC && SND)
+	select DMADEVICES
 	select DMA_VIRTUAL_CHANNELS
 	help
 	  Dummy config option used to enable hidden SND_SOC configs.
@@ -85,12 +87,15 @@ config GKI_HIDDEN_QCOM_CONFIGS
 config GKI_HIDDEN_MEDIA_CONFIGS
 	bool "Hidden Media configs needed for GKI"
 	select VIDEOBUF2_CORE
+	select V4L2_MEM2MEM_DEV
+	select MEDIA_CONTROLLER
+	select MEDIA_CONTROLLER_REQUEST_API
 	select MEDIA_SUPPORT
 	select FRAME_VECTOR
-	select VIDEOBUF2_DMA_CONTIG
 	select CEC_CORE
 	select CEC_NOTIFIER
 	select CEC_PIN
+	select VIDEOBUF2_DMA_CONTIG
 	help
 	  Dummy config option used to enable hidden media configs.
 	  These are normally selected implicitly when a module
@@ -116,10 +121,12 @@ config GKI_LEGACY_WEXT_ALLCONFIG
 	select WEXT_SPY
 	select WEXT_PRIV
 	help
-	  Placeholder config option used to enable all the hidden legacy
-	  wireless extensions to the core wireless network functionality used
-	  by add-in modules.  If you are not building a kernel to be used for
-	  a variety of out-of-kernel built wireless modules, say N here.
+	  Dummy config option used to enable all the hidden legacy wireless
+	  extensions to the core wireless network functionality used by
+	  add-in modules.
+
+	  If you are not building a kernel to be used for a variety of
+	  out-of-kernel built wireless modules, say N here.
 
 config GKI_HIDDEN_USB_CONFIGS
 	bool "Hiddel USB configurations needed for GKI"
@@ -156,6 +163,8 @@ config GKI_HIDDEN_RPMSG_CONFIGS
 config GKI_HIDDEN_GPU_CONFIGS
 	bool "Hidden GPU configuration needed for GKI"
 	select TRACE_GPU_MEM
+	select MMU_NOTIFIER
+	select HMM_MIRROR
 	help
 	  Dummy config option used to enable the hidden GPU config.
 	  These are normally selected implicitly when a module
@@ -164,6 +173,8 @@ config GKI_HIDDEN_GPU_CONFIGS
 config GKI_HIDDEN_IRQ_CONFIGS
 	bool "Hidden IRQ configuration needed for GKI"
 	select GENERIC_IRQ_CHIP
+	select IRQ_DOMAIN_HIERARCHY
+	select IRQ_FASTEOI_HIERARCHY_HANDLERS
 	help
 	  Dummy config option used to enable GENERIC_IRQ_CHIP hidden
 	  config, required by various SoC platforms. This is usually
@@ -176,6 +187,44 @@ config GKI_HIDDEN_HYPERVISOR_CONFIGS
 	  Dummy config option used to enable the SYS_HYPERVISOR hidden
 	  config, required by various SoC platforms. This is usually
 	  selected by XEN or S390.
+
+config GKI_HIDDEN_NET_CONFIGS
+	bool "Hidden networking configuration needed for GKI"
+	select PAGE_POOL
+	select NET_PTP_CLASSIFY
+	help
+	  Dummy config option used to enable the networking hidden
+	  config, required by various SoC platforms.
+
+config GKI_HIDDEN_PHY_CONFIGS
+	bool "Hidden PHY configuration needed for GKI"
+	select GENERIC_PHY_MIPI_DPHY
+	help
+	  Dummy config option used to enable the hidden PHY configs,
+	  required by various SoC platforms.
+
+config GKI_HIDDEN_MM_CONFIGS
+	bool "Hidden MM configuration needed for GKI"
+	select PAGE_REPORTING
+	select BALLOON_COMPACTION
+	select MEMORY_BALLOON
+	help
+	  Dummy config option used to enable hidden MM configs,
+	  currently required for VIRTIO_BALLOON
+
+config GKI_HIDDEN_DMA_CONFIGS
+	bool "Hidden DMA configuration needed for GKI"
+	select ASYNC_TX_ENABLE_CHANNEL_SWITCH
+	help
+	  Dummy config option used to enable the hidden DMA configs,
+	  required by various SoC platforms.
+
+config GKI_HIDDEN_ETHERNET_CONFIGS
+	bool "Hidden Ethernet configuration needed for GKI"
+	select PHYLINK
+	help
+	  Dummy config option used to enable the hidden Ethernet PHYLINK
+	  configs, required by various ethernet devices.
 
 # Atrocities needed for
 # a) building GKI modules in separate tree, or
@@ -200,20 +249,17 @@ config GKI_HACKS_TO_FIX
 	select GKI_HIDDEN_USB_CONFIGS
 	select GKI_HIDDEN_SOC_BUS_CONFIGS
 	select GKI_HIDDEN_RPMSG_CONFIGS
-	select GKI_HIDDEN_HYPERVISOR_CONFIGS
 	select GKI_HIDDEN_GPU_CONFIGS
 	select GKI_HIDDEN_IRQ_CONFIGS
+	select GKI_HIDDEN_HYPERVISOR_CONFIGS
+	select GKI_HIDDEN_NET_CONFIGS
+	select GKI_HIDDEN_PHY_CONFIGS
+	select GKI_HIDDEN_MM_CONFIGS
+	select GKI_HIDDEN_DMA_CONFIGS
+	select GKI_HIDDEN_ETHERNET_CONFIGS
 	help
 	  Dummy config option used to enable core functionality used by
 	  modules that may not be selectable in this config.
 
 	  Unless you are building a GKI kernel to be used with modules
 	  built from a different config, say N here.
-
-config GKI_OPT_FEATURES
-	bool "Optional GKI features"
-	help
-	  Config option that should be enabled in GKI kernels to allow optional
-	  GKI features be enabled or disabled without ABI breakage.
-
-	  If you are not building a GKI kernel, say N here.

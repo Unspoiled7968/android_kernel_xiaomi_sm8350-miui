@@ -1466,7 +1466,7 @@ static int vpif_probe_complete(void)
 		vdev->device_caps = V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_STREAMING;
 		video_set_drvdata(&ch->video_dev, ch);
 		err = video_register_device(vdev,
-					    VFL_TYPE_GRABBER, (j ? 1 : 0));
+					    VFL_TYPE_VIDEO, (j ? 1 : 0));
 		if (err)
 			goto probe_out;
 	}
@@ -1614,7 +1614,7 @@ err_cleanup:
  * This creates device entries by register itself to the V4L2 driver and
  * initializes fields of each channel objects
  */
-static __init int vpif_probe(struct platform_device *pdev)
+static int vpif_probe(struct platform_device *pdev)
 {
 	struct vpif_subdev_info *subdevdata;
 	struct i2c_adapter *i2c_adap;
@@ -1817,7 +1817,7 @@ static int vpif_resume(struct device *dev)
 
 static SIMPLE_DEV_PM_OPS(vpif_pm_ops, vpif_suspend, vpif_resume);
 
-static __refdata struct platform_driver vpif_driver = {
+static struct platform_driver vpif_driver = {
 	.driver	= {
 		.name	= VPIF_DRIVER_NAME,
 		.pm	= &vpif_pm_ops,

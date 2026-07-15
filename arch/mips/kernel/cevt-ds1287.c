@@ -10,6 +10,7 @@
 #include <linux/mc146818rtc.h>
 #include <linux/irq.h>
 
+#include <asm/ds1287.h>
 #include <asm/time.h>
 
 int ds1287_timer_state(void)
@@ -100,14 +101,9 @@ static irqreturn_t ds1287_interrupt(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-static struct irqaction ds1287_irqaction = {
-	.handler	= ds1287_interrupt,
-	.flags		= IRQF_PERCPU | IRQF_TIMER,
-	.name		= "ds1287",
-};
-
 int __init ds1287_clockevent_init(int irq)
 {
+	unsigned long flags = IRQF_PERCPU | IRQF_TIMER;
 	struct clock_event_device *cd;
 
 	cd = &ds1287_clockevent;
@@ -122,5 +118,5 @@ int __init ds1287_clockevent_init(int irq)
 
 	clockevents_register_device(&ds1287_clockevent);
 
-	return setup_irq(irq, &ds1287_irqaction);
+	return request_irq(irq, ds1287_interrupt, flags, "ds1287", NULL);
 }

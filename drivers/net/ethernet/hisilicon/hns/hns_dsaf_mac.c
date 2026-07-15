@@ -403,11 +403,12 @@ static void hns_mac_param_get(struct mac_params *param,
 }
 
 /**
- *hns_mac_queue_config_bc_en - set broadcast rx&tx enable
- *@mac_cb: mac device
- *@queue: queue number
- *@en:enable
- *retuen 0 - success , negative --fail
+ * hns_mac_queue_config_bc_en - set broadcast rx&tx enable
+ * @mac_cb: mac device
+ * @port_num: queue number
+ * @vlan_id: vlan id`
+ * @enable: enable
+ * return 0 - success , negative --fail
  */
 static int hns_mac_port_config_bc_en(struct hns_mac_cb *mac_cb,
 				     u32 port_num, u16 vlan_id, bool enable)
@@ -437,11 +438,11 @@ static int hns_mac_port_config_bc_en(struct hns_mac_cb *mac_cb,
 }
 
 /**
- *hns_mac_vm_config_bc_en - set broadcast rx&tx enable
- *@mac_cb: mac device
- *@vmid: vm id
- *@en:enable
- *retuen 0 - success , negative --fail
+ * hns_mac_vm_config_bc_en - set broadcast rx&tx enable
+ * @mac_cb: mac device
+ * @vmid: vm id
+ * @enable: enable
+ * return 0 - success , negative --fail
  */
 int hns_mac_vm_config_bc_en(struct hns_mac_cb *mac_cb, u32 vmid, bool enable)
 {
@@ -571,8 +572,8 @@ void hns_mac_stop(struct hns_mac_cb *mac_cb)
 /**
  * hns_mac_get_autoneg - get auto autonegotiation
  * @mac_cb: mac control block
- * @enable: enable or not
- * retuen 0 - success , negative --fail
+ * @auto_neg: output pointer to autoneg result
+ * return 0 - success , negative --fail
  */
 void hns_mac_get_autoneg(struct hns_mac_cb *mac_cb, u32 *auto_neg)
 {
@@ -589,7 +590,7 @@ void hns_mac_get_autoneg(struct hns_mac_cb *mac_cb, u32 *auto_neg)
  * @mac_cb: mac control block
  * @rx_en: rx enable status
  * @tx_en: tx enable status
- * retuen 0 - success , negative --fail
+ * return 0 - success , negative --fail
  */
 void hns_mac_get_pauseparam(struct hns_mac_cb *mac_cb, u32 *rx_en, u32 *tx_en)
 {
@@ -607,7 +608,7 @@ void hns_mac_get_pauseparam(struct hns_mac_cb *mac_cb, u32 *rx_en, u32 *tx_en)
  * hns_mac_set_autoneg - set auto autonegotiation
  * @mac_cb: mac control block
  * @enable: enable or not
- * retuen 0 - success , negative --fail
+ * return 0 - success , negative --fail
  */
 int hns_mac_set_autoneg(struct hns_mac_cb *mac_cb, u8 enable)
 {
@@ -652,7 +653,7 @@ int hns_mac_set_pauseparam(struct hns_mac_cb *mac_cb, u32 rx_en, u32 tx_en)
 /**
  * hns_mac_init_ex - mac init
  * @mac_cb: mac control block
- * retuen 0 - success , negative --fail
+ * return 0 - success , negative --fail
  */
 static int hns_mac_init_ex(struct hns_mac_cb *mac_cb)
 {
@@ -726,9 +727,9 @@ hns_mac_register_phydev(struct mii_bus *mdio, struct hns_mac_cb *mac_cb,
 		return rc;
 
 	if (!strcmp(phy_type, phy_modes(PHY_INTERFACE_MODE_XGMII)))
-		is_c45 = 1;
+		is_c45 = true;
 	else if (!strcmp(phy_type, phy_modes(PHY_INTERFACE_MODE_SGMII)))
-		is_c45 = 0;
+		is_c45 = false;
 	else
 		return -ENODATA;
 
@@ -829,7 +830,6 @@ static const struct {
 /**
  *hns_mac_get_info  - get mac information from device node
  *@mac_cb: mac device
- *@np:device node
  * return: 0 --success, negative --fail
  */
 static int hns_mac_get_info(struct hns_mac_cb *mac_cb)
@@ -933,6 +933,7 @@ static int hns_mac_get_info(struct hns_mac_cb *mac_cb)
 			mac_cb->cpld_ctrl = NULL;
 		} else {
 			syscon = syscon_node_to_regmap(cpld_args.np);
+			of_node_put(cpld_args.np);
 			if (IS_ERR_OR_NULL(syscon)) {
 				dev_dbg(mac_cb->dev, "no cpld-syscon found!\n");
 				mac_cb->cpld_ctrl = NULL;
@@ -980,7 +981,7 @@ static int hns_mac_get_info(struct hns_mac_cb *mac_cb)
 /**
  * hns_mac_get_mode - get mac mode
  * @phy_if: phy interface
- * retuen 0 - gmac, 1 - xgmac , negative --fail
+ * return 0 - gmac, 1 - xgmac , negative --fail
  */
 static int hns_mac_get_mode(phy_interface_t phy_if)
 {

@@ -5,8 +5,11 @@
 
 #ifndef _ZCOMP_H_
 #define _ZCOMP_H_
+#include <linux/local_lock.h>
 
 struct zcomp_strm {
+	/* The members ->buffer and ->tfm are protected by ->lock. */
+	local_lock_t lock;
 	/* compression/decompression buffer */
 	void *buffer;
 	struct crypto_comp *tfm;
@@ -24,7 +27,7 @@ int zcomp_cpu_dead(unsigned int cpu, struct hlist_node *node);
 ssize_t zcomp_available_show(const char *comp, char *buf);
 bool zcomp_available_algorithm(const char *comp);
 
-struct zcomp *zcomp_create(const char *alg);
+struct zcomp *zcomp_create(const char *comp);
 void zcomp_destroy(struct zcomp *comp);
 
 struct zcomp_strm *zcomp_stream_get(struct zcomp *comp);

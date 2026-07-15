@@ -14,7 +14,6 @@
 
 #include <linux/mm.h>
 #include <linux/cpu.h>
-#include <linux/device.h>
 #include <linux/nmi.h>
 #include <linux/init.h>
 #include <linux/module.h>
@@ -27,6 +26,8 @@
 
 #include <asm/irq_regs.h>
 #include <linux/kvm_para.h>
+
+#include <trace/hooks/softlockup.h>
 
 static DEFINE_MUTEX(watchdog_mutex);
 
@@ -45,12 +46,15 @@ int __read_mostly soft_watchdog_user_enabled = 1;
 int __read_mostly watchdog_thresh = 10;
 static int __read_mostly nmi_watchdog_available;
 
-static struct cpumask watchdog_allowed_mask __read_mostly;
-
 struct cpumask watchdog_cpumask __read_mostly;
 unsigned long *watchdog_cpumask_bits = cpumask_bits(&watchdog_cpumask);
 
 #ifdef CONFIG_HARDLOCKUP_DETECTOR
+
+# ifdef CONFIG_SMP
+int __read_mostly sysctl_hardlockup_all_cpu_backtrace;
+# endif /* CONFIG_SMP */
+
 /*
  * Should we panic when a soft-lockup or hard-lockup occurs:
  */
@@ -83,16 +87,6 @@ static int __init hardlockup_panic_setup(char *str)
 }
 __setup("nmi_watchdog=", hardlockup_panic_setup);
 
-# ifdef CONFIG_SMP
-int __read_mostly sysctl_hardlockup_all_cpu_backtrace;
-
-static int __init hardlockup_all_cpu_backtrace_setup(char *str)
-{
-	sysctl_hardlockup_all_cpu_backtrace = !!simple_strtol(str, NULL, 0);
-	return 1;
-}
-__setup("hardlockup_all_cpu_backtrace=", hardlockup_all_cpu_backtrace_setup);
-# endif /* CONFIG_SMP */
 #endif /* CONFIG_HARDLOCKUP_DETECTOR */
 
 /*
@@ -164,6 +158,12 @@ static void lockup_detector_update_enable(void)
 
 #define SOFTLOCKUP_RESET	ULONG_MAX
 
+#ifdef CONFIG_SMP
+int __read_mostly sysctl_softlockup_all_cpu_backtrace;
+#endif
+
+static struct cpumask watchdog_allowed_mask __read_mostly;
+
 /* Global variables, exported for sysctl */
 unsigned int __read_mostly softlockup_panic =
 			CONFIG_BOOTPARAM_SOFTLOCKUP_PANIC_VALUE;
@@ -173,12 +173,8 @@ static u64 __read_mostly sample_period;
 
 static DEFINE_PER_CPU(unsigned long, watchdog_touch_ts);
 static DEFINE_PER_CPU(struct hrtimer, watchdog_hrtimer);
-static DEFINE_PER_CPU(unsigned int, watchdog_en);
 static DEFINE_PER_CPU(bool, softlockup_touch_sync);
-static DEFINE_PER_CPU(bool, soft_watchdog_warn);
 static DEFINE_PER_CPU(unsigned long, hrtimer_interrupts);
-static DEFINE_PER_CPU(unsigned long, soft_lockup_hrtimer_cnt);
-static DEFINE_PER_CPU(struct task_struct *, softlockup_task_ptr_saved);
 static DEFINE_PER_CPU(unsigned long, hrtimer_interrupts_saved);
 static unsigned long soft_lockup_nmi_warn;
 
@@ -209,17 +205,6 @@ static int __init watchdog_thresh_setup(char *str)
 	return 1;
 }
 __setup("watchdog_thresh=", watchdog_thresh_setup);
-
-#ifdef CONFIG_SMP
-int __read_mostly sysctl_softlockup_all_cpu_backtrace;
-
-static int __init softlockup_all_cpu_backtrace_setup(char *str)
-{
-	sysctl_softlockup_all_cpu_backtrace = !!simple_strtol(str, NULL, 0);
-	return 1;
-}
-__setup("softlockup_all_cpu_backtrace=", softlockup_all_cpu_backtrace_setup);
-#endif
 
 static void __lockup_detector_cleanup(void);
 
@@ -259,7 +244,7 @@ static void set_sample_period(void)
 }
 
 /* Commands for resetting the watchdog */
-static void __touch_watchdog(void)
+static void update_touch_ts(void)
 {
 	__this_cpu_write(watchdog_touch_ts, get_timestamp());
 }
@@ -354,9 +339,7 @@ static DEFINE_PER_CPU(struct cpu_stop_work, softlockup_stop_work);
  */
 static int softlockup_fn(void *data)
 {
-	__this_cpu_write(soft_lockup_hrtimer_cnt,
-			 __this_cpu_read(hrtimer_interrupts));
-	__touch_watchdog();
+	update_touch_ts();
 	complete(this_cpu_ptr(&softlockup_completion));
 
 	return 0;
@@ -399,7 +382,7 @@ static enum hrtimer_restart watchdog_timer_fn(struct hrtimer *hrtimer)
 
 		/* Clear the guest paused flag on watchdog reset */
 		kvm_check_and_clear_guest_paused();
-		__touch_watchdog();
+		update_touch_ts();
 		return HRTIMER_RESTART;
 	}
 
@@ -419,39 +402,21 @@ static enum hrtimer_restart watchdog_timer_fn(struct hrtimer *hrtimer)
 		if (kvm_check_and_clear_guest_paused())
 			return HRTIMER_RESTART;
 
-		/* only warn once */
-		if (__this_cpu_read(soft_watchdog_warn) == true) {
-			/*
-			 * When multiple processes are causing softlockups the
-			 * softlockup detector only warns on the first one
-			 * because the code relies on a full quiet cycle to
-			 * re-arm.  The second process prevents the quiet cycle
-			 * and never gets reported.  Use task pointers to detect
-			 * this.
-			 */
-			if (__this_cpu_read(softlockup_task_ptr_saved) !=
-			    current) {
-				__this_cpu_write(soft_watchdog_warn, false);
-				__touch_watchdog();
-			}
-			return HRTIMER_RESTART;
+		/*
+		 * Prevent multiple soft-lockup reports if one cpu is already
+		 * engaged in dumping all cpu back traces.
+		 */
+		if (softlockup_all_cpu_backtrace) {
+			if (test_and_set_bit_lock(0, &soft_lockup_nmi_warn))
+				return HRTIMER_RESTART;
 		}
 
-		if (softlockup_all_cpu_backtrace) {
-			/* Prevent multiple soft-lockup reports if one cpu is already
-			 * engaged in dumping cpu back traces
-			 */
-			if (test_and_set_bit(0, &soft_lockup_nmi_warn)) {
-				/* Someone else will report us. Let's give up */
-				__this_cpu_write(soft_watchdog_warn, true);
-				return HRTIMER_RESTART;
-			}
-		}
+		/* Start period for the next softlockup warning. */
+		update_touch_ts();
 
 		pr_emerg("BUG: soft lockup - CPU#%d stuck for %us! [%s:%d]\n",
 			smp_processor_id(), duration,
 			current->comm, task_pid_nr(current));
-		__this_cpu_write(softlockup_task_ptr_saved, current);
 		print_modules();
 		print_irqtrace_events(current);
 		if (regs)
@@ -460,39 +425,28 @@ static enum hrtimer_restart watchdog_timer_fn(struct hrtimer *hrtimer)
 			dump_stack();
 
 		if (softlockup_all_cpu_backtrace) {
-			/* Avoid generating two back traces for current
-			 * given that one is already made above
-			 */
 			trigger_allbutself_cpu_backtrace();
-
-			clear_bit(0, &soft_lockup_nmi_warn);
-			/* Barrier to sync with other cpus */
-			smp_mb__after_atomic();
+			clear_bit_unlock(0, &soft_lockup_nmi_warn);
 		}
 
+		trace_android_vh_watchdog_timer_softlockup(duration, regs, !!softlockup_panic);
 		add_taint(TAINT_SOFTLOCKUP, LOCKDEP_STILL_OK);
 		if (softlockup_panic)
 			panic("softlockup: hung tasks");
-		__this_cpu_write(soft_watchdog_warn, true);
-	} else
-		__this_cpu_write(soft_watchdog_warn, false);
+	}
 
 	return HRTIMER_RESTART;
 }
 
-void watchdog_enable(unsigned int cpu)
+static void watchdog_enable(unsigned int cpu)
 {
 	struct hrtimer *hrtimer = this_cpu_ptr(&watchdog_hrtimer);
 	struct completion *done = this_cpu_ptr(&softlockup_completion);
-	unsigned int *enabled = this_cpu_ptr(&watchdog_en);
 
 	WARN_ON_ONCE(cpu != smp_processor_id());
 
 	init_completion(done);
 	complete(done);
-
-	if (*enabled)
-		return;
 
 	/*
 	 * Start the timer first to prevent the NMI watchdog triggering
@@ -504,28 +458,17 @@ void watchdog_enable(unsigned int cpu)
 		      HRTIMER_MODE_REL_PINNED_HARD);
 
 	/* Initialize timestamp */
-	__touch_watchdog();
+	update_touch_ts();
 	/* Enable the perf event */
 	if (watchdog_enabled & NMI_WATCHDOG_ENABLED)
 		watchdog_nmi_enable(cpu);
-
-	/*
-	 * Need to ensure above operations are observed by other CPUs before
-	 * indicating that timer is enabled. This is to synchronize core
-	 * isolation and hotplug. Core isolation will wait for this flag to be
-	 * set.
-	 */
-	mb();
-	*enabled = 1;
 }
 
-void watchdog_disable(unsigned int cpu)
+static void watchdog_disable(unsigned int cpu)
 {
-	struct hrtimer *hrtimer = per_cpu_ptr(&watchdog_hrtimer, cpu);
-	unsigned int *enabled = per_cpu_ptr(&watchdog_en, cpu);
+	struct hrtimer *hrtimer = this_cpu_ptr(&watchdog_hrtimer);
 
-	if (!*enabled)
-		return;
+	WARN_ON_ONCE(cpu != smp_processor_id());
 
 	/*
 	 * Disable the perf event first. That prevents that a large delay
@@ -534,18 +477,7 @@ void watchdog_disable(unsigned int cpu)
 	 */
 	watchdog_nmi_disable(cpu);
 	hrtimer_cancel(hrtimer);
-	wait_for_completion(per_cpu_ptr(&softlockup_completion, cpu));
-
-	/*
-	 * No need for barrier here since disabling the watchdog is
-	 * synchronized with hotplug lock
-	 */
-	*enabled = 0;
-}
-
-bool watchdog_configured(unsigned int cpu)
-{
-	return *per_cpu_ptr(&watchdog_en, cpu);
+	wait_for_completion(this_cpu_ptr(&softlockup_completion));
 }
 
 static int softlockup_stop_fn(void *data)
@@ -719,7 +651,7 @@ static void proc_watchdog_update(void)
  * proc_soft_watchdog | soft_watchdog_user_enabled | SOFT_WATCHDOG_ENABLED
  */
 static int proc_watchdog_common(int which, struct ctl_table *table, int write,
-				void __user *buffer, size_t *lenp, loff_t *ppos)
+				void *buffer, size_t *lenp, loff_t *ppos)
 {
 	int err, old, *param = table->data;
 
@@ -746,7 +678,7 @@ static int proc_watchdog_common(int which, struct ctl_table *table, int write,
  * /proc/sys/kernel/watchdog
  */
 int proc_watchdog(struct ctl_table *table, int write,
-		  void __user *buffer, size_t *lenp, loff_t *ppos)
+		  void *buffer, size_t *lenp, loff_t *ppos)
 {
 	return proc_watchdog_common(NMI_WATCHDOG_ENABLED|SOFT_WATCHDOG_ENABLED,
 				    table, write, buffer, lenp, ppos);
@@ -756,7 +688,7 @@ int proc_watchdog(struct ctl_table *table, int write,
  * /proc/sys/kernel/nmi_watchdog
  */
 int proc_nmi_watchdog(struct ctl_table *table, int write,
-		      void __user *buffer, size_t *lenp, loff_t *ppos)
+		      void *buffer, size_t *lenp, loff_t *ppos)
 {
 	if (!nmi_watchdog_available && write)
 		return -ENOTSUPP;
@@ -768,7 +700,7 @@ int proc_nmi_watchdog(struct ctl_table *table, int write,
  * /proc/sys/kernel/soft_watchdog
  */
 int proc_soft_watchdog(struct ctl_table *table, int write,
-			void __user *buffer, size_t *lenp, loff_t *ppos)
+			void *buffer, size_t *lenp, loff_t *ppos)
 {
 	return proc_watchdog_common(SOFT_WATCHDOG_ENABLED,
 				    table, write, buffer, lenp, ppos);
@@ -778,7 +710,7 @@ int proc_soft_watchdog(struct ctl_table *table, int write,
  * /proc/sys/kernel/watchdog_thresh
  */
 int proc_watchdog_thresh(struct ctl_table *table, int write,
-			 void __user *buffer, size_t *lenp, loff_t *ppos)
+			 void *buffer, size_t *lenp, loff_t *ppos)
 {
 	int err, old;
 
@@ -801,7 +733,7 @@ int proc_watchdog_thresh(struct ctl_table *table, int write,
  * been brought online, if desired.
  */
 int proc_watchdog_cpumask(struct ctl_table *table, int write,
-			  void __user *buffer, size_t *lenp, loff_t *ppos)
+			  void *buffer, size_t *lenp, loff_t *ppos)
 {
 	int err;
 
