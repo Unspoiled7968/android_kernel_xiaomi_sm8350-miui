@@ -21,14 +21,14 @@
 /**
  * irq_domain_qcom_handle_wakeup: Return if the domain handles interrupt
  *                                configuration
- * @d: irq domain
+ * @parent: irq domain
  *
  * This QCOM specific irq domain call returns if the interrupt controller
  * requires the interrupt be masked at the child interrupt controller.
  */
-static inline bool irq_domain_qcom_handle_wakeup(const struct irq_domain *d)
+static inline bool irq_domain_qcom_handle_wakeup(struct irq_domain *parent)
 {
-	return (d->flags & IRQ_DOMAIN_FLAG_QCOM_PDC_WAKEUP);
+	return (parent->flags & IRQ_DOMAIN_FLAG_QCOM_PDC_WAKEUP);
 }
 
 #endif

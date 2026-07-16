@@ -115,7 +115,7 @@ qca_tty_receive(struct serdev_device *serdev, const unsigned char *data,
 			if (!qca->rx_skb) {
 				netdev_dbg(netdev, "recv: out of RX resources\n");
 				n_stats->rx_errors++;
-				return i + 1;
+				return i;
 			}
 		}
 	}
@@ -167,7 +167,7 @@ static void qca_tty_wakeup(struct serdev_device *serdev)
 	schedule_work(&qca->tx_work);
 }
 
-static const struct serdev_device_ops qca_serdev_ops = {
+static struct serdev_device_ops qca_serdev_ops = {
 	.receive_buf = qca_tty_receive,
 	.write_wakeup = qca_tty_wakeup,
 };
@@ -248,7 +248,7 @@ out:
 	return NETDEV_TX_OK;
 }
 
-static void qcauart_netdev_tx_timeout(struct net_device *dev, unsigned int txqueue)
+static void qcauart_netdev_tx_timeout(struct net_device *dev)
 {
 	struct qcauart *qca = netdev_priv(dev);
 

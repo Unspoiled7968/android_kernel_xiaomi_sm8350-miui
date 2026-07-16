@@ -1265,12 +1265,12 @@ static int vfe_get(struct vfe_device *vfe)
 
 		ret = vfe_set_clock_rates(vfe);
 		if (ret < 0)
-			goto error_pm_runtime_get;
+			goto error_clocks;
 
 		ret = camss_enable_clocks(vfe->nclocks, vfe->clock,
 					  vfe->camss->dev);
 		if (ret < 0)
-			goto error_pm_runtime_get;
+			goto error_clocks;
 
 		ret = vfe_reset(vfe);
 		if (ret < 0)
@@ -1282,7 +1282,7 @@ static int vfe_get(struct vfe_device *vfe)
 	} else {
 		ret = vfe_check_clock_rates(vfe);
 		if (ret < 0)
-			goto error_pm_domain;
+			goto error_clocks;
 	}
 	vfe->power_count++;
 
@@ -1293,8 +1293,10 @@ static int vfe_get(struct vfe_device *vfe)
 error_reset:
 	camss_disable_clocks(vfe->nclocks, vfe->clock);
 
-error_pm_runtime_get:
+error_clocks:
 	pm_runtime_put_sync(vfe->camss->dev);
+
+error_pm_runtime_get:
 	camss_pm_domain_off(vfe->camss, vfe->id);
 
 error_pm_domain:
@@ -2204,6 +2206,14 @@ static const struct camss_video_ops camss_vfe_video_ops = {
 	.queue_buffer = vfe_queue_buffer,
 	.flush_buffers = vfe_flush_buffers,
 };
+
+void msm_vfe_stop_streaming(struct vfe_device *vfe)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(vfe->line); i++)
+		msm_video_stop_streaming(&vfe->line[i].video_out);
+}
 
 /*
  * msm_vfe_register_entities - Register subdev node for VFE module

@@ -26,7 +26,7 @@ struct msm_fbdev {
 	struct drm_framebuffer *fb;
 };
 
-static const struct fb_ops msm_fb_ops = {
+static struct fb_ops msm_fb_ops = {
 	.owner = THIS_MODULE,
 	DRM_FB_HELPER_DEFAULT_OPS,
 
@@ -107,7 +107,7 @@ static int msm_fbdev_create(struct drm_fb_helper *helper,
 		goto fail_unlock;
 	}
 
-	DBG("fbi=%p, dev=%p", fbi, dev);
+	DBG("fbi=%pK, dev=%pK", fbi, dev);
 
 	fbdev->fb = fb;
 	helper->fb = fb;
@@ -127,7 +127,7 @@ static int msm_fbdev_create(struct drm_fb_helper *helper,
 	fbi->fix.smem_start = paddr;
 	fbi->fix.smem_len = bo->size;
 
-	DBG("par=%p, %dx%d", fbi->par, fbi->var.xres, fbi->var.yres);
+	DBG("par=%pK, %dx%d", fbi->par, fbi->var.xres, fbi->var.yres);
 	DBG("allocated %dx%d fb", fbdev->fb->width, fbdev->fb->height);
 
 	mutex_unlock(&dev->struct_mutex);
@@ -160,11 +160,15 @@ struct drm_fb_helper *msm_fbdev_init(struct drm_device *dev)
 
 	drm_fb_helper_prepare(dev, helper, &msm_fb_helper_funcs);
 
-	ret = drm_fb_helper_init(dev, helper);
+	ret = drm_fb_helper_init(dev, helper, priv->num_connectors);
 	if (ret) {
 		DRM_DEV_ERROR(dev->dev, "could not init fbdev: ret=%d\n", ret);
 		goto fail;
 	}
+
+	ret = drm_fb_helper_single_add_all_connectors(helper);
+	if (ret)
+		goto fini;
 
 	/* the fw fb could be anywhere in memory */
 	drm_fb_helper_remove_conflicting_framebuffers(NULL, "msm", false);

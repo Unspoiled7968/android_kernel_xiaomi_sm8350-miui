@@ -1,11 +1,13 @@
-/* SPDX-License-Identifier: GPL-2.0 */
-/* Copyright (c) 2016-2018, 2020, The Linux Foundation. All rights reserved. */
+// SPDX-License-Identifier: GPL-2.0-only
+/* Copyright (c) 2016-2019, The Linux Foundation. All rights reserved. */
 
 #include <linux/debugfs.h>
+#include <linux/fs.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
+#include <linux/of_platform.h>
 #include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
 #include <linux/seq_file.h>
@@ -17,6 +19,7 @@
 #define MAX_SLV_ID		8
 #define SLAVE_ID_MASK		0x7
 #define SLAVE_ID_SHIFT		16
+#define CMD_DB_STANDALONE_MASK BIT(0)
 
 /**
  * struct entry_header: header for each entry in cmddb
@@ -93,6 +96,7 @@ struct cmd_db_header {
  */
 
 static const u8 CMD_DB_MAGIC[] = { 0xdb, 0x30, 0x03, 0x0c };
+static struct dentry *debugfs;
 
 static bool cmd_db_magic_matches(const struct cmd_db_header *header)
 {
@@ -238,75 +242,115 @@ enum cmd_db_hw_type cmd_db_read_slave_id(const char *id)
 }
 EXPORT_SYMBOL(cmd_db_read_slave_id);
 
-#ifdef CONFIG_DEBUG_FS
-static int cmd_db_debugfs_dump(struct seq_file *seq, void *p)
+bool cmd_db_is_standalone(void)
 {
-	int i, j;
-	const struct rsc_hdr *rsc;
-	const struct entry_header *ent;
-	const char *name;
-	u16 len, version;
-	u8 major, minor;
+	int ret = cmd_db_ready();
+	u32 standalone = le32_to_cpu(cmd_db_header->reserved) &
+			 CMD_DB_STANDALONE_MASK;
 
-	seq_puts(seq, "Command DB DUMP\n");
+	return !ret && standalone;
+}
+EXPORT_SYMBOL(cmd_db_is_standalone);
 
-	for (i = 0; i < MAX_SLV_ID; i++) {
-		rsc = &cmd_db_header->header[i];
-		if (!rsc->slv_id)
+static void *cmd_db_start(struct seq_file *m, loff_t *pos)
+{
+	int slv_idx, ent_idx, cnt;
+	struct entry_header *ent;
+	int total = 0;
+
+	for (slv_idx = 0; slv_idx < MAX_SLV_ID; slv_idx++) {
+		cnt = le16_to_cpu(cmd_db_header->header[slv_idx].cnt);
+		if (!cnt)
+			continue;
+		ent_idx = *pos - total;
+		if (ent_idx < cnt)
 			break;
-
-		switch (le16_to_cpu(rsc->slv_id)) {
-		case CMD_DB_HW_ARC:
-			name = "ARC";
-			break;
-		case CMD_DB_HW_VRM:
-			name = "VRM";
-			break;
-		case CMD_DB_HW_BCM:
-			name = "BCM";
-			break;
-		default:
-			name = "Unknown";
-			break;
-		}
-
-		version = le16_to_cpu(rsc->version);
-		major = version >> 8;
-		minor = version;
-
-		seq_printf(seq, "Slave %s (v%u.%u)\n", name, major, minor);
-		seq_puts(seq, "-------------------------\n");
-
-		ent = rsc_to_entry_header(rsc);
-		for (j = 0; j < le16_to_cpu(rsc->cnt); j++, ent++) {
-			seq_printf(seq, "0x%05x: %*pEp", le32_to_cpu(ent->addr),
-				   (int)sizeof(ent->id), ent->id);
-
-			len = le16_to_cpu(ent->len);
-			if (len) {
-				seq_printf(seq, " [%*ph]",
-					   len, rsc_offset(rsc, ent));
-			}
-			seq_putc(seq, '\n');
-		}
+		total += cnt;
 	}
+
+	if (slv_idx == MAX_SLV_ID)
+		return NULL;
+
+	ent = (void *)cmd_db_header->data +
+	      le16_to_cpu(cmd_db_header->header[slv_idx].header_offset);
+
+	return &ent[ent_idx];
+}
+
+static void cmd_db_stop(struct seq_file *m, void *v)
+{
+}
+
+static void *cmd_db_next(struct seq_file *m, void *v, loff_t *pos)
+{
+	(*pos)++;
+	return cmd_db_start(m, pos);
+}
+
+static int cmd_db_seq_show(struct seq_file *m, void *v)
+{
+	struct entry_header *eh = v;
+	char buf[9] = {0};
+	int eh_addr, eh_len, eh_offset;
+
+	if (!eh)
+		return 0;
+
+	memcpy(buf, &eh->id, sizeof(eh->id));
+	eh_addr = le32_to_cpu(eh->addr);
+	eh_len = le16_to_cpu(eh->len);
+	eh_offset = le16_to_cpu(eh->offset);
+	seq_printf(m, "Address: 0x%05x, id: %s", eh_addr, buf);
+
+	if (eh_len) {
+		int slv_id = (eh_addr >> SLAVE_ID_SHIFT) & SLAVE_ID_MASK;
+		u8 aux[32] = {0};
+		int len, offset;
+		int k;
+
+		len = min_t(u32, eh_len, sizeof(aux));
+		for (k = 0; k < MAX_SLV_ID; k++) {
+			struct rsc_hdr *hdr  = &cmd_db_header->header[k];
+
+			if (le16_to_cpu(hdr->slv_id) == slv_id)
+				break;
+		}
+
+		if (k == MAX_SLV_ID)
+			return -EINVAL;
+
+		offset = le16_to_cpu(cmd_db_header->header[k].data_offset);
+		memcpy(aux, cmd_db_header->data + offset + eh_offset, len);
+
+		seq_puts(m, ", aux data: ");
+
+		for (k = 0; k < len; k++)
+			seq_printf(m, "%02x ", aux[k]);
+
+	}
+	seq_puts(m, "\n");
 
 	return 0;
 }
 
-static int open_cmd_db_debugfs(struct inode *inode, struct file *file)
-{
-	return single_open(file, cmd_db_debugfs_dump, inode->i_private);
-}
-#endif
+static const struct seq_operations cmd_db_seq_ops = {
+	.start = cmd_db_start,
+	.stop = cmd_db_stop,
+	.next = cmd_db_next,
+	.show = cmd_db_seq_show,
+};
 
-static const struct file_operations cmd_db_debugfs_ops = {
-#ifdef CONFIG_DEBUG_FS
-	.open = open_cmd_db_debugfs,
-#endif
+static int cmd_db_file_open(struct inode *inode, struct file *file)
+{
+	return seq_open(file, &cmd_db_seq_ops);
+}
+
+static const struct file_operations cmd_db_fops = {
+	.owner = THIS_MODULE,
+	.open = cmd_db_file_open,
 	.read = seq_read,
-	.llseek = seq_lseek,
-	.release = single_release,
+	.release = seq_release,
+	.llseek = no_llseek,
 };
 
 static int cmd_db_dev_probe(struct platform_device *pdev)
@@ -320,27 +364,31 @@ static int cmd_db_dev_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	cmd_db_header = devm_memremap(&pdev->dev, rmem->base, rmem->size, MEMREMAP_WC);
-	if (IS_ERR(cmd_db_header)) {
-		ret = PTR_ERR(cmd_db_header);
+	cmd_db_header = memremap(rmem->base, rmem->size, MEMREMAP_WC);
+	if (!cmd_db_header) {
+		ret = -ENOMEM;
 		cmd_db_header = NULL;
 		return ret;
 	}
 
 	if (!cmd_db_magic_matches(cmd_db_header)) {
 		dev_err(&pdev->dev, "Invalid Command DB Magic\n");
-		cmd_db_header = NULL;
 		return -EINVAL;
 	}
 
-	debugfs_create_file("cmd-db", 0400, NULL, NULL, &cmd_db_debugfs_ops);
+	if (cmd_db_is_standalone())
+		pr_info("Command DB is initialized in standalone mode.\n");
+
+	debugfs = debugfs_create_file("cmd_db", 0444, NULL, NULL, &cmd_db_fops);
+	if (!debugfs)
+		pr_err("Couldn't create debugfs\n");
 
 	return 0;
 }
 
 static const struct of_device_id cmd_db_match_table[] = {
 	{ .compatible = "qcom,cmd-db" },
-	{ }
+	{ },
 };
 MODULE_DEVICE_TABLE(of, cmd_db_match_table);
 
@@ -349,7 +397,6 @@ static struct platform_driver cmd_db_dev_driver = {
 	.driver = {
 		   .name = "cmd-db",
 		   .of_match_table = cmd_db_match_table,
-		   .suppress_bind_attrs = true,
 	},
 };
 
@@ -359,5 +406,5 @@ static int __init cmd_db_device_init(void)
 }
 arch_initcall(cmd_db_device_init);
 
-MODULE_DESCRIPTION("Qualcomm Technologies, Inc. Command DB Driver");
+MODULE_DESCRIPTION("Qualcomm Technologies, Inc. Command DB for QCOM SoCs");
 MODULE_LICENSE("GPL v2");

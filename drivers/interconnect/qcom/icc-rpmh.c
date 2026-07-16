@@ -1,16 +1,19 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2019-2021, The Linux Foundation. All rights reserved.
+ *
  */
 
+#include <asm/div64.h>
+#include <dt-bindings/interconnect/qcom,sdm845.h>
+#include <linux/clk.h>
 #include <linux/interconnect.h>
 #include <linux/interconnect-provider.h>
 #include <linux/module.h>
-#include <linux/of.h>
-#include <linux/slab.h>
 
-#include "bcm-voter.h"
 #include "icc-rpmh.h"
+#include "bcm-voter.h"
+#include "qnoc-qos.h"
 
 /**
  * qcom_icc_pre_aggregate - cleans up stale values from prior icc_set
@@ -20,20 +23,15 @@ void qcom_icc_pre_aggregate(struct icc_node *node)
 {
 	size_t i;
 	struct qcom_icc_node *qn;
-	struct qcom_icc_provider *qp;
 
 	qn = node->data;
-	qp = to_qcom_provider(node->provider);
 
 	for (i = 0; i < QCOM_ICC_NUM_BUCKETS; i++) {
 		qn->sum_avg[i] = 0;
 		qn->max_peak[i] = 0;
 	}
-
-	for (i = 0; i < qn->num_bcms; i++)
-		qcom_icc_bcm_voter_add(qp->voter, qn->bcms[i]);
 }
-EXPORT_SYMBOL_GPL(qcom_icc_pre_aggregate);
+EXPORT_SYMBOL(qcom_icc_pre_aggregate);
 
 /**
  * qcom_icc_aggregate - aggregate bw for buckets indicated by tag
@@ -49,8 +47,10 @@ int qcom_icc_aggregate(struct icc_node *node, u32 tag, u32 avg_bw,
 {
 	size_t i;
 	struct qcom_icc_node *qn;
+	struct qcom_icc_provider *qp;
 
 	qn = node->data;
+	qp = to_qcom_provider(node->provider);
 
 	if (!tag)
 		tag = QCOM_ICC_TAG_ALWAYS;
@@ -60,19 +60,18 @@ int qcom_icc_aggregate(struct icc_node *node, u32 tag, u32 avg_bw,
 			qn->sum_avg[i] += avg_bw;
 			qn->max_peak[i] = max_t(u32, qn->max_peak[i], peak_bw);
 		}
-
-		if (node->init_avg || node->init_peak) {
-			qn->sum_avg[i] = max_t(u64, qn->sum_avg[i], node->init_avg);
-			qn->max_peak[i] = max_t(u64, qn->max_peak[i], node->init_peak);
-		}
 	}
 
 	*agg_avg += avg_bw;
 	*agg_peak = max_t(u32, *agg_peak, peak_bw);
 
+	for (i = 0; i < qn->num_bcms; i++)
+		qcom_icc_bcm_voter_add(qp->voters[qn->bcms[i]->voter_idx],
+				       qn->bcms[i]);
+
 	return 0;
 }
-EXPORT_SYMBOL_GPL(qcom_icc_aggregate);
+EXPORT_SYMBOL(qcom_icc_aggregate);
 
 /**
  * qcom_icc_set - set the constraints based on path
@@ -84,7 +83,9 @@ EXPORT_SYMBOL_GPL(qcom_icc_aggregate);
 int qcom_icc_set(struct icc_node *src, struct icc_node *dst)
 {
 	struct qcom_icc_provider *qp;
+	struct qcom_icc_node *qn;
 	struct icc_node *node;
+	int i, ret = 0;
 
 	if (!src)
 		node = dst;
@@ -92,37 +93,29 @@ int qcom_icc_set(struct icc_node *src, struct icc_node *dst)
 		node = src;
 
 	qp = to_qcom_provider(node->provider);
+	qn = node->data;
 
-	qcom_icc_bcm_voter_commit(qp->voter);
+	for (i = 0; i < qp->num_voters; i++)
+		qcom_icc_bcm_voter_commit(qp->voters[i]);
 
-	return 0;
+	/* Defer setting QoS until the first non-zero bandwidth request. */
+	if (qn && qn->qosbox && !qn->qosbox->initialized &&
+	    (node->avg_bw || node->peak_bw)) {
+		ret = clk_bulk_prepare_enable(qp->num_clks, qp->clks);
+		if (ret) {
+			pr_err("%s: Clock enable failed for node %s\n",
+				__func__, node->name);
+			return ret;
+		}
+
+		qn->noc_ops->set_qos(qn);
+		clk_bulk_disable_unprepare(qp->num_clks, qp->clks);
+		qn->qosbox->initialized = true;
+	}
+
+	return ret;
 }
-EXPORT_SYMBOL_GPL(qcom_icc_set);
-
-struct icc_node_data *qcom_icc_xlate_extended(struct of_phandle_args *spec, void *data)
-{
-	struct icc_node_data *ndata;
-	struct icc_node *node;
-
-	node = of_icc_xlate_onecell(spec, data);
-	if (IS_ERR(node))
-		return ERR_CAST(node);
-
-	ndata = kzalloc(sizeof(*ndata), GFP_KERNEL);
-	if (!ndata)
-		return ERR_PTR(-ENOMEM);
-
-	ndata->node = node;
-
-	if (spec->args_count == 2)
-		ndata->tag = spec->args[1];
-
-	if (spec->args_count > 2)
-		pr_warn("%pOF: Too many arguments, path tag is not parsed\n", spec->np);
-
-	return ndata;
-}
-EXPORT_SYMBOL_GPL(qcom_icc_xlate_extended);
+EXPORT_SYMBOL(qcom_icc_set);
 
 /**
  * qcom_icc_bcm_init - populates bcm aux data and connect qnodes
@@ -161,8 +154,8 @@ int qcom_icc_bcm_init(struct qcom_icc_bcm *bcm, struct device *dev)
 		return -EINVAL;
 	}
 
-	bcm->aux_data.unit = le32_to_cpu(data->unit);
-	bcm->aux_data.width = le16_to_cpu(data->width);
+	bcm->aux_data.unit = data->unit;
+	bcm->aux_data.width = data->width;
 	bcm->aux_data.vcd = data->vcd;
 	bcm->aux_data.reserved = data->reserved;
 	INIT_LIST_HEAD(&bcm->list);
@@ -171,7 +164,9 @@ int qcom_icc_bcm_init(struct qcom_icc_bcm *bcm, struct device *dev)
 	if (!bcm->vote_scale)
 		bcm->vote_scale = 1000;
 
-	/* Link Qnodes to their respective BCMs */
+	/*
+	 * Link Qnodes to their respective BCMs
+	 */
 	for (i = 0; i < bcm->num_nodes; i++) {
 		qn = bcm->nodes[i];
 		qn->bcms[qn->num_bcms] = bcm;
@@ -180,6 +175,84 @@ int qcom_icc_bcm_init(struct qcom_icc_bcm *bcm, struct device *dev)
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(qcom_icc_bcm_init);
+EXPORT_SYMBOL(qcom_icc_bcm_init);
+
+static bool bcm_needs_qos_proxy(struct qcom_icc_bcm *bcm)
+{
+	int i;
+
+	if (bcm->voter_idx == 0)
+		for (i = 0; i < bcm->num_nodes; i++)
+			if (bcm->nodes[i]->qosbox)
+				return true;
+
+	return false;
+}
+
+/**
+ * qcom_icc_enable_qos_deps - enable clocks and BCMs required for QoS
+ * @qp: interconnect provider associated with masters whose QoS to be set
+ *
+ * Return: 0 on success, or an error code otherwise
+ */
+int qcom_icc_enable_qos_deps(struct qcom_icc_provider *qp)
+{
+	struct qcom_icc_bcm *bcm;
+	struct bcm_voter *voter;
+	bool keepalive;
+	int ret, i;
+
+	for (i = 0; i < qp->num_bcms; i++) {
+		bcm = qp->bcms[i];
+		if (bcm_needs_qos_proxy(bcm)) {
+			keepalive = bcm->keepalive;
+			bcm->keepalive = true;
+
+			voter = qp->voters[bcm->voter_idx];
+			qcom_icc_bcm_voter_add(voter, bcm);
+			ret = qcom_icc_bcm_voter_commit(voter);
+
+			bcm->keepalive = keepalive;
+
+			if (ret) {
+				dev_err(qp->dev, "failed to vote BW to %s for QoS\n",
+					bcm->name);
+				return ret;
+			}
+		}
+	}
+
+	ret = clk_bulk_prepare_enable(qp->num_clks, qp->clks);
+	if (ret) {
+		dev_err(qp->dev, "failed to enable clocks for QoS\n");
+		return ret;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL(qcom_icc_enable_qos_deps);
+
+/**
+ * qcom_icc_disable_qos_deps - disable clocks and BCMs
+ * @qp: interconnect provider associated with masters whose QoS to be set
+ */
+void qcom_icc_disable_qos_deps(struct qcom_icc_provider *qp)
+{
+	struct qcom_icc_bcm *bcm;
+	struct bcm_voter *voter;
+	int i;
+
+	clk_bulk_disable_unprepare(qp->num_clks, qp->clks);
+
+	for (i = 0; i < qp->num_bcms; i++) {
+		bcm = qp->bcms[i];
+		if (bcm_needs_qos_proxy(bcm)) {
+			voter = qp->voters[bcm->voter_idx];
+			qcom_icc_bcm_voter_add(voter, bcm);
+			qcom_icc_bcm_voter_commit(voter);
+		}
+	}
+}
+EXPORT_SYMBOL(qcom_icc_disable_qos_deps);
 
 MODULE_LICENSE("GPL v2");

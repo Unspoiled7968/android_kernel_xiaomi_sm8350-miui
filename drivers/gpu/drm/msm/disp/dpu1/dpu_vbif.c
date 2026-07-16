@@ -32,7 +32,7 @@ static int _dpu_vbif_wait_for_xin_halt(struct dpu_hw_vbif *vbif, u32 xin_id)
 	int rc;
 
 	if (!vbif || !vbif->cap || !vbif->ops.get_halt_ctrl) {
-		DPU_ERROR("invalid arguments vbif %d\n", vbif != NULL);
+		DPU_ERROR("invalid arguments vbif %d\n", vbif != 0);
 		return -EINVAL;
 	}
 
@@ -114,7 +114,7 @@ static u32 _dpu_vbif_get_ot_limit(struct dpu_hw_vbif *vbif,
 	u32 val;
 
 	if (!vbif || !vbif->cap) {
-		DPU_ERROR("invalid arguments vbif %d\n", vbif != NULL);
+		DPU_ERROR("invalid arguments vbif %d\n", vbif != 0);
 		return -EINVAL;
 	}
 
@@ -162,12 +162,16 @@ void dpu_vbif_set_ot_limit(struct dpu_kms *dpu_kms,
 	u32 ot_lim;
 	int ret;
 
+	if (!dpu_kms) {
+		DPU_ERROR("invalid arguments\n");
+		return;
+	}
 	mdp = dpu_kms->hw_mdp;
 
 	vbif = dpu_get_vbif(dpu_kms, params->vbif_idx);
 	if (!vbif || !mdp) {
 		DPU_DEBUG("invalid arguments vbif %d mdp %d\n",
-				vbif != NULL, mdp != NULL);
+				vbif != 0, mdp != 0);
 		return;
 	}
 
@@ -213,7 +217,7 @@ void dpu_vbif_set_qos_remap(struct dpu_kms *dpu_kms,
 	const struct dpu_vbif_qos_tbl *qos_tbl;
 	int i;
 
-	if (!params || !dpu_kms->hw_mdp) {
+	if (!dpu_kms || !params || !dpu_kms->hw_mdp) {
 		DPU_ERROR("invalid arguments\n");
 		return;
 	}
@@ -296,7 +300,7 @@ void dpu_debugfs_vbif_init(struct dpu_kms *dpu_kms, struct dentry *debugfs_root)
 	entry = debugfs_create_dir("vbif", debugfs_root);
 
 	for (i = 0; i < dpu_kms->catalog->vbif_count; i++) {
-		const struct dpu_vbif_cfg *vbif = &dpu_kms->catalog->vbif[i];
+		struct dpu_vbif_cfg *vbif = &dpu_kms->catalog->vbif[i];
 
 		snprintf(vbif_name, sizeof(vbif_name), "%d", vbif->id);
 
@@ -315,7 +319,7 @@ void dpu_debugfs_vbif_init(struct dpu_kms *dpu_kms, struct dentry *debugfs_root)
 			(u32 *)&vbif->default_ot_wr_limit);
 
 		for (j = 0; j < vbif->dynamic_ot_rd_tbl.count; j++) {
-			const struct dpu_vbif_dynamic_ot_cfg *cfg =
+			struct dpu_vbif_dynamic_ot_cfg *cfg =
 					&vbif->dynamic_ot_rd_tbl.cfg[j];
 
 			snprintf(vbif_name, sizeof(vbif_name),
@@ -329,7 +333,7 @@ void dpu_debugfs_vbif_init(struct dpu_kms *dpu_kms, struct dentry *debugfs_root)
 		}
 
 		for (j = 0; j < vbif->dynamic_ot_wr_tbl.count; j++) {
-			const struct dpu_vbif_dynamic_ot_cfg *cfg =
+			struct dpu_vbif_dynamic_ot_cfg *cfg =
 					&vbif->dynamic_ot_wr_tbl.cfg[j];
 
 			snprintf(vbif_name, sizeof(vbif_name),

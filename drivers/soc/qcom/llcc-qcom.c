@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2017-2019, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
  *
  */
 
@@ -16,7 +16,7 @@
 #include <linux/regmap.h>
 #include <linux/sizes.h>
 #include <linux/slab.h>
-#include <linux/soc/qcom/llcc-qcom.h>
+#include <linux/soc/qcom/llcc-tcm.h>
 
 #define ACTIVATE                      BIT(0)
 #define DEACTIVATE                    BIT(1)
@@ -45,60 +45,19 @@
 #define LLCC_TRP_ATTR0_CFGn(n)        (0x21000 + SZ_8 * n)
 #define LLCC_TRP_ATTR1_CFGn(n)        (0x21004 + SZ_8 * n)
 
-#define BANK_OFFSET_STRIDE	      0x80000
+#define LLCC_TRP_C_AS_NC	      0x22890
+#define LLCC_TRP_NC_AS_C	      0x22894
+#define LLCC_FEAC_C_AS_NC	      0x35030
+#define LLCC_FEAC_NC_AS_C	      0x35034
+#define LLCC_TRP_WRSC_EN              0x21F20
+#define LLCC_WRSC_SCID_EN(n)          BIT(n)
 
-/**
- * llcc_slice_config - Data associated with the llcc slice
- * @usecase_id: Unique id for the client's use case
- * @slice_id: llcc slice id for each client
- * @max_cap: The maximum capacity of the cache slice provided in KB
- * @priority: Priority of the client used to select victim line for replacement
- * @fixed_size: Boolean indicating if the slice has a fixed capacity
- * @bonus_ways: Bonus ways are additional ways to be used for any slice,
- *		if client ends up using more than reserved cache ways. Bonus
- *		ways are allocated only if they are not reserved for some
- *		other client.
- * @res_ways: Reserved ways for the cache slice, the reserved ways cannot
- *		be used by any other client than the one its assigned to.
- * @cache_mode: Each slice operates as a cache, this controls the mode of the
- *             slice: normal or TCM(Tightly Coupled Memory)
- * @probe_target_ways: Determines what ways to probe for access hit. When
- *                    configured to 1 only bonus and reserved ways are probed.
- *                    When configured to 0 all ways in llcc are probed.
- * @dis_cap_alloc: Disable capacity based allocation for a client
- * @retain_on_pc: If this bit is set and client has maintained active vote
- *               then the ways assigned to this client are not flushed on power
- *               collapse.
- * @activate_on_init: Activate the slice immediately after it is programmed
- */
-struct llcc_slice_config {
-	u32 usecase_id;
-	u32 slice_id;
-	u32 max_cap;
-	u32 priority;
-	bool fixed_size;
-	u32 bonus_ways;
-	u32 res_ways;
-	u32 cache_mode;
-	u32 probe_target_ways;
-	bool dis_cap_alloc;
-	bool retain_on_pc;
-	bool activate_on_init;
-};
+#define LLCC_TRP_PCB_ACT	      0x21F04
+#define LLCC_TRP_SCID_DIS_CAP_ALLOC   0x21F00
 
-struct qcom_llcc_config {
-	const struct llcc_slice_config *sct_data;
-	int size;
-};
+#define BANK_OFFSET_STRIDE            0x80000
 
-static const struct llcc_slice_config sc7180_data[] =  {
-	{ LLCC_CPUSS,    1,  256, 1, 0, 0xf, 0x0, 0, 0, 0, 1, 1 },
-	{ LLCC_MDM,      8,  128, 1, 0, 0xf, 0x0, 0, 0, 0, 1, 0 },
-	{ LLCC_GPUHTW,   11, 128, 1, 0, 0xf, 0x0, 0, 0, 0, 1, 0 },
-	{ LLCC_GPU,      12, 128, 1, 0, 0xf, 0x0, 0, 0, 0, 1, 0 },
-};
-
-static const struct llcc_slice_config sdm845_data[] =  {
+static struct llcc_slice_config sdm845_data[] =  {
 	{ LLCC_CPUSS,    1,  2816, 1, 0, 0xffc, 0x2,   0, 0, 1, 1, 1 },
 	{ LLCC_VIDSC0,   2,  512,  2, 1, 0x0,   0x0f0, 0, 0, 1, 1, 0 },
 	{ LLCC_VIDSC1,   3,  512,  2, 1, 0x0,   0x0f0, 0, 0, 1, 1, 0 },
@@ -119,17 +78,14 @@ static const struct llcc_slice_config sdm845_data[] =  {
 	{ LLCC_AUDHW,    22, 1024, 1, 1, 0xffc, 0x2,   0, 0, 1, 1, 0 },
 };
 
-static const struct qcom_llcc_config sc7180_cfg = {
-	.sct_data	= sc7180_data,
-	.size		= ARRAY_SIZE(sc7180_data),
-};
-
-static const struct qcom_llcc_config sdm845_cfg = {
-	.sct_data	= sdm845_data,
-	.size		= ARRAY_SIZE(sdm845_data),
-};
-
 static struct llcc_drv_data *drv_data = (void *) -EPROBE_DEFER;
+
+static struct regmap_config llcc_regmap_config = {
+	.reg_bits = 32,
+	.reg_stride = 4,
+	.val_bits = 32,
+	.fast_io = true,
+};
 
 /**
  * llcc_slice_getd - get llcc slice descriptor
@@ -327,9 +283,16 @@ static int qcom_llcc_cfg_program(struct platform_device *pdev)
 	u32 attr0_val;
 	u32 max_cap_cacheline;
 	u32 sz;
+	u32 pcb = 0;
+	u32 cad = 0;
+	u32 wren = 0;
 	int ret = 0;
 	const struct llcc_slice_config *llcc_table;
 	struct llcc_slice_desc desc;
+	bool cap_based_alloc_and_pwr_collapse =
+		drv_data->cap_based_alloc_and_pwr_collapse;
+	int v2_ver = of_device_is_compatible(pdev->dev.of_node,
+							 "qcom,llcc-v2");
 
 	sz = drv_data->cfg_size;
 	llcc_table = drv_data->cfg;
@@ -369,6 +332,32 @@ static int qcom_llcc_cfg_program(struct platform_device *pdev)
 					attr0_val);
 		if (ret)
 			return ret;
+
+		if (v2_ver) {
+			wren |= llcc_table[i].write_scid_en <<
+						llcc_table[i].slice_id;
+			ret = regmap_write(drv_data->bcast_regmap,
+				LLCC_TRP_WRSC_EN, wren);
+			if (ret)
+				return ret;
+		}
+
+		if (cap_based_alloc_and_pwr_collapse) {
+			cad |= llcc_table[i].dis_cap_alloc <<
+				llcc_table[i].slice_id;
+			ret = regmap_write(drv_data->bcast_regmap,
+					LLCC_TRP_SCID_DIS_CAP_ALLOC, cad);
+			if (ret)
+				return ret;
+
+			pcb |= llcc_table[i].retain_on_pc <<
+					llcc_table[i].slice_id;
+			ret = regmap_write(drv_data->bcast_regmap,
+						LLCC_TRP_PCB_ACT, pcb);
+			if (ret)
+				return ret;
+		}
+
 		if (llcc_table[i].activate_on_init) {
 			desc.slice_id = llcc_table[i].slice_id;
 			ret = llcc_slice_activate(&desc);
@@ -387,15 +376,14 @@ static int qcom_llcc_remove(struct platform_device *pdev)
 static struct regmap *qcom_llcc_init_mmio(struct platform_device *pdev,
 		const char *name)
 {
+	struct resource *res;
 	void __iomem *base;
-	struct regmap_config llcc_regmap_config = {
-		.reg_bits = 32,
-		.reg_stride = 4,
-		.val_bits = 32,
-		.fast_io = true,
-	};
 
-	base = devm_platform_ioremap_resource_byname(pdev, name);
+	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, name);
+	if (!res)
+		return ERR_PTR(-ENODEV);
+
+	base = devm_ioremap_resource(&pdev->dev, res);
 	if (IS_ERR(base))
 		return ERR_CAST(base);
 
@@ -403,15 +391,14 @@ static struct regmap *qcom_llcc_init_mmio(struct platform_device *pdev,
 	return devm_regmap_init_mmio(&pdev->dev, base, &llcc_regmap_config);
 }
 
-static int qcom_llcc_probe(struct platform_device *pdev)
+static int qcom_llcc_probe(struct platform_device *pdev,
+			   const struct llcc_slice_config *llcc_cfg, u32 sz)
 {
 	u32 num_banks;
 	struct device *dev = &pdev->dev;
 	int ret, i;
-	struct platform_device *llcc_edac;
-	const struct qcom_llcc_config *cfg;
-	const struct llcc_slice_config *llcc_cfg;
-	u32 sz;
+	struct platform_device *llcc_edac, *llcc_perfmon;
+	struct device_node *tcm_memory_node;
 
 	if (!IS_ERR(drv_data))
 		return -EBUSY;
@@ -430,7 +417,10 @@ static int qcom_llcc_probe(struct platform_device *pdev)
 
 	drv_data->bcast_regmap =
 		qcom_llcc_init_mmio(pdev, "llcc_broadcast_base");
-	if (IS_ERR(drv_data->bcast_regmap)) {
+
+	if (PTR_ERR(drv_data->bcast_regmap) == -ENODEV)
+		drv_data->bcast_regmap = drv_data->regmap;
+	else if (IS_ERR(drv_data->bcast_regmap)) {
 		ret = PTR_ERR(drv_data->bcast_regmap);
 		goto err;
 	}
@@ -444,10 +434,6 @@ static int qcom_llcc_probe(struct platform_device *pdev)
 	num_banks >>= LLCC_LB_CNT_SHIFT;
 	drv_data->num_banks = num_banks;
 
-	cfg = of_device_get_match_data(&pdev->dev);
-	llcc_cfg = cfg->sct_data;
-	sz = cfg->size;
-
 	for (i = 0; i < sz; i++)
 		if (llcc_cfg[i].slice_id > drv_data->max_slices)
 			drv_data->max_slices = llcc_cfg[i].slice_id;
@@ -458,6 +444,10 @@ static int qcom_llcc_probe(struct platform_device *pdev)
 		ret = -ENOMEM;
 		goto err;
 	}
+
+	drv_data->cap_based_alloc_and_pwr_collapse =
+		of_property_read_bool(pdev->dev.of_node,
+				      "cap-based-alloc-and-pwr-collapse");
 
 	for (i = 0; i < num_banks; i++)
 		drv_data->offsets[i] = i * BANK_OFFSET_STRIDE;
@@ -476,40 +466,67 @@ static int qcom_llcc_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, drv_data);
 
 	ret = qcom_llcc_cfg_program(pdev);
-	if (ret)
+	if (ret) {
+		pr_err("llcc configuration failed!!\n");
 		goto err;
+	}
 
-	drv_data->ecc_irq = platform_get_irq_optional(pdev, 0);
-	if (drv_data->ecc_irq >= 0) {
-		llcc_edac = platform_device_register_data(&pdev->dev,
-						"qcom_llcc_edac", -1, drv_data,
-						sizeof(*drv_data));
-		if (IS_ERR(llcc_edac))
-			dev_err(dev, "Failed to register llcc edac driver\n");
+	drv_data->ecc_irq = platform_get_irq(pdev, 0);
+	llcc_edac = platform_device_register_data(&pdev->dev,
+					"qcom_llcc_edac", -1, drv_data,
+					sizeof(*drv_data));
+	if (IS_ERR(llcc_edac))
+		dev_err(dev, "Failed to register llcc edac driver\n");
+
+	llcc_perfmon = platform_device_register_data(&pdev->dev,
+					"qcom_llcc_perfmon", -1,
+					drv_data, sizeof(*drv_data));
+	if (IS_ERR(llcc_perfmon))
+		dev_err(dev, "Failed to register llcc perfmon device\n");
+
+	tcm_memory_node = of_parse_phandle(dev->of_node, "memory-region", 0);
+	if (tcm_memory_node) {
+		ret = qcom_llcc_tcm_probe(pdev, llcc_cfg, sz, tcm_memory_node);
+		if (ret) {
+			dev_err(dev, "Failed to probe TCM manager\n");
+			goto err_dereg;
+		}
 	}
 
 	return 0;
+
+err_dereg:
+	platform_device_unregister(llcc_edac);
+	platform_device_unregister(llcc_perfmon);
 err:
 	drv_data = ERR_PTR(-ENODEV);
 	return ret;
 }
 
-static const struct of_device_id qcom_llcc_of_match[] = {
-	{ .compatible = "qcom,sc7180-llcc", .data = &sc7180_cfg },
-	{ .compatible = "qcom,sdm845-llcc", .data = &sdm845_cfg },
+static int sdm845_qcom_llcc_remove(struct platform_device *pdev)
+{
+	return qcom_llcc_remove(pdev);
+}
+
+static int sdm845_qcom_llcc_probe(struct platform_device *pdev)
+{
+	return qcom_llcc_probe(pdev, sdm845_data, ARRAY_SIZE(sdm845_data));
+}
+
+static const struct of_device_id sdm845_qcom_llcc_of_match[] = {
+	{ .compatible = "qcom,sdm845-llcc", },
 	{ }
 };
-MODULE_DEVICE_TABLE(of, qcom_llcc_of_match);
 
-static struct platform_driver qcom_llcc_driver = {
+static struct platform_driver sdm845_qcom_llcc_driver = {
 	.driver = {
-		.name = "qcom-llcc",
-		.of_match_table = qcom_llcc_of_match,
+		.name = "sdm845-llcc",
+		.of_match_table = sdm845_qcom_llcc_of_match,
 	},
-	.probe = qcom_llcc_probe,
-	.remove = qcom_llcc_remove,
+	.probe = sdm845_qcom_llcc_probe,
+	.remove = sdm845_qcom_llcc_remove,
 };
-module_platform_driver(qcom_llcc_driver);
+module_platform_driver(sdm845_qcom_llcc_driver);
 
-MODULE_DESCRIPTION("Qualcomm Last Level Cache Controller");
+MODULE_DESCRIPTION("QCOM sdm845 LLCC driver");
 MODULE_LICENSE("GPL v2");

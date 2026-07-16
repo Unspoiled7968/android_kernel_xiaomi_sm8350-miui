@@ -178,8 +178,6 @@ static int wait_session_msg(struct venus_inst *inst)
 int hfi_session_create(struct venus_inst *inst, const struct hfi_inst_ops *ops)
 {
 	struct venus_core *core = inst->core;
-	bool max;
-	int ret;
 
 	if (!ops)
 		return -EINVAL;
@@ -189,19 +187,11 @@ int hfi_session_create(struct venus_inst *inst, const struct hfi_inst_ops *ops)
 	inst->ops = ops;
 
 	mutex_lock(&core->lock);
-
-	max = atomic_add_unless(&core->insts_count, 1,
-				core->max_sessions_supported);
-	if (!max) {
-		ret = -EAGAIN;
-	} else {
-		list_add_tail(&inst->list, &core->instances);
-		ret = 0;
-	}
-
+	list_add_tail(&inst->list, &core->instances);
+	atomic_inc(&core->insts_count);
 	mutex_unlock(&core->lock);
 
-	return ret;
+	return 0;
 }
 EXPORT_SYMBOL_GPL(hfi_session_create);
 
@@ -212,7 +202,7 @@ int hfi_session_init(struct venus_inst *inst, u32 pixfmt)
 	int ret;
 
 	if (inst->state != INST_UNINIT)
-		return -EALREADY;
+		return -EINVAL;
 
 	inst->hfi_codec = to_codec_type(pixfmt);
 	reinit_completion(&inst->done);
@@ -395,7 +385,7 @@ int hfi_session_unload_res(struct venus_inst *inst)
 }
 EXPORT_SYMBOL_GPL(hfi_session_unload_res);
 
-int hfi_session_flush(struct venus_inst *inst, u32 type, bool block)
+int hfi_session_flush(struct venus_inst *inst, u32 type)
 {
 	const struct hfi_ops *ops = inst->core->ops;
 	int ret;
@@ -406,11 +396,9 @@ int hfi_session_flush(struct venus_inst *inst, u32 type, bool block)
 	if (ret)
 		return ret;
 
-	if (block) {
-		ret = wait_session_msg(inst);
-		if (ret)
-			return ret;
-	}
+	ret = wait_session_msg(inst);
+	if (ret)
+		return ret;
 
 	return 0;
 }
@@ -529,9 +517,4 @@ int hfi_create(struct venus_core *core, const struct hfi_core_ops *ops)
 void hfi_destroy(struct venus_core *core)
 {
 	venus_hfi_destroy(core);
-}
-
-void hfi_reinit(struct venus_core *core)
-{
-	venus_hfi_queues_reinit(core);
 }

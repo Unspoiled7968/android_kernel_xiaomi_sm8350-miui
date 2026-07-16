@@ -12,20 +12,9 @@
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-device.h>
 
-#include "dbgfs.h"
 #include "hfi.h"
-#include "hfi_platform.h"
 
-#define VDBGL	"VenusLow : "
-#define VDBGM	"VenusMed : "
-#define VDBGH	"VenusHigh: "
-#define VDBGFW	"VenusFW  : "
-
-#define VIDC_CLKS_NUM_MAX		4
-#define VIDC_VCODEC_CLKS_NUM_MAX	2
-#define VIDC_PMDOMAINS_NUM_MAX		3
-
-extern int venus_fw_debug;
+#define VIDC_CLKS_NUM_MAX	4
 
 struct freq_tbl {
 	unsigned int load;
@@ -37,42 +26,19 @@ struct reg_val {
 	u32 value;
 };
 
-struct bw_tbl {
-	u32 mbs_per_sec;
-	u32 avg;
-	u32 peak;
-	u32 avg_10bit;
-	u32 peak_10bit;
-};
-
 struct venus_resources {
 	u64 dma_mask;
 	const struct freq_tbl *freq_tbl;
 	unsigned int freq_tbl_size;
-	const struct bw_tbl *bw_tbl_enc;
-	unsigned int bw_tbl_enc_size;
-	const struct bw_tbl *bw_tbl_dec;
-	unsigned int bw_tbl_dec_size;
 	const struct reg_val *reg_tbl;
 	unsigned int reg_tbl_size;
 	const char * const clks[VIDC_CLKS_NUM_MAX];
 	unsigned int clks_num;
-	const char * const vcodec0_clks[VIDC_VCODEC_CLKS_NUM_MAX];
-	const char * const vcodec1_clks[VIDC_VCODEC_CLKS_NUM_MAX];
-	unsigned int vcodec_clks_num;
-	const char * const vcodec_pmdomains[VIDC_PMDOMAINS_NUM_MAX];
-	unsigned int vcodec_pmdomains_num;
-	const char **opp_pmdomain;
-	unsigned int vcodec_num;
 	enum hfi_version hfi_version;
 	u32 max_load;
 	unsigned int vmem_id;
 	u32 vmem_size;
 	u32 vmem_addr;
-	u32 cp_start;
-	u32 cp_size;
-	u32 cp_nonpixel_start;
-	u32 cp_nonpixel_size;
 	const char *fwname;
 };
 
@@ -83,20 +49,40 @@ struct venus_format {
 	u32 flags;
 };
 
+#define MAX_PLANES		4
+#define MAX_FMT_ENTRIES		32
+#define MAX_CAP_ENTRIES		32
+#define MAX_ALLOC_MODE_ENTRIES	16
+#define MAX_CODEC_NUM		32
+
+struct raw_formats {
+	u32 buftype;
+	u32 fmt;
+};
+
+struct venus_caps {
+	u32 codec;
+	u32 domain;
+	bool cap_bufs_mode_dynamic;
+	unsigned int num_caps;
+	struct hfi_capability caps[MAX_CAP_ENTRIES];
+	unsigned int num_pl;
+	struct hfi_profile_level pl[HFI_MAX_PROFILE_COUNT];
+	unsigned int num_fmts;
+	struct raw_formats fmts[MAX_FMT_ENTRIES];
+	bool valid;	/* used only for Venus v1xx */
+};
+
 /**
  * struct venus_core - holds core parameters valid for all instances
  *
  * @base:	IO memory base address
- * @vbif_base	IO memory vbif base address
- * @cpu_base	IO memory cpu base address
- * @cpu_cs_base	IO memory cpu_cs base address
- * @cpu_ic_base	IO memory cpu_ic base address
- * @wrapper_base	IO memory wrapper base address
  * @irq:		Venus irq
  * @clks:	an array of struct clk pointers
- * @vcodec0_clks: an array of vcodec0 struct clk pointers
- * @vcodec1_clks: an array of vcodec1 struct clk pointers
- * @pmdomains:	an array of pmdomains struct device pointers
+ * @core0_clk:	a struct clk pointer for core0
+ * @core1_clk:	a struct clk pointer for core1
+ * @core0_bus_clk: a struct clk pointer for core0 bus clock
+ * @core1_bus_clk: a struct clk pointer for core1 bus clock
  * @vdev_dec:	a reference to video device structure for decoder instances
  * @vdev_enc:	a reference to video device structure for encoder instances
  * @v4l2_dev:	a holder for v4l2 device structure
@@ -113,7 +99,6 @@ struct venus_format {
  * @error:	an error returned during last HFI sync operations
  * @sys_error:	an error flag that signal system error event
  * @core_ops:	the core operations
- * @pm_lock:	a lock for PM operations
  * @enc_codecs:	encoders supported by this core
  * @dec_codecs:	decoders supported by this core
  * @max_sessions_supported:	holds the maximum number of sessions
@@ -121,26 +106,15 @@ struct venus_format {
  * @priv:	a private filed for HFI operations
  * @ops:		the core HFI operations
  * @work:	a delayed work for handling system fatal error
- * @root:	debugfs root directory
  */
 struct venus_core {
 	void __iomem *base;
-	void __iomem *vbif_base;
-	void __iomem *cpu_base;
-	void __iomem *cpu_cs_base;
-	void __iomem *cpu_ic_base;
-	void __iomem *wrapper_base;
 	int irq;
 	struct clk *clks[VIDC_CLKS_NUM_MAX];
-	struct clk *vcodec0_clks[VIDC_VCODEC_CLKS_NUM_MAX];
-	struct clk *vcodec1_clks[VIDC_VCODEC_CLKS_NUM_MAX];
-	struct icc_path *video_path;
-	struct icc_path *cpucfg_path;
-	struct opp_table *opp_table;
-	bool has_opp_table;
-	struct device *pmdomains[VIDC_PMDOMAINS_NUM_MAX];
-	struct device_link *opp_dl_venus;
-	struct device *opp_pmdomain;
+	struct clk *core0_clk;
+	struct clk *core1_clk;
+	struct clk *core0_bus_clk;
+	struct clk *core1_bus_clk;
 	struct video_device *vdev_dec;
 	struct video_device *vdev_enc;
 	struct v4l2_device v4l2_dev;
@@ -162,8 +136,6 @@ struct venus_core {
 	unsigned int error;
 	bool sys_error;
 	const struct hfi_core_ops *core_ops;
-	const struct venus_pm_ops *pm_ops;
-	struct mutex pm_lock;
 	unsigned long enc_codecs;
 	unsigned long dec_codecs;
 	unsigned int max_sessions_supported;
@@ -175,11 +147,8 @@ struct venus_core {
 	void *priv;
 	const struct hfi_ops *ops;
 	struct delayed_work work;
-	struct hfi_plat_caps caps[MAX_CODEC_NUM];
+	struct venus_caps caps[MAX_CODEC_NUM];
 	unsigned int codecs_count;
-	unsigned int core0_usage_count;
-	unsigned int core1_usage_count;
-	struct dentry *root;
 };
 
 struct vdec_controls {
@@ -195,9 +164,6 @@ struct venc_controls {
 	u32 bitrate_mode;
 	u32 bitrate;
 	u32 bitrate_peak;
-	u32 rc_enable;
-	u32 const_quality;
-	u32 frame_skip_mode;
 
 	u32 h264_i_period;
 	u32 h264_entropy_mode;
@@ -220,17 +186,15 @@ struct venc_controls {
 	u32 header_mode;
 
 	struct {
-		u32 h264;
 		u32 mpeg4;
+		u32 h264;
+		u32 vpx;
 		u32 hevc;
-		u32 vp8;
-		u32 vp9;
 	} profile;
 	struct {
-		u32 h264;
 		u32 mpeg4;
+		u32 h264;
 		u32 hevc;
-		u32 vp9;
 	} level;
 };
 
@@ -244,13 +208,6 @@ struct venus_buffer {
 	struct list_head ref_list;
 };
 
-struct clock_data {
-	u32 core_id;
-	unsigned long freq;
-	unsigned long vpp_freq;
-	unsigned long vsp_freq;
-};
-
 #define to_venus_buffer(ptr)	container_of(ptr, struct venus_buffer, vb)
 
 enum venus_dec_state {
@@ -261,7 +218,7 @@ enum venus_dec_state {
 	VENUS_DEC_STATE_SEEK		= 4,
 	VENUS_DEC_STATE_DRAIN		= 5,
 	VENUS_DEC_STATE_DECODING	= 6,
-	VENUS_DEC_STATE_DRC		= 7,
+	VENUS_DEC_STATE_DRC		= 7
 };
 
 struct venus_ts_metadata {
@@ -326,13 +283,11 @@ struct venus_ts_metadata {
  * @priv:	a private for HFI operations callbacks
  * @session_type:	the type of the session (decoder or encoder)
  * @hprop:	a union used as a holder by get property
- * @next_buf_last: a flag to mark next queued capture buffer as last
  */
 struct venus_inst {
 	struct list_head list;
 	struct mutex lock;
 	struct venus_core *core;
-	struct clock_data clk_data;
 	struct list_head dpbbufs;
 	struct list_head internalbufs;
 	struct list_head registeredbufs;
@@ -359,7 +314,6 @@ struct venus_inst {
 	unsigned int subscriptions;
 	int buf_count;
 	struct venus_ts_metadata tss[VIDEO_MAX_FRAME];
-	unsigned long payloads[VIDEO_MAX_FRAME];
 	u64 fps;
 	struct v4l2_fract timeperframe;
 	const struct venus_format *fmt_out;
@@ -386,16 +340,11 @@ struct venus_inst {
 	const struct hfi_inst_ops *ops;
 	u32 session_type;
 	union hfi_get_property hprop;
-	unsigned int core_acquired: 1;
-	unsigned int bit_depth;
-	bool next_buf_last;
-	bool drain_active;
 };
 
 #define IS_V1(core)	((core)->res->hfi_version == HFI_VERSION_1XX)
 #define IS_V3(core)	((core)->res->hfi_version == HFI_VERSION_3XX)
 #define IS_V4(core)	((core)->res->hfi_version == HFI_VERSION_4XX)
-#define IS_V6(core)	((core)->res->hfi_version == HFI_VERSION_6XX)
 
 #define ctrl_to_inst(ctrl)	\
 	container_of((ctrl)->handler, struct venus_inst, ctrl_handler)
@@ -410,7 +359,7 @@ static inline void *to_hfi_priv(struct venus_core *core)
 	return core->priv;
 }
 
-static inline struct hfi_plat_caps *
+static inline struct venus_caps *
 venus_caps_by_codec(struct venus_core *core, u32 codec, u32 domain)
 {
 	unsigned int c;

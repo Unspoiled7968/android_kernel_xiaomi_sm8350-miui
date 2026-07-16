@@ -27,19 +27,19 @@
 static void venus_reset_cpu(struct venus_core *core)
 {
 	u32 fw_size = core->fw.mapped_mem_size;
-	void __iomem *wrapper_base = core->wrapper_base;
+	void __iomem *base = core->base;
 
-	writel(0, wrapper_base + WRAPPER_FW_START_ADDR);
-	writel(fw_size, wrapper_base + WRAPPER_FW_END_ADDR);
-	writel(0, wrapper_base + WRAPPER_CPA_START_ADDR);
-	writel(fw_size, wrapper_base + WRAPPER_CPA_END_ADDR);
-	writel(fw_size, wrapper_base + WRAPPER_NONPIX_START_ADDR);
-	writel(fw_size, wrapper_base + WRAPPER_NONPIX_END_ADDR);
-	writel(0x0, wrapper_base + WRAPPER_CPU_CGC_DIS);
-	writel(0x0, wrapper_base + WRAPPER_CPU_CLOCK_CONFIG);
+	writel(0, base + WRAPPER_FW_START_ADDR);
+	writel(fw_size, base + WRAPPER_FW_END_ADDR);
+	writel(0, base + WRAPPER_CPA_START_ADDR);
+	writel(fw_size, base + WRAPPER_CPA_END_ADDR);
+	writel(fw_size, base + WRAPPER_NONPIX_START_ADDR);
+	writel(fw_size, base + WRAPPER_NONPIX_END_ADDR);
+	writel(0x0, base + WRAPPER_CPU_CGC_DIS);
+	writel(0x0, base + WRAPPER_CPU_CLOCK_CONFIG);
 
 	/* Bring ARM9 out of reset */
-	writel(0, wrapper_base + WRAPPER_A9SS_SW_RESET);
+	writel(0, base + WRAPPER_A9SS_SW_RESET);
 }
 
 int venus_set_hw_state(struct venus_core *core, bool resume)
@@ -56,7 +56,7 @@ int venus_set_hw_state(struct venus_core *core, bool resume)
 	if (resume)
 		venus_reset_cpu(core);
 	else
-		writel(1, core->wrapper_base + WRAPPER_A9SS_SW_RESET);
+		writel(1, core->base + WRAPPER_A9SS_SW_RESET);
 
 	return 0;
 }
@@ -106,7 +106,8 @@ static int venus_load_fw(struct venus_core *core, const char *fwname,
 
 	mem_va = memremap(r.start, *mem_size, MEMREMAP_WC);
 	if (!mem_va) {
-		dev_err(dev, "unable to map memory region: %pR\n", &r);
+		dev_err(dev, "unable to map memory region: %pa+%zx\n",
+			&r.start, *mem_size);
 		ret = -ENOMEM;
 		goto err_release_fw;
 	}
@@ -159,12 +160,12 @@ static int venus_shutdown_no_tz(struct venus_core *core)
 	size_t unmapped;
 	u32 reg;
 	struct device *dev = core->fw.dev;
-	void __iomem *wrapper_base = core->wrapper_base;
+	void __iomem *base = core->base;
 
 	/* Assert the reset to ARM9 */
-	reg = readl_relaxed(wrapper_base + WRAPPER_A9SS_SW_RESET);
+	reg = readl_relaxed(base + WRAPPER_A9SS_SW_RESET);
 	reg |= WRAPPER_A9SS_SW_RESET_BIT;
-	writel_relaxed(reg, wrapper_base + WRAPPER_A9SS_SW_RESET);
+	writel_relaxed(reg, base + WRAPPER_A9SS_SW_RESET);
 
 	/* Make sure reset is asserted before the mapping is removed */
 	mb();
@@ -181,7 +182,6 @@ static int venus_shutdown_no_tz(struct venus_core *core)
 int venus_boot(struct venus_core *core)
 {
 	struct device *dev = core->dev;
-	const struct venus_resources *res = core->res;
 	phys_addr_t mem_phys;
 	size_t mem_size;
 	int ret;
@@ -201,23 +201,7 @@ int venus_boot(struct venus_core *core)
 	else
 		ret = venus_boot_no_tz(core, mem_phys, mem_size);
 
-	if (ret)
-		return ret;
-
-	if (core->use_tz && res->cp_size) {
-		ret = qcom_scm_mem_protect_video_var(res->cp_start,
-						     res->cp_size,
-						     res->cp_nonpixel_start,
-						     res->cp_nonpixel_size);
-		if (ret) {
-			qcom_scm_pas_shutdown(VENUS_PAS_ID);
-			dev_err(dev, "set virtual address ranges fail (%d)\n",
-				ret);
-			return ret;
-		}
-	}
-
-	return 0;
+	return ret;
 }
 
 int venus_shutdown(struct venus_core *core)
