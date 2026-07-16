@@ -33,7 +33,7 @@ on:
 
   push:
     branches:
-      - master
+      - 5.10.257
 
 jobs:
   build:
