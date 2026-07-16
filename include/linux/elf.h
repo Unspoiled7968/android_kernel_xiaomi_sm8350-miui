@@ -99,4 +99,32 @@ static inline int arch_elf_adjust_prot(int prot,
 }
 #endif
 
+/* Generic ELF section/program helpers used by downstream drivers (minidump) */
+static inline struct elf_shdr *elf_sheader(struct elfhdr *hdr)
+{
+	return (struct elf_shdr *)((size_t)hdr + (size_t)hdr->e_shoff);
+}
+
+static inline struct elf_shdr *elf_section(struct elfhdr *hdr, int idx)
+{
+	return &elf_sheader(hdr)[idx];
+}
+
+static inline struct elf_phdr *elf_pheader(struct elfhdr *hdr)
+{
+	return (struct elf_phdr *)((size_t)hdr + (size_t)hdr->e_phoff);
+}
+
+static inline struct elf_phdr *elf_program(struct elfhdr *hdr, int idx)
+{
+	return &elf_pheader(hdr)[idx];
+}
+
+static inline char *elf_str_table(struct elfhdr *hdr)
+{
+	if (hdr->e_shstrndx == SHN_UNDEF)
+		return NULL;
+	return (char *)hdr + elf_section(hdr, hdr->e_shstrndx)->sh_offset;
+}
+
 #endif /* _LINUX_ELF_H */
