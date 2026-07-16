@@ -223,4 +223,26 @@ extern bool arch_memremap_can_ram_remap(resource_size_t offset, size_t size,
 					unsigned long flags);
 #define arch_memremap_can_ram_remap arch_memremap_can_ram_remap
 
+/*
+ * Downstream Qualcomm "_no_log" MMIO accessor variants bypassed the register
+ * trace buffer (RTB). 5.10 dropped that infrastructure, so alias them to the
+ * standard accessors for the ported vendor drivers.
+ */
+#define readb_no_log(c)			readb(c)
+#define readw_no_log(c)			readw(c)
+#define readl_no_log(c)			readl(c)
+#define readq_no_log(c)			readq(c)
+#define writeb_no_log(v, c)		writeb((v), (c))
+#define writew_no_log(v, c)		writew((v), (c))
+#define writel_no_log(v, c)		writel((v), (c))
+#define writeq_no_log(v, c)		writeq((v), (c))
+#define readb_relaxed_no_log(c)		readb_relaxed(c)
+#define readw_relaxed_no_log(c)		readw_relaxed(c)
+#define readl_relaxed_no_log(c)		readl_relaxed(c)
+#define readq_relaxed_no_log(c)		readq_relaxed(c)
+#define writeb_relaxed_no_log(v, c)	writeb_relaxed((v), (c))
+#define writew_relaxed_no_log(v, c)	writew_relaxed((v), (c))
+#define writel_relaxed_no_log(v, c)	writel_relaxed((v), (c))
+#define writeq_relaxed_no_log(v, c)	writeq_relaxed((v), (c))
+
 #endif	/* __ASM_IO_H */
