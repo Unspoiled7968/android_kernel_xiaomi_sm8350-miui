@@ -562,7 +562,7 @@ static struct rpmsg_driver pmic_glink_rpmsg_driver = {
 #ifdef CONFIG_DEBUG_FS
 static void pmic_glink_add_debugfs(struct pmic_glink_dev *pgdev)
 {
-	struct dentry *dir, *file;
+	struct dentry *dir;
 
 	dir = debugfs_create_dir(dev_name(pgdev->dev), NULL);
 	if (IS_ERR(dir)) {
@@ -571,21 +571,9 @@ static void pmic_glink_add_debugfs(struct pmic_glink_dev *pgdev)
 		return;
 	}
 
-	file = debugfs_create_u32("filter", 0600, dir, &pgdev->log_filter);
-	if (IS_ERR(file)) {
-		pr_err("Failed to create filter debugfs file rc=%d\n",
-			PTR_ERR(file));
-		debugfs_remove_recursive(dir);
-		return;
-	}
-
-	file = debugfs_create_bool("enable", 0600, dir, &pgdev->log_enable);
-	if (IS_ERR(file)) {
-		pr_err("Failed to create enable debugfs file rc=%d\n",
-			PTR_ERR(file));
-		debugfs_remove_recursive(dir);
-		return;
-	}
+	/* 5.10: debugfs_create_u32/bool return void, no error to check */
+	debugfs_create_u32("filter", 0600, dir, &pgdev->log_filter);
+	debugfs_create_bool("enable", 0600, dir, &pgdev->log_enable);
 
 	pgdev->debugfs_dir = dir;
 }
