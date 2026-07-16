@@ -158,12 +158,13 @@ static struct clk_regmap_ops clk_rcg2_regmap_ops = {
 	.list_registers = cpucc_clk_list_registers,
 };
 
-static void clk_cpu_init(struct clk_hw *hw)
+static int clk_cpu_init(struct clk_hw *hw)
 {
 	struct clk_regmap *rclk = to_clk_regmap(hw);
 
 	if (!rclk->ops)
 		rclk->ops = &clk_rcg2_regmap_ops;
+	return 0;
 }
 
 static unsigned long cpucc_clk_recalc_rate(struct clk_hw *hw,

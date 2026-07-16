@@ -384,7 +384,7 @@ rcar_gen2_cpg_register_clock(struct device_node *np, struct rcar_gen2_cpg *cpg,
 
 static u32 __init rcar_gen2_read_mode_pins(void)
 {
-	void __iomem *modemr = ioremap_nocache(MODEMR, 4);
+	void __iomem *modemr = ioremap(MODEMR, 4);
 	u32 mode;
 
 	BUG_ON(!modemr);

@@ -1251,7 +1251,7 @@ int gsi_register_device(struct gsi_per_props *props, unsigned long *dev_hdl)
 		gsi_ctx->intcntrlr_mem_size =
 		    props->emulator_intcntrlr_size;
 		gsi_ctx->intcntrlr_base =
-		    devm_ioremap_nocache(
+		    devm_ioremap(
 			gsi_ctx->dev,
 			props->emulator_intcntrlr_addr,
 			props->emulator_intcntrlr_size);
@@ -4406,7 +4406,7 @@ int gsi_enable_fw(phys_addr_t gsi_base_addr, u32 gsi_size, enum gsi_ver ver)
 		return -GSI_STATUS_ERROR;
 	}
 
-	gsi_base = ioremap_nocache(gsi_base_addr, gsi_size);
+	gsi_base = ioremap(gsi_base_addr, gsi_size);
 	if (!gsi_base) {
 		GSIERR("ioremap failed\n");
 		return -GSI_STATUS_RES_ALLOC_FAILURE;

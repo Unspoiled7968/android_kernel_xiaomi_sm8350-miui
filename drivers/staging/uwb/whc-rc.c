@@ -216,7 +216,7 @@ int whcrc_setup_rc_umc(struct whcrc *whcrc)
 		goto error_request_region;
 	}
 
-	whcrc->rc_base = ioremap_nocache(whcrc->area, whcrc->rc_len);
+	whcrc->rc_base = ioremap(whcrc->area, whcrc->rc_len);
 	if (whcrc->rc_base == NULL) {
 		dev_err(dev, "can't ioremap registers (%zu bytes @ 0x%lx): %d\n",
 			whcrc->rc_len, whcrc->area, result);
