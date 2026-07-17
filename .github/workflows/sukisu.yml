@@ -65,7 +65,7 @@ on:
         description: 'Enable WireGuard VPN support'
         required: true
         type: boolean
-        default: false
+        default: true
       netfilter_full:
         description: 'Full Netfilter (conntrack, NAT, hashlimit)'
         required: true
@@ -449,7 +449,8 @@ jobs:
 
           CAPTION="✅ <b>Kernel Build Successful!</b>
 
-          ⚡ <b>Device:</b> <code>Xiaomi 11 Ultra/Pro</code>
+          📱 <b>Device:</b> <code>Xiaomi 11 Ultra/Pro</code>
+          ⚡ <b>KSU:</b> <code>SukiSU</code>
           📅 <b>Date:</b> $DATE
           📝 <b>Commit:</b> <code>$COMMIT_MSG</code>
           🔢 <b>Hash:</b> <a href=\"$REPO_URL/commit/$COMMIT_HASH\">$COMMIT_HASH</a>"
@@ -474,7 +475,8 @@ jobs:
 
           CAPTION="❌ <b>Kernel Build Failed!</b>
 
-          ⚡ <b>Device:</b> <code>Xiaomi 11 Ultra/Pro</code>
+          📱 <b>Device:</b> <code>Xiaomi 11 Ultra/Pro</code>
+          ⚡ <b>KSU:</b> <code>SukiSU</code>
           📅 <b>Date:</b> $DATE
           📝 <b>Commit:</b> <code>$COMMIT_MSG</code>
           🔢 <b>Hash:</b> <a href=\"$REPO_URL/commit/$COMMIT_HASH\">$COMMIT_HASH</a>"

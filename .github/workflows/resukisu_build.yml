@@ -141,10 +141,10 @@ jobs:
                    "$HOME/.ccache_wrappers/clang++"
           echo "$HOME/.ccache_wrappers" >> "$GITHUB_PATH"
 
-      - name: "⚡ Setup ReSukiSU (main)"
+      - name: "⚡ Setup ReSukiSU"
         run: |
           set -e
-          echo "=== Setting up ReSukiSU (main) ==="
+          echo "=== Setting up ReSukiSU ==="
       
           KERNEL_REPO="$(pwd)"
           git clone --depth=1 -b main https://github.com/ReSukiSU/ReSukiSU.git ReSukiSU
@@ -168,15 +168,11 @@ jobs:
 
           patch -p1 --forward --batch < "$PATCH_FILE" || echo "⚠️ Patch partially applied"
           echo "✅ JackA1ltman SuSFS 5.4 patch applied"
+          echo "SuSFS version: 2.2.0"
 
       - name: Add inline hooks for SuSFS
         run: |
           set -e
-          # The SUSFS inline hook and the syscall (manual) hook are MUTUALLY
-          # EXCLUSIVE — they patch the same ksu_handle_* call sites. We use the
-          # SUSFS Inline Hook method (CONFIG_KSU_SUSFS=y below), so run ONLY the
-          # susfs inline hook script. Also running syscall_hook_patches.sh would
-          # double-patch those sites and break the build.
           bash "../jacka_repo/Patches/susfs_inline_hook_patches.sh"
 
       - name: Append Defconfig Flags
@@ -184,13 +180,6 @@ jobs:
           set -e
 
           DEVICE="${{ inputs.device_name || 'star' }}"
-          # build.sh assembles the config by MERGING this exact fragment list:
-          #   vendor/lahaina-qgki_defconfig vendor/lahaina_QGKI.config \
-          #   vendor/xiaomi_QGKI.config vendor/<device>_QGKI.config
-          # It never reads star_defconfig / star_gcc_defconfig, so appending our
-          # flags there is a silent no-op (which is why CONFIG_KSU_SUSFS=y was
-          # ignored and the hook choice stayed on its KSU_TRACEPOINT_HOOK default).
-          # Write our runtime flags into the per-device QGKI fragment instead.
           DEFCONFIG="arch/arm64/configs/vendor/${DEVICE}_QGKI.config"
 
           echo "DEFCONFIG=$DEFCONFIG" >> $GITHUB_ENV
@@ -204,12 +193,6 @@ jobs:
           
           # KSU base
           echo "CONFIG_KSU=y" >> "$DEFCONFIG"
-          # NOTE: CONFIG_KSU_INLINE_HOOK is NOT a real Kconfig symbol in ReSukiSU.
-          # The hooking method is a Kconfig `choice` (default KSU_TRACEPOINT_HOOK,
-          # which is GKI 2.0 / 5.10+ only and hard-errors on this GKI 1.0 / 5.4
-          # kernel). The SUSFS Inline Hook is selected by CONFIG_KSU_SUSFS=y (set
-          # below), which is itself a member of that choice and deselects the TP
-          # default. Do not add a bogus CONFIG_KSU_INLINE_HOOK here.
           echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG"
           echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG"
           
@@ -288,10 +271,8 @@ jobs:
           CONFIG_PM_WAKELOCKS_GC=y
           CONFIG_PM_WAKELOCKS_LIMIT=100
           EOF
-          # Патч для принудительного блокирования известных wakelocks
           WAKELOCK_C="kernel/power/wakelock.c"
           if [ -f "$WAKELOCK_C" ]; then
-            # Добавляем список заблокированных wakelocks от cctv18/Epicmann24
             cat >> "$WAKELOCK_C" << 'WLEOF'
           /* palaziks: wakelock blocker list */
           static const char * const blocked_wakelocks[] = {
@@ -362,28 +343,33 @@ jobs:
           echo "clang -> $(which clang)"
           ccache --zero-stats > /dev/null 2>&1 || true
           chmod +x ./build.sh
-          # Tell the script to use ccache
           ./build.sh all ${{ inputs.device_name }} 2>&1 | tee /tmp/kbuild.log
 
-          # Look for the Image in the 'out' directory or '../out' directory
           if [ ! -f out/arch/arm64/boot/Image ] && [ ! -f ../out/arch/arm64/boot/Image ]; then
             echo "BUILD FAILED"
             grep -E "error:|FAILED" /tmp/kbuild.log | tail -50
             exit 1
           fi
 
-      - name: Compress & Upload
+      - name: Locate & rename flashable AK3 zip
         run: |
-          mkdir -p upload
-          # Copy from the correct output directories
-          cp out/arch/arm64/boot/Image upload/ || cp ../out/arch/arm64/boot/Image upload/ || true
-          find ../out out -name "*.zip" -exec cp {} upload/ \; || true
-          tar -czvf kernel-star-resukisu.tar.gz upload/
+          # build.sh packages AnyKernel3 zip into ../out/anykernel/<name>.zip
+          AK3=$(find ../out/anykernel out/anykernel -name "*.zip" 2>/dev/null | head -n1)
+          if [ -z "$AK3" ]; then
+            echo "❌ No AK3 flashable zip found"; exit 1
+          fi
+          # rename to a clean name (device from input)
+          DEVICE="${{ inputs.device_name || 'star' }}"
+          NEW="$(dirname "$AK3")/${DEVICE}-5.4_ReSukiSU-palaziks.zip"
+          mv "$AK3" "$NEW"
+          cp "$NEW" "$GITHUB_WORKSPACE/${DEVICE}-5.4_ReSukiSU-palaziks.zip"
+          echo "AK3_ZIP=$GITHUB_WORKSPACE/${DEVICE}-5.4_ReSukiSU-palaziks.zip" >> $GITHUB_ENV
+          echo "✅ Flashable: $GITHUB_WORKSPACE/${DEVICE}-5.4_ReSukiSU-palaziks.zip"
 
       - uses: actions/upload-artifact@v4
         with:
           name: ReSukiSU-SuSFS-${{ inputs.device_name }}
-          path: kernel-star-resukisu.tar.gz
+          path: ${{ env.AK3_ZIP }}
 
       - name: Send Telegram Notification (Success)
         if: success()
@@ -395,17 +381,19 @@ jobs:
           COMMIT_MSG=$(git log -1 --pretty=%B | head -n 1)
           COMMIT_HASH=$(git rev-parse --short HEAD)
           REPO_URL="https://github.com/${{ github.repository }}"
-          
+
           CAPTION="✅ <b>Kernel Build Successful!</b>
-          
+
+          📱 <b>Device:</b> <code>Xiaomi 11 Ultra/Pro</code>
+          ⚡ <b>KSU:</b> <code>ReSukiSU</code>
           📅 <b>Date:</b> $DATE
           📝 <b>Commit:</b> <code>$COMMIT_MSG</code>
           🔢 <b>Hash:</b> <a href=\"$REPO_URL/commit/$COMMIT_HASH\">$COMMIT_HASH</a>"
-          
-          # Send the exact .zip file generated earlier
+
+          # Send ONLY the flashable AnyKernel3 zip
           curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendDocument" \
             -F chat_id="$CHAT_ID" \
-            -F document="@kernel-star-resukisu.tar.gz" \
+            -F document="@${{ env.AK3_ZIP }}" \
             -F caption="$CAPTION" \
             -F parse_mode="HTML"
 
@@ -422,24 +410,25 @@ jobs:
           
           CAPTION="❌ <b>Kernel Build Failed!</b>
           
+          📱 <b>Device:</b> <code>Xiaomi 11 Ultra/Pro</code>
+          ⚡ <b>KSU:</b> <code>ReSukiSU</code>
           📅 <b>Date:</b> $DATE
           📝 <b>Commit:</b> <code>$COMMIT_MSG</code>
           🔢 <b>Hash:</b> <a href=\"$REPO_URL/commit/$COMMIT_HASH\">$COMMIT_HASH</a>"
           
-          # Check if build.log exists before sending
           if [ -f /tmp/kbuild.log ]; then
             curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendDocument" \
               -F chat_id="$CHAT_ID" \
               -F document="@/tmp/kbuild.log" \
               -F caption="$CAPTION
-              
+
           The error log is attached to this message." \
               -F parse_mode="HTML"
           else
             curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
               -d chat_id="$CHAT_ID" \
               -d text="$CAPTION
-              
+
           <i>The error log was not created (the error likely occurred before compilation).</i>" \
               -d parse_mode="HTML"
           fi
