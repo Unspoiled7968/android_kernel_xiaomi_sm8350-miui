@@ -3,6 +3,10 @@ name: Build clean kernel
 on:
   workflow_dispatch:
     inputs:
+      source_ref:
+        description: 'Kernel source branch/ref to build (e.g. hyper-17, or "bisect")'
+        required: true
+        default: 'hyper-17'
       enable_bpf:
         description: 'Apply the 5.10 BPF backport (whole-feature toggle)'
         required: true
@@ -44,7 +48,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          ref: hyper-17
+          ref: ${{ inputs.source_ref || 'hyper-17' }}
 
       - name: Fetch BPF backport patch (build branch)
         if: ${{ inputs.enable_bpf }}
