@@ -1,0 +1,199 @@
+diff --git a/include/linux/rcupdate_trace.h b/include/linux/rcupdate_trace.h
+new file mode 100644
+index 000000000000..bf96ff11abf8
+--- /dev/null
++++ b/include/linux/rcupdate_trace.h
+@@ -0,0 +1,109 @@
++/* SPDX-License-Identifier: GPL-2.0+ */
++/*
++ * Read-Copy Update mechanism for mutual exclusion, adapted for tracing.
++ *
++ * RCU-tasks-trace backport for the Android BPF plumbing on this 5.4 kernel.
++ * Upstream added the tasks-trace RCU flavor in 5.7 with its own grace-period
++ * kthread; the very first sleepable-BPF support (also 5.7) instead rode on
++ * SRCU, whose read-side critical sections are allowed to sleep.  We do the
++ * same here: the trace API is implemented on a dedicated SRCU domain
++ * (bpf_trace_srcu), so sleepable programs may block inside their read-side
++ * section, and call_rcu_tasks_trace()/synchronize_rcu_tasks_trace() defer
++ * reclaim until every such reader -- sleeping ones included -- has finished.
++ *
++ * The read-side lock/unlock helpers are void (matching the tasks-trace API),
++ * but SRCU needs the cookie from srcu_read_lock() handed back at unlock, so we
++ * stash it in task_struct across the outermost section.  These fields are only
++ * touched by current in sleepable (process) context -- the BPF trampoline
++ * takes the trace lock only around sleepable progs -- so there is no IRQ
++ * reentrancy to worry about.
++ */
++#ifndef __LINUX_RCUPDATE_TRACE_H
++#define __LINUX_RCUPDATE_TRACE_H
++
++#include <linux/sched.h>
++#include <linux/rcupdate.h>
++#include <linux/srcu.h>
++
++#ifdef CONFIG_TASKS_TRACE_RCU
++
++extern struct srcu_struct bpf_trace_srcu;
++
++static inline int rcu_read_lock_trace_held(void)
++{
++	return srcu_read_lock_held(&bpf_trace_srcu);
++}
++
++static inline void rcu_read_lock_trace(void)
++{
++	struct task_struct *t = current;
++
++	if (t->trc_reader_nesting++ == 0)
++		t->trc_reader_srcu_idx = srcu_read_lock(&bpf_trace_srcu);
++}
++
++static inline void rcu_read_unlock_trace(void)
++{
++	struct task_struct *t = current;
++
++	if (--t->trc_reader_nesting == 0)
++		srcu_read_unlock(&bpf_trace_srcu, t->trc_reader_srcu_idx);
++}
++
++static inline void call_rcu_tasks_trace(struct rcu_head *rhp,
++					rcu_callback_t func)
++{
++	call_srcu(&bpf_trace_srcu, rhp, func);
++}
++
++static inline void synchronize_rcu_tasks_trace(void)
++{
++	synchronize_srcu(&bpf_trace_srcu);
++}
++
++static inline void rcu_barrier_tasks_trace(void)
++{
++	srcu_barrier(&bpf_trace_srcu);
++}
++
++#else /* !CONFIG_TASKS_TRACE_RCU */
++
++/*
++ * Without the trace flavor, fall back to classic RCU.  This keeps the
++ * non-sleepable BPF paths correct; sleepable programs require
++ * CONFIG_TASKS_TRACE_RCU (selected by BPF_SYSCALL) to be set.
++ */
++static inline int rcu_read_lock_trace_held(void)
++{
++	return rcu_read_lock_held();
++}
++
++static inline void rcu_read_lock_trace(void)
++{
++	rcu_read_lock();
++}
++
++static inline void rcu_read_unlock_trace(void)
++{
++	rcu_read_unlock();
++}
++
++static inline void call_rcu_tasks_trace(struct rcu_head *rhp,
++					rcu_callback_t func)
++{
++	call_rcu(rhp, func);
++}
++
++static inline void synchronize_rcu_tasks_trace(void)
++{
++	synchronize_rcu();
++}
++
++static inline void rcu_barrier_tasks_trace(void)
++{
++	rcu_barrier();
++}
++
++#endif /* CONFIG_TASKS_TRACE_RCU */
++
++#endif /* __LINUX_RCUPDATE_TRACE_H */
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+index 9fb6635f0bcd..8211a9a656d0 100644
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -895,6 +895,19 @@ struct task_struct {
+ 	struct list_head		rcu_tasks_holdout_list;
+ #endif /* #ifdef CONFIG_TASKS_RCU */
+ 
++#ifdef CONFIG_TASKS_TRACE_RCU
++	/*
++	 * RCU-tasks-trace read-side state.  On this 5.4 kernel the trace
++	 * flavor is implemented on SRCU (see rcupdate_trace.h), so we track
++	 * the read-side nesting depth and remember the SRCU cookie handed out
++	 * by the outermost rcu_read_lock_trace() so the matching unlock can
++	 * pass it back.  Only ever touched by current in sleepable (process)
++	 * context, so no IRQ-reentrancy on these fields.
++	 */
++	int				trc_reader_nesting;
++	int				trc_reader_srcu_idx;
++#endif /* #ifdef CONFIG_TASKS_TRACE_RCU */
++
+ 	struct sched_info		sched_info;
+ 
+ 	struct list_head		tasks;
+diff --git a/init/init_task.c b/init/init_task.c
+index 75eb17517bba..f0a511061678 100644
+--- a/init/init_task.c
++++ b/init/init_task.c
+@@ -147,6 +147,10 @@ struct task_struct init_task
+ 	.rcu_tasks_holdout_list = LIST_HEAD_INIT(init_task.rcu_tasks_holdout_list),
+ 	.rcu_tasks_idle_cpu = -1,
+ #endif
++#ifdef CONFIG_TASKS_TRACE_RCU
++	.trc_reader_nesting = 0,
++	.trc_reader_srcu_idx = 0,
++#endif
+ #ifdef CONFIG_CPUSETS
+ 	.mems_allowed_seq = SEQCNT_ZERO(init_task.mems_allowed_seq),
+ #endif
+diff --git a/kernel/rcu/Kconfig b/kernel/rcu/Kconfig
+index 7644eda17d62..341777de139e 100644
+--- a/kernel/rcu/Kconfig
++++ b/kernel/rcu/Kconfig
+@@ -77,6 +77,17 @@ config TASKS_RCU
+ 	  only voluntary context switch (not preemption!), idle, and
+ 	  user-mode execution as quiescent states.
+ 
++config TASKS_TRACE_RCU
++	bool
++	select SRCU
++	help
++	  This option provides the RCU-tasks-trace flavor used by the
++	  sleepable-BPF plumbing backported from 5.10.  Upstream 5.7+ has a
++	  dedicated grace-period kthread for it; this 5.4 kernel instead
++	  implements the same API on top of SRCU, whose read-side sections
++	  may sleep and whose call_srcu()/synchronize_srcu()/srcu_barrier()
++	  give the required deferred-reclaim semantics for sleepable programs.
++
+ config RCU_STALL_COMMON
+ 	def_bool ( TREE_RCU || PREEMPT_RCU )
+ 	help
+diff --git a/kernel/rcu/update.c b/kernel/rcu/update.c
+index 1861103662db..c07a44eba44a 100644
+--- a/kernel/rcu/update.c
++++ b/kernel/rcu/update.c
+@@ -45,6 +45,18 @@
+ 
+ #include "rcu.h"
+ 
++#ifdef CONFIG_TASKS_TRACE_RCU
++#include <linux/srcu.h>
++/*
++ * Backing SRCU domain for the RCU-tasks-trace API shimmed in
++ * <linux/rcupdate_trace.h>.  Sleepable BPF read-side sections take an SRCU
++ * read lock here, and freed programs/trampolines are reclaimed via call_srcu()
++ * on this same domain, so a sleeping reader keeps its object alive.
++ */
++DEFINE_SRCU(bpf_trace_srcu);
++EXPORT_SYMBOL_GPL(bpf_trace_srcu);
++#endif /* CONFIG_TASKS_TRACE_RCU */
++
+ #ifdef MODULE_PARAM_PREFIX
+ #undef MODULE_PARAM_PREFIX
+ #endif

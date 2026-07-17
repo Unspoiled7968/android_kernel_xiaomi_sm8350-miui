@@ -1,0 +1,445 @@
+name: Build ReSukiSU + SuSFS
+
+on:
+  workflow_dispatch:
+    inputs:
+      enable_bpf:
+        description: 'Apply the 5.10 BPF backport (whole-feature toggle)'
+        required: true
+        type: boolean
+        default: true
+      device_name:
+        description: 'Select target device'
+        required: true
+        default: 'star'
+        type: choice
+        options: [star, mars, venus]
+      localversion:
+        description: 'Custom version suffix'
+        required: true
+        default: '-palaziks-ShiftPorts'
+      bbr_enable:
+        description: "Enable TCP BBR/Brutal (false=off, true=add, default=set as default)"
+        required: true
+        type: choice
+        default: 'true'
+        options:
+          - 'false'
+          - 'true'
+          - 'default'
+      huawei_lz4ko:
+        description: 'Huawei LZ4KO patch'
+        required: true
+        type: boolean
+        default: true
+      adios_enable:
+        description: 'Enable ADIOS IO Scheduler (Improves IO read/write performance)'
+        required: true
+        type: boolean
+        default: true
+      rekernel_enable:
+        description: 'Enable Re-Kernel Support (Enhances app freezing via NoActive/Freezer)'
+        required: true
+        type: boolean
+        default: false
+      baseband_guard:
+        description: 'Enable Baseband Guard (Anti-brick modem protection)'
+        required: true
+        type: boolean
+        default: true
+      lto_type:
+        description: 'LTO Optimization (none = fast compile, thin = default, full = slow)'
+        required: true
+        type: choice
+        default: 'thin'
+        options:
+          - 'none'
+          - 'thin'
+          - 'full'
+      unicode_fix:
+        description: 'Enable Unicode Bypass Fix (path traversal protection)'
+        required: true
+        type: boolean
+        default: true
+      wireguard:
+        description: 'Enable WireGuard VPN support'
+        required: true
+        type: boolean
+        default: true
+      netfilter_full:
+        description: 'Full Netfilter (conntrack, NAT, hashlimit)'
+        required: true
+        type: boolean
+        default: false
+      wakelock_blocker:
+        description: 'Enable Wakelock Blocker (better idle battery drain)'
+        required: true
+        type: boolean
+        default: true
+      swap_size:
+        description: 'Swap size in GB'
+        required: true
+        default: '16'
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ref: hyper-17
+
+      - name: Fetch BPF backport patch (build branch)
+        if: ${{ inputs.enable_bpf }}
+        uses: actions/checkout@v4
+        with:
+          ref: build
+          path: .bpf-patch
+          sparse-checkout: patches
+          sparse-checkout-cone-mode: false
+
+      - name: Apply BPF backport
+        if: ${{ inputs.enable_bpf }}
+        run: |
+          set -e
+          shopt -s nullglob
+          patches=(.bpf-patch/patches/bpf/*.patch)
+          if [ ${#patches[@]} -eq 0 ]; then echo "No BPF patches found"; exit 1; fi
+          for p in "${patches[@]}"; do
+            echo "Applying $(basename "$p")"
+            git apply --whitespace=nowarn "$p"
+          done
+          echo "BPF backport applied (${#patches[@]} patches, enable_bpf=true)"
+
+      - name: Dynamic Memory Allocation (Swap)
+        uses: pierotofy/set-swap-space@master
+        with:
+          swap-size-gb: ${{ inputs.swap_size || '16' }}
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get install -y clang lld llvm git make gcc flex bison bc \
+            libssl-dev ccache libncurses5-dev libncursesw5-dev cmake \
+            python3 python-is-python3 cpio curl patch rsync
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          max-size: 5G
+          key: kernel-${{ inputs.device_name }}-${{ inputs.lto_type }}
+
+      - name: Create clang ccache wrappers
+        run: |
+          mkdir -p "$HOME/.ccache_wrappers"
+          printf '#!/bin/sh\nexec ccache /usr/bin/clang "$@"\n' \
+            > "$HOME/.ccache_wrappers/clang"
+          printf '#!/bin/sh\nexec ccache /usr/bin/clang++ "$@"\n' \
+            > "$HOME/.ccache_wrappers/clang++"
+          chmod +x "$HOME/.ccache_wrappers/clang" \
+                   "$HOME/.ccache_wrappers/clang++"
+          echo "$HOME/.ccache_wrappers" >> "$GITHUB_PATH"
+
+      - name: "⚡ Setup ReSukiSU (main)"
+        run: |
+          set -e
+          echo "=== Setting up ReSukiSU (main) ==="
+      
+          KERNEL_REPO="$(pwd)"
+          git clone --depth=1 -b main https://github.com/ReSukiSU/ReSukiSU.git ReSukiSU
+          # ✅ run setup.sh FROM kernel root
+          bash ReSukiSU/kernel/setup.sh "$KERNEL_REPO"
+      
+          echo "✅ ReSukiSU integrated"
+
+      - name: Setup SuSFS for ReSukiSU
+        run: |
+          set -e
+          git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git ../jacka_repo
+
+          PATCH_FILE="../jacka_repo/Patches/Patch/susfs_patch_to_5.4.patch"
+
+          if [ ! -f "$PATCH_FILE" ]; then
+            echo "❌ Patch not found, available:"
+            ls ../jacka_repo/Patches/Patch/ || true
+            exit 1
+          fi
+
+          patch -p1 --forward --batch < "$PATCH_FILE" || echo "⚠️ Patch partially applied"
+          echo "✅ JackA1ltman SuSFS 5.4 patch applied"
+
+      - name: Add inline hooks for SuSFS
+        run: |
+          set -e
+          # The SUSFS inline hook and the syscall (manual) hook are MUTUALLY
+          # EXCLUSIVE — they patch the same ksu_handle_* call sites. We use the
+          # SUSFS Inline Hook method (CONFIG_KSU_SUSFS=y below), so run ONLY the
+          # susfs inline hook script. Also running syscall_hook_patches.sh would
+          # double-patch those sites and break the build.
+          bash "../jacka_repo/Patches/susfs_inline_hook_patches.sh"
+
+      - name: Append Defconfig Flags
+        run: |
+          set -e
+
+          DEVICE="${{ inputs.device_name || 'star' }}"
+          # build.sh assembles the config by MERGING this exact fragment list:
+          #   vendor/lahaina-qgki_defconfig vendor/lahaina_QGKI.config \
+          #   vendor/xiaomi_QGKI.config vendor/<device>_QGKI.config
+          # It never reads star_defconfig / star_gcc_defconfig, so appending our
+          # flags there is a silent no-op (which is why CONFIG_KSU_SUSFS=y was
+          # ignored and the hook choice stayed on its KSU_TRACEPOINT_HOOK default).
+          # Write our runtime flags into the per-device QGKI fragment instead.
+          DEFCONFIG="arch/arm64/configs/vendor/${DEVICE}_QGKI.config"
+
+          echo "DEFCONFIG=$DEFCONFIG" >> $GITHUB_ENV
+
+          if [ -z "$DEFCONFIG" ] || [ ! -f "$DEFCONFIG" ]; then
+            echo "❌ Defconfig fragment not found: $DEFCONFIG"
+            exit 1
+          fi
+
+          echo "✅ Appending flags to build.sh-consumed fragment: $DEFCONFIG"
+          
+          # KSU base
+          echo "CONFIG_KSU=y" >> "$DEFCONFIG"
+          # NOTE: CONFIG_KSU_INLINE_HOOK is NOT a real Kconfig symbol in ReSukiSU.
+          # The hooking method is a Kconfig `choice` (default KSU_TRACEPOINT_HOOK,
+          # which is GKI 2.0 / 5.10+ only and hard-errors on this GKI 1.0 / 5.4
+          # kernel). The SUSFS Inline Hook is selected by CONFIG_KSU_SUSFS=y (set
+          # below), which is itself a member of that choice and deselects the TP
+          # default. Do not add a bogus CONFIG_KSU_INLINE_HOOK here.
+          echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG"
+          echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG"
+          
+          # SuSFS v2.x features
+          echo "CONFIG_KSU_SUSFS=y" >> "$DEFCONFIG"
+          echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> "$DEFCONFIG"
+          echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> "$DEFCONFIG"
+          echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> "$DEFCONFIG"
+          echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> "$DEFCONFIG"
+          echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> "$DEFCONFIG"
+          echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> "$DEFCONFIG"
+          echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> "$DEFCONFIG"
+          echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> "$DEFCONFIG"
+          echo "CONFIG_KSU_SUSFS_SUS_MAP=y" >> "$DEFCONFIG"
+
+          # Optimization
+          echo "CONFIG_HZ_300=y" >> "$DEFCONFIG"
+          
+          # Enable Huawei LZ4KO Crypto Algorithm
+          if [ "${{ github.event.inputs.huawei_lz4ko }}" == "true" ]; then
+            echo "CONFIG_ZSMALLOC=y" >> "$DEFCONFIG"
+            echo "CONFIG_CRYPTO_LZ4=y" >> "$DEFCONFIG"
+            echo "CONFIG_CRYPTO_LZ4K=y" >> "$DEFCONFIG"
+          fi
+
+      - name: Apply Unicode Bypass Fix
+        if: inputs.unicode_fix
+        run: |
+          PATCH_URL="https://github.com/TheWildJames/kernel_patches/raw/main/common/unicode_bypass_fix_6.1-.patch"
+          wget -qO /tmp/ub_fix.patch "$PATCH_URL" 2>/dev/null && \
+            patch -p1 --forward < /tmp/ub_fix.patch || true
+          echo "Unicode fix applied"
+
+      - name: 🚀 Apply Huawei LZ4KO ZRAM Patch
+        if: inputs.huawei_lz4ko
+        run: |
+          curl -sSL "https://github.com/crdroidandroid/android_kernel_xiaomi_courbet/commit/94caa27.patch" -o lz4ko.patch
+          patch -p1 -F 3 < lz4ko.patch || echo "⚠️ Patch had minor conflicts"
+
+      - name: Enable WireGuard
+        if: inputs.wireguard
+        run: |
+          echo "Enabling WireGuard..."
+          cat >> "$DEFCONFIG" << 'EOF'
+          CONFIG_WIREGUARD=y
+          EOF
+
+      - name: Enable Full Netfilter
+        if: inputs.netfilter_full
+        run: |
+          echo "Enabling full Netfilter support..."
+          cat >> "$DEFCONFIG" << 'EOF'
+          CONFIG_NF_CONNTRACK=y
+          CONFIG_NF_CONNTRACK_MARK=y
+          CONFIG_NF_CONNTRACK_ZONES=y
+          CONFIG_NF_CONNTRACK_TIMESTAMP=y
+          CONFIG_NF_CONNTRACK_EVENTS=y
+          CONFIG_NF_CONNTRACK_TIMEOUT=y
+          CONFIG_NF_CONNTRACK_LABELS=y
+          CONFIG_NF_NAT=y
+          CONFIG_NF_NAT_MASQUERADE=y
+          CONFIG_NETFILTER_XT_MATCH_HASHLIMIT=y
+          CONFIG_NETFILTER_XT_MATCH_CONNTRACK=y
+          CONFIG_NETFILTER_XT_MATCH_CONNLIMIT=y
+          CONFIG_NETFILTER_XT_MATCH_STATE=y
+          CONFIG_NETFILTER_XT_TARGET_MASQUERADE=y
+          CONFIG_NETFILTER_XT_TARGET_REDIRECT=y
+          EOF
+
+      - name: Enable Wakelock Blocker
+        if: inputs.wakelock_blocker
+        run: |
+          echo "Enabling Wakelock Blocker..."
+          cat >> "$DEFCONFIG" << 'EOF'
+          CONFIG_PM_WAKELOCKS=y
+          CONFIG_PM_WAKELOCKS_GC=y
+          CONFIG_PM_WAKELOCKS_LIMIT=100
+          EOF
+          # Патч для принудительного блокирования известных wakelocks
+          WAKELOCK_C="kernel/power/wakelock.c"
+          if [ -f "$WAKELOCK_C" ]; then
+            # Добавляем список заблокированных wakelocks от cctv18/Epicmann24
+            cat >> "$WAKELOCK_C" << 'WLEOF'
+          /* palaziks: wakelock blocker list */
+          static const char * const blocked_wakelocks[] = {
+              "WLAN_pm_wlock",
+              "IPA_WS",
+              "qcom_rx_wakelock",
+              "event0",
+          };
+          WLEOF
+          fi
+
+      - name: Configure BBR & Brutal
+        run: |
+          if [[ "${{ github.event.inputs.bbr_enable }}" != "false" ]]; then
+            echo "Adding TCP Congestion Algorithms..."
+            echo "CONFIG_TCP_CONG_ADVANCED=y" >> "$DEFCONFIG"
+            echo "CONFIG_TCP_CONG_BBR=y" >> "$DEFCONFIG"
+            echo "CONFIG_TCP_CONG_CUBIC=y" >> "$DEFCONFIG"
+            echo "CONFIG_TCP_CONG_VEGAS=y" >> "$DEFCONFIG"
+            echo "CONFIG_TCP_CONG_NV=y" >> "$DEFCONFIG"
+            echo "CONFIG_TCP_CONG_WESTWOOD=y" >> "$DEFCONFIG"
+            echo "CONFIG_TCP_CONG_HTCP=y" >> "$DEFCONFIG"
+            echo "CONFIG_TCP_CONG_BRUTAL=y" >> "$DEFCONFIG"
+            if [[ "${{ github.event.inputs.bbr_enable }}" == "default" ]]; then
+              echo "Setting BBR as default algorithm..."
+              echo "CONFIG_DEFAULT_TCP_CONG=bbr" >> "$DEFCONFIG"
+            else
+              echo "CONFIG_DEFAULT_TCP_CONG=cubic" >> "$DEFCONFIG"
+            fi
+          fi
+
+      - name: Configure LTO
+        run: |
+          if [[ "${{ github.event.inputs.lto_type }}" == "none" ]]; then
+            echo "CONFIG_LTO_CLANG_NONE=y" >> "$DEFCONFIG"
+          elif [[ "${{ github.event.inputs.lto_type }}" == "full" ]]; then
+            echo "CONFIG_LTO_CLANG_FULL=y" >> "$DEFCONFIG"
+          else
+            echo "CONFIG_LTO_CLANG_THIN=y" >> "$DEFCONFIG"
+          fi
+
+      - name: Configure ADIOS IO
+        if: inputs.adios_enable
+        run: |
+          echo "Enabling ADIOS IO Scheduler..."
+          echo "CONFIG_MQ_IOSCHED_ADIOS=y" >> "$DEFCONFIG"
+          echo "CONFIG_MQ_IOSCHED_DEFAULT_ADIOS=y" >> "$DEFCONFIG"
+
+      - name: Configure Re-Kernel
+        if: inputs.rekernel_enable
+        run: |
+          echo "Enabling Re-Kernel Support..."
+          echo "CONFIG_REKERNEL=y" >> "$DEFCONFIG"
+
+      - name: Configure Baseband Guard
+        if: inputs.baseband_guard
+        run: |
+          echo "Enabling Baseband Guard Support..."
+          echo "CONFIG_BBG=y" >> "$DEFCONFIG"
+          curl -sSL https://github.com/cctv18/Baseband-guard/raw/master/setup.sh | bash
+          sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' security/Kconfig
+
+      - name: Build Project
+        run: |
+          git config --global user.email "bot@example.com"
+          git config --global user.name "palazik"
+          export LOCALVERSION="${{ inputs.localversion }}"
+          echo "clang -> $(which clang)"
+          ccache --zero-stats > /dev/null 2>&1 || true
+          chmod +x ./build.sh
+          # Tell the script to use ccache
+          ./build.sh all ${{ inputs.device_name }} 2>&1 | tee /tmp/kbuild.log
+
+          # Look for the Image in the 'out' directory or '../out' directory
+          if [ ! -f out/arch/arm64/boot/Image ] && [ ! -f ../out/arch/arm64/boot/Image ]; then
+            echo "BUILD FAILED"
+            grep -E "error:|FAILED" /tmp/kbuild.log | tail -50
+            exit 1
+          fi
+
+      - name: Compress & Upload
+        run: |
+          mkdir -p upload
+          # Copy from the correct output directories
+          cp out/arch/arm64/boot/Image upload/ || cp ../out/arch/arm64/boot/Image upload/ || true
+          find ../out out -name "*.zip" -exec cp {} upload/ \; || true
+          tar -czvf kernel-star-resukisu.tar.gz upload/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ReSukiSU-SuSFS-${{ inputs.device_name }}
+          path: kernel-star-resukisu.tar.gz
+
+      - name: Send Telegram Notification (Success)
+        if: success()
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ vars.CHAT_ID }}
+        run: |
+          DATE=$(date +"%Y-%m-%d %H:%M:%S %Z")
+          COMMIT_MSG=$(git log -1 --pretty=%B | head -n 1)
+          COMMIT_HASH=$(git rev-parse --short HEAD)
+          REPO_URL="https://github.com/${{ github.repository }}"
+          
+          CAPTION="✅ <b>Kernel Build Successful!</b>
+          
+          📅 <b>Date:</b> $DATE
+          📝 <b>Commit:</b> <code>$COMMIT_MSG</code>
+          🔢 <b>Hash:</b> <a href=\"$REPO_URL/commit/$COMMIT_HASH\">$COMMIT_HASH</a>"
+          
+          # Send the exact .zip file generated earlier
+          curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendDocument" \
+            -F chat_id="$CHAT_ID" \
+            -F document="@kernel-star-resukisu.tar.gz" \
+            -F caption="$CAPTION" \
+            -F parse_mode="HTML"
+
+      - name: Send Telegram Notification (Failure)
+        if: failure()
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ vars.CHAT_ID }}
+        run: |
+          DATE=$(date +"%Y-%m-%d %H:%M:%S %Z")
+          COMMIT_MSG=$(git log -1 --pretty=%B | head -n 1)
+          COMMIT_HASH=$(git rev-parse --short HEAD)
+          REPO_URL="https://github.com/${{ github.repository }}"
+          
+          CAPTION="❌ <b>Kernel Build Failed!</b>
+          
+          📅 <b>Date:</b> $DATE
+          📝 <b>Commit:</b> <code>$COMMIT_MSG</code>
+          🔢 <b>Hash:</b> <a href=\"$REPO_URL/commit/$COMMIT_HASH\">$COMMIT_HASH</a>"
+          
+          # Check if build.log exists before sending
+          if [ -f /tmp/kbuild.log ]; then
+            curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendDocument" \
+              -F chat_id="$CHAT_ID" \
+              -F document="@/tmp/kbuild.log" \
+              -F caption="$CAPTION
+              
+          The error log is attached to this message." \
+              -F parse_mode="HTML"
+          else
+            curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
+              -d chat_id="$CHAT_ID" \
+              -d text="$CAPTION
+              
+          <i>The error log was not created (the error likely occurred before compilation).</i>" \
+              -d parse_mode="HTML"
+          fi
