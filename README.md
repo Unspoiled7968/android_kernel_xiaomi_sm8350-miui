@@ -23,11 +23,7 @@ pulled from `hyper-17` regardless of what you pick there.
 | `clean_build.yml` | Plain kernel, no root |
 | `resukisu_build.yml` | ReSukiSU + SUSFS (inline hook) |
 | `sukisu.yml` | SukiSU Ultra |
-| `sukisu_test.yml` | SukiSU Ultra, testing config |
 | `ksunext_build.yml` | KernelSU-Next + SUSFS |
-| `KageSU.yml` | KageSU |
-| `all.yml` | Any of the above — pick the KSU variant as an input |
-| `show.yml` | Dumps the KSU Makefile. Debug helper, doesn't build a kernel |
 
 `star` (Mi 11 Ultra) is the default target on every workflow; some also offer
 `mars`, `venus`, or `renoir`.
