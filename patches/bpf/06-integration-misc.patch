@@ -1,20 +1,11 @@
 diff --git a/arch/arm64/configs/vendor/xiaomi_QGKI.config b/arch/arm64/configs/vendor/xiaomi_QGKI.config
-index e359a5de1fb4..3d52fa683d39 100644
+index 698f572d652d..3d52fa683d39 100644
 --- a/arch/arm64/configs/vendor/xiaomi_QGKI.config
 +++ b/arch/arm64/configs/vendor/xiaomi_QGKI.config
-@@ -78,4 +78,16 @@ CONFIG_ZRAM_WRITEBACK=y
- CONFIG_ZRAM_LZ4P=y
- CONFIG_ZRAM_DEF_COMP_LZ4P=y
- CONFIG_ZRAM_MULTI_COMP=y
--CONFIG_ZRAM_DEDUP=y
-\ No newline at end of file
-+CONFIG_ZRAM_DEDUP=y
-+
-+# UAPI header self-test compiles exported headers standalone, but the cross
-+# clang has no libc sysroot for the target, so headers that pull in libc
-+# (e.g. linux/if.h -> sys/socket.h via linux/netdevice.h) fail. Disable it;
-+# it is a build-time sanity check with no effect on the kernel itself.
-+# CONFIG_UAPI_HEADER_TEST is not set
+@@ -85,3 +85,9 @@ CONFIG_ZRAM_DEDUP=y
+ # (e.g. linux/if.h -> sys/socket.h via linux/netdevice.h) fail. Disable it;
+ # it is a build-time sanity check with no effect on the kernel itself.
+ # CONFIG_UAPI_HEADER_TEST is not set
 +
 +# The Android BPF backport references SOCKMAP/SOCKHASH ops (sock_map_ops,
 +# sock_hash_ops) unconditionally in bpf_types.h and calls sock_map_* from
