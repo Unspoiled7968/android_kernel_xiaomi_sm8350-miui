@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       enable_bpf:
-        description: 'Apply the 5.10 BPF backport (whole-feature toggle)'
+        description: 'Apply the 5.10 BPF backport'
         required: true
         type: boolean
         default: true
@@ -151,40 +151,9 @@ jobs:
           # ✅ run setup.sh FROM kernel root
           bash KernelSU-Next/kernel/setup.sh "$KERNEL_REPO"
       
-          # ✅ fix pgtable after setup
-          sed -i '/pgtable.h/c\#include <asm/pgtable.h>' drivers/kernelsu/feature/sucompat.c
-      
-          echo "✅ KernelSU Next integrated + pgtable fixed"
+          echo "✅ KernelSU Next integrated"
 
       - name: Setup SuSFS for KSU Next
-        run: |
-          set -e
-          KERNEL_REPO="$(pwd)"
-
-          git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git \
-            -b gki-android12-5.10 ../susfs4ksu
-          SUSFS_DIR="$KERNEL_REPO/../susfs4ksu"
-
-          cd "$KERNEL_REPO"
-
-          cp "$SUSFS_DIR/kernel_patches/fs/susfs.c" "$KERNEL_REPO/fs/"
-          cp "$SUSFS_DIR/kernel_patches/include/linux/susfs.h" "$KERNEL_REPO/include/linux/"
-          cp "$SUSFS_DIR/kernel_patches/include/linux/susfs_def.h" "$KERNEL_REPO/include/linux/"
-
-          grep -q "linux/cred.h" "$KERNEL_REPO/include/linux/susfs_def.h" || \
-            sed -i '1s/^/#include <linux\/cred.h>\n/' "$KERNEL_REPO/include/linux/susfs_def.h"
-
-          grep -q "susfs.o" fs/Makefile || echo 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' >> fs/Makefile
-
-          # Fix fsnotify for 5.4: rewrite 3-line 5.9+ signature to 5.4 handle_event prototype
-          perl -i -0pe 's/static int susfs_handle_sdcard_inode_event\(struct fsnotify_mark \*mark, u32 mask,\s*struct inode \*inode, struct inode \*dir,\s*const struct qstr \*file_name, u32 cookie\)/static int susfs_handle_sdcard_inode_event(struct fsnotify_group *group, struct inode *inode, u32 mask, const void *data, int data_type, const struct qstr *file_name, u32 cookie, struct fsnotify_iter_info *iter_info)/s' fs/susfs.c
-
-          # Rename ops field to match 5.4
-          sed -i 's/\.handle_inode_event = /.handle_event = /' fs/susfs.c
-
-          echo "✅ SuSFS copied + fsnotify fixed for 5.4"
-
-      - name: Apply SuSFS 5.4 Patch (JackA1ltman)
         run: |
           set -e
           git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git ../jacka_repo
@@ -198,15 +167,13 @@ jobs:
           fi
 
           patch -p1 --forward --batch < "$PATCH_FILE" || echo "⚠️ Patch partially applied"
-          echo "✅ JackA1ltman susfs 5.4 patch applied"
+          echo "✅ JackA1ltman SuSFS 5.4 patch applied"
+          echo "SuSFS version: 2.2.0"
 
-          # supercall.c — needs susfs.h for susfs functions
-          grep -q "susfs.h" drivers/kernelsu/supercall/supercall.c || \
-            sed -i '1s/^/#include <linux\/susfs.h>\n/' drivers/kernelsu/supercall/supercall.c
-
-          # fs/open.c — needs susfs.h for open_redirect hooks
-          grep -q "susfs.h" fs/open.c || \
-            sed -i '/#include <linux\/fs.h>/a #include <linux\/susfs.h>' fs/open.c
+      - name: Add inline hooks for SuSFS
+        run: |
+          set -e
+          bash "../jacka_repo/Patches/susfs_inline_hook_patches.sh"
 
       - name: Append Defconfig Flags
         run: |
@@ -304,10 +271,8 @@ jobs:
           CONFIG_PM_WAKELOCKS_GC=y
           CONFIG_PM_WAKELOCKS_LIMIT=100
           EOF
-          # Патч для принудительного блокирования известных wakelocks
           WAKELOCK_C="kernel/power/wakelock.c"
           if [ -f "$WAKELOCK_C" ]; then
-            # Добавляем список заблокированных wakelocks от cctv18/Epicmann24
             cat >> "$WAKELOCK_C" << 'WLEOF'
           /* palaziks: wakelock blocker list */
           static const char * const blocked_wakelocks[] = {
@@ -378,28 +343,33 @@ jobs:
           echo "clang -> $(which clang)"
           ccache --zero-stats > /dev/null 2>&1 || true
           chmod +x ./build.sh
-          # Tell the script to use ccache
           ./build.sh all ${{ inputs.device_name }} 2>&1 | tee /tmp/kbuild.log
 
-          # Look for the Image in the 'out' directory or '../out' directory
           if [ ! -f out/arch/arm64/boot/Image ] && [ ! -f ../out/arch/arm64/boot/Image ]; then
             echo "BUILD FAILED"
             grep -E "error:|FAILED" /tmp/kbuild.log | tail -50
             exit 1
           fi
 
-      - name: Compress & Upload
+      - name: Locate & rename flashable AK3 zip
         run: |
-          mkdir -p upload
-          # Copy from the correct output directories
-          cp out/arch/arm64/boot/Image upload/ || cp ../out/arch/arm64/boot/Image upload/ || true
-          find ../out out -name "*.zip" -exec cp {} upload/ \; || true
-          tar -czvf kernel-star-ksunext.tar.gz upload/
+          # build.sh packages AnyKernel3 zip into ../out/anykernel/<name>.zip
+          AK3=$(find ../out/anykernel out/anykernel -name "*.zip" 2>/dev/null | head -n1)
+          if [ -z "$AK3" ]; then
+            echo "❌ No AK3 flashable zip found"; exit 1
+          fi
+          # rename to a clean name (device from input)
+          DEVICE="${{ inputs.device_name || 'star' }}"
+          NEW="$(dirname "$AK3")/${DEVICE}-5.4_KSUNext-palaziks.zip"
+          mv "$AK3" "$NEW"
+          cp "$NEW" "$GITHUB_WORKSPACE/${DEVICE}-5.4_KSUNext-palaziks.zip"
+          echo "AK3_ZIP=$GITHUB_WORKSPACE/${DEVICE}-5.4_KSUNext-palaziks.zip" >> $GITHUB_ENV
+          echo "✅ Flashable: $GITHUB_WORKSPACE/${DEVICE}-5.4_KSUNext-palaziks.zip"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: KernelSU-Next-SuSFS-${{ inputs.device_name }}
-          path: kernel-star-ksunext.tar.gz
+          name: KSUNext-SuSFS-${{ inputs.device_name }}
+          path: ${{ env.AK3_ZIP }}
 
       - name: Send Telegram Notification (Success)
         if: success()
@@ -411,18 +381,19 @@ jobs:
           COMMIT_MSG=$(git log -1 --pretty=%B | head -n 1)
           COMMIT_HASH=$(git rev-parse --short HEAD)
           REPO_URL="https://github.com/${{ github.repository }}"
-          
+
           CAPTION="✅ <b>Kernel Build Successful!</b>
 
-          ⚡ <b>Device:</b> <code>Xiaomi 11 Ultra/Pro</code>
+          📱 <b>Device:</b> <code>Xiaomi 11 Ultra/Pro</code>
+          ⚡ <b>KSU:</b> <code>KernelSU Next</code>
           📅 <b>Date:</b> $DATE
           📝 <b>Commit:</b> <code>$COMMIT_MSG</code>
           🔢 <b>Hash:</b> <a href=\"$REPO_URL/commit/$COMMIT_HASH\">$COMMIT_HASH</a>"
-          
-          # Send the exact .zip file generated earlier
+
+          # Send ONLY the flashable AnyKernel3 zip
           curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendDocument" \
             -F chat_id="$CHAT_ID" \
-            -F document="@kernel-star-ksunext.tar.gz" \
+            -F document="@${{ env.AK3_ZIP }}" \
             -F caption="$CAPTION" \
             -F parse_mode="HTML"
 
@@ -438,26 +409,26 @@ jobs:
           REPO_URL="https://github.com/${{ github.repository }}"
           
           CAPTION="❌ <b>Kernel Build Failed!</b>
-
-          ⚡ <b>Device:</b> <code>Xiaomi 11 Ultra/Pro</code>
+          
+          📱 <b>Device:</b> <code>Xiaomi 11 Ultra/Pro</code>
+          ⚡ <b>KSU:</b> <code>KernelSU Next</code>
           📅 <b>Date:</b> $DATE
           📝 <b>Commit:</b> <code>$COMMIT_MSG</code>
           🔢 <b>Hash:</b> <a href=\"$REPO_URL/commit/$COMMIT_HASH\">$COMMIT_HASH</a>"
           
-          # Check if build.log exists before sending
           if [ -f /tmp/kbuild.log ]; then
             curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendDocument" \
               -F chat_id="$CHAT_ID" \
               -F document="@/tmp/kbuild.log" \
               -F caption="$CAPTION
-              
+
           The error log is attached to this message." \
               -F parse_mode="HTML"
           else
             curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
               -d chat_id="$CHAT_ID" \
               -d text="$CAPTION
-              
+
           <i>The error log was not created (the error likely occurred before compilation).</i>" \
               -d parse_mode="HTML"
           fi

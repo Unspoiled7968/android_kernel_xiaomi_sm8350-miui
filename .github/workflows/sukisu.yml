@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       enable_bpf:
-        description: 'Apply the 5.10 BPF backport (whole-feature toggle)'
+        description: 'Apply the 5.10 BPF backport'
         required: true
         type: boolean
         default: true
@@ -169,11 +169,6 @@ jobs:
 
           # Bug (THE manager-detection fix): builtin excludes the task_fix_setuid LSM hook
           # when CONFIG_KSU_SUSFS is on (#ifndef CONFIG_KSU_SUSFS around the LSM_HOOK_INIT).
-          # It instead expects ksu_handle_setresuid to be called from a MANUAL setuid hook in
-          # kernel/sys.c - but the hook script skips that on 5.4. Result: the manager fd is
-          # never installed -> "not installed" even though su works. Fix like ReSukiSU does:
-          # register task_fix_setuid via LSM even under SUSFS, via a wrapper that calls
-          # ksu_handle_setresuid. (This is the core KageSU non-GKI manager-detection fix.)
           LSMH=drivers/kernelsu/hook/lsm_hook.c
           if ! grep -q "ksu_task_fix_setuid_susfs" "$LSMH"; then
             # insert the wrapper just before the ksu_hooks[] array
@@ -186,12 +181,7 @@ jobs:
 
           # Bug (THE actual manager-detection root cause): susfs_set_batch_sid() - which
           # resolves susfs_zygote_sid from "u:r:zygote:s0" - is only called in the >=5.10
-          # SELinux policy path in selinux/rules.c. On 5.4 (the #else legacy branch) it is
-          # NEVER called, so susfs_zygote_sid stays 0. Then ksu_handle_setresuid()'s early
-          # guard `if (!susfs_is_sid_equal(current, susfs_zygote_sid)) return 0;` fails for
-          # EVERY process (comparing against 0) -> the manager-fd branch is never reached ->
-          # "not installed" while su still works. Fix: call susfs_set_batch_sid() in the 5.4
-          # legacy branch too, after the policy is applied. (Core KageSU non-GKI fix.)
+          # SELinux policy path in selinux/rules.c.
           RULES=drivers/kernelsu/selinux/rules.c
           if [ "$(grep -c susfs_set_batch_sid "$RULES")" -lt 2 ]; then
             perl -0pi -e 's/(out_flush:\n    smp_mb\(\);\n    reset_avc_cache\(\);\n)(#endif\n\})/$1#ifdef CONFIG_KSU_SUSFS\n    susfs_set_batch_sid();\n#endif\n$2/' "$RULES"
@@ -200,12 +190,7 @@ jobs:
 
           # Bug: under CONFIG_KSU_SUSFS + modern static-key interface (always on >=4.3),
           # builtin gates the read/input hooks with STATIC KEYS and does NOT define the
-          # ksu_vfs_read_hook / ksu_input_hook bools. But syscall_hook_patches.sh writes
-          # bool gates `if (ksu_vfs_read_hook)` / `if (ksu_input_hook)` into fs/read_write.c
-          # and drivers/input/input.c -> undefined symbols at link. (The read_write case
-          # also mis-picks ksu_init_rc_hook via a pr_info false positive.) Builtin itself
-          # calls these hooks unconditionally under SUSFS, so drop the bool extern + gate
-          # and keep the hook call.
+          # ksu_vfs_read_hook / ksu_input_hook bools.
           for HF in fs/read_write.c drivers/input/input.c; do
             sed -i '/extern bool ksu_init_rc_hook __read_mostly;/d;/extern bool ksu_vfs_read_hook __read_mostly;/d;/extern bool ksu_input_hook __read_mostly;/d' "$HF"
             sed -i 's/if (unlikely(ksu_init_rc_hook))[[:space:]]*$//;s/if (unlikely(ksu_vfs_read_hook))[[:space:]]*$//;s/if (unlikely(ksu_input_hook))[[:space:]]*$//' "$HF"
@@ -220,7 +205,6 @@ jobs:
           # (u:r:su:s0 rule in security/selinux/hooks.c) when kernel major < 5. On 5.4 it
           # prints "Kernel needn't selinux fix, Skipped" and omits it -> SELinux blocks the
           # su context switch -> manager reports "not installed" despite KSU being loaded.
-          # Force-apply it (anchors verified present on this tree).
           HK=security/selinux/hooks.c
           if ! grep -q "ksu_sid" "$HK"; then
             sed -i '/int nnp = (bprm->unsafe & LSM_UNSAFE_NO_NEW_PRIVS);/i\#ifdef CONFIG_KSU\n    static u32 ksu_sid;\n    char *secdata;\n#endif' "$HK"
@@ -232,15 +216,9 @@ jobs:
       - name: Setup SuSFS (v2.2.0) for 5.4
         run: |
           set -e
-          # Do NOT copy susfs.c/.h from the 5.10 branch - the 5.4 patch creates its own
-          # (version-aware, self-selects the 5.4 fsnotify path via #if LINUX_VERSION_CODE).
-          # Do NOT add susfs.o to fs/Makefile - the patch does it.
           patch -p1 --forward < ../jacka/Patches/Patch/susfs_patch_to_5.4.patch
           grep -q "SUSFS_VERSION" include/linux/susfs.h || { echo "SUSFS FAILED"; exit 1; }
 
-          # Bug: the 5.4 susfs patch uses SUSFS_IS_INODE_OPEN_REDIRECT_WITHOUT_UID_CHECK()
-          # in fs/open.c but only adds the <linux/susfs_def.h> include to fs/proc/*.c,
-          # not to open.c -> implicit declaration on this tree. Add the include.
           if ! grep -q "susfs_def.h" fs/open.c; then
             sed -i '/^#include <linux\/falloc.h>/a #if defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)\n#include <linux/susfs_def.h>\n#endif' fs/open.c
           fi
@@ -394,9 +372,6 @@ jobs:
           echo "Enabling Baseband Guard Support..."
           echo "CONFIG_BBG=y" >> "$DEFCONFIG"
           curl -sSL https://github.com/cctv18/Baseband-guard/raw/master/setup.sh | bash
-          # Insert baseband_guard into the CONFIG_LSM default chain in security/Kconfig.
-          # (No explicit CONFIG_LSM= in the defconfig, so the kernel uses this Kconfig
-          # default - the build-time BBG check confirms it lands correctly.)
           sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' security/Kconfig
 
       - name: Build Project
@@ -426,7 +401,6 @@ jobs:
           DEVICE="${{ inputs.device_name || 'star' }}"
           NEW="$(dirname "$AK3")/${DEVICE}-5.4_sukisu-palaziks.zip"
           mv "$AK3" "$NEW"
-          # upload-artifact@v4 rejects '../' paths - copy into the workspace ($GITHUB_WORKSPACE)
           cp "$NEW" "$GITHUB_WORKSPACE/${DEVICE}-5.4_sukisu-palaziks.zip"
           echo "AK3_ZIP=$GITHUB_WORKSPACE/${DEVICE}-5.4_sukisu-palaziks.zip" >> $GITHUB_ENV
           echo "✅ Flashable: $GITHUB_WORKSPACE/${DEVICE}-5.4_sukisu-palaziks.zip"

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       enable_bpf:
-        description: 'Apply the 5.10 BPF backport (whole-feature toggle)'
+        description: 'Apply the 5.10 BPF backport'
         required: true
         type: boolean
         default: true
