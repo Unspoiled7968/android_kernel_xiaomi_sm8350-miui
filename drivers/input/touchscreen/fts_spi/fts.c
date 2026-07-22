@@ -56,6 +56,8 @@
 #include <linux/notifier.h>
 #include <linux/backlight.h>
 #include <drm/drm_panel.h>
+#include <drm/mi_disp_notifier.h>
+#include <linux/pm_runtime.h>
 
 #include <linux/fb.h>
 #include <linux/proc_fs.h>
@@ -1253,12 +1255,13 @@ static ssize_t stm_fts_cmd_show(struct device *dev,
 			goto END;
 		}
 #if defined(CONFIG_DRM)
-	if (active_panel)
+	if (active_panel) {
 		res = drm_panel_notifier_unregister(active_panel, &info->notifier);
 		if (res < 0) {
 			logError(1, "%s ERROR: unregister notifier failed!\n",
 				 tag);
 			goto END;
+		 }
 		}
 #endif
 		switch (typeOfComand[0]) {
@@ -5506,10 +5509,7 @@ int fts_chip_powercycle(struct fts_ts_info *info)
 static int fts_init_sensing(struct fts_ts_info *info)
 {
 	int error = 0;
-#if defined(CONFIG_DRM_PANEL)
-	if (active_panel)
-		error |= drm_panel_notifier_register(active_panel, &info->notifier);
-#endif
+	error |= mi_disp_register_client(&info->notifier);
 	error |= fts_interrupt_install(info);
 	error |= fts_mode_handler(info, 0);
 #ifdef FTS_FOD_AREA_REPORT
@@ -6836,6 +6836,21 @@ static void fts_suspend_work(struct work_struct *work)
 	lpm_disable_for_dev(false, EVENT_INPUT);
 #endif
 	xiaomi_touch_set_suspend_state(XIAOMI_TOUCH_SUSPEND);
+
+	/* The gesture_cmd SPI transfer sent above via fts_mode_handler()
+	 * leaves the SPI controller (a8c000.spi) runtime-active for its
+	 * 250ms autosuspend delay. If system-wide suspend triggers within
+	 * that window, spi_geni_suspend() sees "runtime PM is active" and
+	 * aborts with -EBUSY. Force a synchronous idle-check here, right
+	 * after the transfer, while there is still real time margin before
+	 * userspace eventually triggers actual system suspend. */
+	if (info->client && info->client->controller &&
+	    info->client->controller->dev.parent) {
+		struct device *spi_ctrl_dev = info->client->controller->dev.parent;
+
+		pm_runtime_get_sync(spi_ctrl_dev);
+		pm_runtime_put_sync(spi_ctrl_dev);
+	}
 }
 
 /**@}*/
@@ -6845,25 +6860,30 @@ static void fts_suspend_work(struct work_struct *work)
  * This function schedule a suspend or resume work according to the event received.
  */
 static int fts_drm_state_chg_callback(struct notifier_block *nb,
-				      unsigned long val, void *data)
+			      unsigned long val, void *data)
 {
 	struct fts_ts_info *info =
 	    container_of(nb, struct fts_ts_info, notifier);
-	struct drm_panel_notifier *evdata = data;
-	unsigned int blank;
+	struct mi_disp_notifier *evdata = data;
+	unsigned int blank; 
 
-	if (!(val == DRM_PANEL_EARLY_EVENT_BLANK ||
-		val == DRM_PANEL_EVENT_BLANK)) {
-		logError(1, "event(%lu) do not need process\n", val);
+	if (!(val == MI_DISP_DPMS_EARLY_EVENT ||
+		val == MI_DISP_DPMS_EVENT)) {
 		return 0;
 	}
 
 	if (evdata && evdata->data && info) {
 
+		if (evdata->disp_id != MI_DISPLAY_PRIMARY)
+			return NOTIFY_OK;
+
 		blank = *(int *)(evdata->data);
 		logError(1, "%s %s: val:%lu,blank:%u\n", tag, __func__, val, blank);
 
-		if (val == DRM_PANEL_EVENT_BLANK && (blank == DRM_PANEL_BLANK_POWERDOWN)) {
+		if (val == MI_DISP_DPMS_EARLY_EVENT &&
+			(blank == MI_DISP_DPMS_POWERDOWN ||
+			 blank == MI_DISP_DPMS_LP1 ||
+			 blank == MI_DISP_DPMS_LP2)) {
 			if (info->sensor_sleep)
 				return NOTIFY_OK;
 
@@ -6871,7 +6891,7 @@ static int fts_drm_state_chg_callback(struct notifier_block *nb,
 
 			flush_workqueue(info->event_wq);
 			queue_work(info->event_wq, &info->suspend_work);
-		} else if (val == DRM_PANEL_EVENT_BLANK && blank == DRM_PANEL_BLANK_UNBLANK) {
+		} else if (val == MI_DISP_DPMS_EVENT && blank == MI_DISP_DPMS_ON) {
 			if (!info->sensor_sleep)
 				return NOTIFY_OK;
 
@@ -8133,7 +8153,11 @@ static int fts_pm_suspend(struct device *dev)
 		enable_irq_wake(info->client->irq);
 	}
 #else
-	enable_irq_wake(info->client->irq);
+	if (info->gesture_enabled || fts_need_enter_lp_mode()) {
+		logError(1, "%s enable touch irq wake\n", tag);
+		enable_irq_wake(info->client->irq);
+		info->irq_wake = true;
+	}
 #endif
 	info->tp_pm_suspend = true;
 	reinit_completion(&info->pm_resume_completion);
@@ -8152,7 +8176,11 @@ static int fts_pm_resume(struct device *dev)
 		disable_irq_wake(info->client->irq);
 	}
 #else
-	disable_irq_wake(info->client->irq);
+	if (info->irq_wake) {
+		logError(1, "%s disable touch irq wake\n", tag);
+		disable_irq_wake(info->client->irq);
+		info->irq_wake = false;
+	}
 #endif
 	info->tp_pm_suspend = false;
 	complete(&info->pm_resume_completion);
@@ -8610,7 +8638,7 @@ static int fts_probe(struct spi_device *client)
 #endif
 
 	/* init feature switches (by default all the features are disable, if one feature want to be enabled from the start, set the corresponding value to 1) */
-	info->gesture_enabled = 0;
+	info->gesture_enabled = 1; // DT2W active by default - HyperOS fix
 	info->glove_enabled = 0;
 	info->charger_enabled = 0;
 	info->cover_enabled = 0;

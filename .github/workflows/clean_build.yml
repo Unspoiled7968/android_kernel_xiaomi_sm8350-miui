@@ -3,6 +3,15 @@ name: Build clean kernel
 on:
   workflow_dispatch:
     inputs:
+      source_ref:
+        description: 'Kernel source branch/ref to build (e.g. hyper-17, or "bisect")'
+        required: true
+        default: 'hyper-17'
+      enable_bpf:
+        description: 'Apply the 5.10 BPF backport (whole-feature toggle)'
+        required: true
+        type: boolean
+        default: false
       device_name:
         description: 'Select the target device'
         required: true
@@ -31,10 +40,6 @@ on:
           - 'false'
           - 'true'
 
-  push:
-    branches:
-      - master
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -42,6 +47,30 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || 'hyper-17' }}
+
+      - name: Fetch BPF backport patch (build branch)
+        if: ${{ inputs.enable_bpf }}
+        uses: actions/checkout@v4
+        with:
+          ref: build
+          path: .bpf-patch
+          sparse-checkout: patches
+          sparse-checkout-cone-mode: false
+
+      - name: Apply BPF backport
+        if: ${{ inputs.enable_bpf }}
+        run: |
+          set -e
+          shopt -s nullglob
+          patches=(.bpf-patch/patches/bpf/*.patch)
+          if [ ${#patches[@]} -eq 0 ]; then echo "No BPF patches found"; exit 1; fi
+          for p in "${patches[@]}"; do
+            echo "Applying $(basename "$p")"
+            git apply --whitespace=nowarn "$p"
+          done
+          echo "BPF backport applied (${#patches[@]} patches, enable_bpf=true)"
 
       - name: Dynamic Memory Allocation (Swap)
         uses: pierotofy/set-swap-space@master
@@ -78,32 +107,6 @@ jobs:
           echo "$HOME/.ccache_wrappers" >> "$GITHUB_PATH"
           echo "Wrappers created:"
           ls -la "$HOME/.ccache_wrappers/"
-
-      # ── DT2W: enable gesture subfeature in defconfig ─────────────────────────
-      # star_QGKI.config already has CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE=y
-      # but the gesture layer (needed for doubletap mode 14) may be missing.
-      - name: Apply Feature Flags (DT2W)
-        run: |
-          set -e
-          DEVICE="${{ inputs.device_name || 'star' }}"
-          XIAOMI_CFG="arch/arm64/configs/vendor/xiaomi_QGKI.config"
-          DEVICE_CFG="arch/arm64/configs/vendor/${DEVICE}_QGKI.config"
-
-          set_flag() {
-            local file="$1" key="$2" val="$3"
-            sed -i "/^${key}[= ]/d"          "$file"
-            sed -i "/^# ${key} is not set/d" "$file"
-            echo "${key}=${val}" >> "$file"
-            echo "  [cfg] ${key}=${val} -> $(basename $file)"
-          }
-
-          echo "=== DT2W flags ==="
-          # Gesture sublayer — enables doubletap path inside touchfeature
-          set_flag "$XIAOMI_CFG" "CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE_GESTURE" "y"
-          # FTS (ST) driver wakeup path — star uses ST FTS V521
-          set_flag "$DEVICE_CFG" "CONFIG_TOUCHSCREEN_ST_FTS_DOUBLETAP_WAKE"       "y"
-          # Wakeup source must be registered so touch IRQ can wake SoC
-          set_flag "$XIAOMI_CFG" "CONFIG_PM_WAKELOCKS"                            "y"
 
       # ── Rear screen: disable via DTS ─────────────────────────────────────────
       # From star-sm8350.dtsi:

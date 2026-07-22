@@ -81,8 +81,6 @@
 #define FTS_FOD_AREA_REPORT
 #define FTS_DEBUG_FS
 
-#define DEBUG
-
 /*#define USE_ONE_FILE_NODE*/
 
 #ifndef FW_UPDATE_ON_PROBE
@@ -425,6 +423,7 @@ struct fts_ts_info {
 	struct tp_frame thp_frame;
 	int aod_status;
 	bool tp_pm_suspend;
+	bool irq_wake; // track irq_wake state for conditional disable
 	struct completion pm_resume_completion;
 	bool gamemode_enable;
 	int width_major;
