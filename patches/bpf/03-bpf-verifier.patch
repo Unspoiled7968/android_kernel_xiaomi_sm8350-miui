@@ -1,5 +1,5 @@
 diff --git a/kernel/bpf/verifier.c b/kernel/bpf/verifier.c
-index da2f54b02d81..1346f14c4374 100644
+index 013b9062c47c..b4e2850f7fa0 100644
 --- a/kernel/bpf/verifier.c
 +++ b/kernel/bpf/verifier.c
 @@ -19,16 +19,21 @@
@@ -7844,7 +7844,7 @@ index da2f54b02d81..1346f14c4374 100644
  
  	if (ret == 0)
  		ret = check_max_stack_depth(env);
-@@ -9728,6 +12771,13 @@ int bpf_check(struct bpf_prog **prog, union bpf_attr *attr,
+@@ -9722,6 +12765,13 @@ int bpf_check(struct bpf_prog **prog, union bpf_attr *attr,
  		 * them now. Otherwise free_used_maps() will release them.
  		 */
  		release_maps(env);

@@ -1,10 +1,10 @@
 diff --git a/arch/arm64/configs/vendor/xiaomi_QGKI.config b/arch/arm64/configs/vendor/xiaomi_QGKI.config
-index 698f572d652d..3d52fa683d39 100644
+index 1e1c261d267e..63b8c4235aa0 100644
 --- a/arch/arm64/configs/vendor/xiaomi_QGKI.config
 +++ b/arch/arm64/configs/vendor/xiaomi_QGKI.config
-@@ -85,3 +85,9 @@ CONFIG_ZRAM_DEDUP=y
- # (e.g. linux/if.h -> sys/socket.h via linux/netdevice.h) fail. Disable it;
- # it is a build-time sanity check with no effect on the kernel itself.
+@@ -80,3 +80,9 @@ CONFIG_ZRAM_DEF_COMP_LZ4P=y
+ CONFIG_ZRAM_MULTI_COMP=y
+ CONFIG_ZRAM_DEDUP=y
  # CONFIG_UAPI_HEADER_TEST is not set
 +
 +# The Android BPF backport references SOCKMAP/SOCKHASH ops (sock_map_ops,
@@ -57,10 +57,10 @@ index a0431642c6b5..a79418f8709e 100644
  {
  	struct inode *inode = d_inode(dentry);
 diff --git a/init/Kconfig b/init/Kconfig
-index 3cdee8b4021d..d2a25e59368c 100644
+index d504e06d0a44..c51ae868c18c 100644
 --- a/init/Kconfig
 +++ b/init/Kconfig
-@@ -1660,6 +1660,8 @@ config BPF_SYSCALL
+@@ -1658,6 +1658,8 @@ config BPF_SYSCALL
  	bool "Enable bpf() system call"
  	select BPF
  	select IRQ_WORK
@@ -70,10 +70,10 @@ index 3cdee8b4021d..d2a25e59368c 100644
  	help
  	  Enable the bpf() system call that allows to manipulate eBPF
 diff --git a/kernel/cgroup/cgroup.c b/kernel/cgroup/cgroup.c
-index 508df3852388..b62ce67e9507 100644
+index eccbecf17114..84c46f853e80 100644
 --- a/kernel/cgroup/cgroup.c
 +++ b/kernel/cgroup/cgroup.c
-@@ -6669,23 +6669,27 @@ void cgroup_sk_free(struct sock_cgroup_data *skcd)
+@@ -6649,23 +6649,27 @@ void cgroup_sk_free(struct sock_cgroup_data *skcd)
  #endif	/* CONFIG_SOCK_CGROUP_DATA */
  
  #ifdef CONFIG_CGROUP_BPF
@@ -107,10 +107,10 @@ index 508df3852388..b62ce67e9507 100644
  	return ret;
  }
 diff --git a/kernel/events/core.c b/kernel/events/core.c
-index 560f81260379..ca7f80686d77 100644
+index e503b23f5b03..eef40ed73fc5 100644
 --- a/kernel/events/core.c
 +++ b/kernel/events/core.c
-@@ -8229,23 +8229,22 @@ static void perf_event_bpf_emit_ksymbols(struct bpf_prog *prog,
+@@ -8207,23 +8207,22 @@ static void perf_event_bpf_emit_ksymbols(struct bpf_prog *prog,
  					 enum perf_bpf_event_type type)
  {
  	bool unregister = type == PERF_BPF_EVENT_PROG_UNLOAD;
@@ -138,7 +138,7 @@ index 560f81260379..ca7f80686d77 100644
  		}
  	}
  }
-@@ -10831,12 +10830,9 @@ perf_event_alloc(struct perf_event_attr *attr, int cpu,
+@@ -10809,12 +10808,9 @@ perf_event_alloc(struct perf_event_attr *attr, int cpu,
  		context = parent_event->overflow_handler_context;
  #if defined(CONFIG_BPF_SYSCALL) && defined(CONFIG_EVENT_TRACING)
  		if (overflow_handler == bpf_overflow_handler) {
@@ -154,7 +154,7 @@ index 560f81260379..ca7f80686d77 100644
  			event->orig_overflow_handler =
  				parent_event->orig_overflow_handler;
 diff --git a/kernel/trace/bpf_trace.c b/kernel/trace/bpf_trace.c
-index 01ef204d5a98..0d5312fc967f 100644
+index c92a75c3ef2c..27a8bf405fd2 100644
 --- a/kernel/trace/bpf_trace.c
 +++ b/kernel/trace/bpf_trace.c
 @@ -1088,6 +1088,27 @@ const struct bpf_verifier_ops raw_tracepoint_verifier_ops = {
@@ -266,7 +266,7 @@ index 0147b26f585a..f934c528b7ab 100644
 +	.arg2_type	= ARG_PTR_TO_BTF_ID_SOCK_COMMON,
  };
 diff --git a/net/core/filter.c b/net/core/filter.c
-index 02c26d974349..6c54f7887e29 100644
+index 94e1f36ae6c5..e4b70c83666b 100644
 --- a/net/core/filter.c
 +++ b/net/core/filter.c
 @@ -47,6 +47,8 @@
@@ -278,7 +278,7 @@ index 02c26d974349..6c54f7887e29 100644
  #include <net/sch_generic.h>
  #include <net/cls_cgroup.h>
  #include <net/dst_metadata.h>
-@@ -264,17 +266,6 @@ BPF_CALL_2(bpf_skb_load_helper_32_no_cache, const struct sk_buff *, skb,
+@@ -256,17 +258,6 @@ BPF_CALL_2(bpf_skb_load_helper_32_no_cache, const struct sk_buff *, skb,
  					  offset);
  }
  
@@ -296,7 +296,7 @@ index 02c26d974349..6c54f7887e29 100644
  static u32 convert_skb_access(int skb_field, int dst_reg, int src_reg,
  			      struct bpf_insn *insn_buf)
  {
-@@ -4236,6 +4227,19 @@ static const struct bpf_func_proto bpf_get_socket_cookie_proto = {
+@@ -4228,6 +4219,19 @@ static const struct bpf_func_proto bpf_get_socket_cookie_proto = {
  	.arg1_type      = ARG_PTR_TO_CTX,
  };
  
@@ -316,7 +316,7 @@ index 02c26d974349..6c54f7887e29 100644
  BPF_CALL_1(bpf_get_socket_cookie_sock_addr, struct bpf_sock_addr_kern *, ctx)
  {
  	return sock_gen_cookie(ctx->sk);
-@@ -6073,52 +6077,7 @@ bool bpf_helper_changes_pkt_data(void *func)
+@@ -6065,52 +6069,7 @@ bool bpf_helper_changes_pkt_data(void *func)
  	return false;
  }
  
@@ -370,7 +370,7 @@ index 02c26d974349..6c54f7887e29 100644
  
  static const struct bpf_func_proto *
  sock_filter_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
-@@ -6129,8 +6088,12 @@ sock_filter_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
+@@ -6121,8 +6080,12 @@ sock_filter_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
  	 */
  	case BPF_FUNC_get_current_uid_gid:
  		return &bpf_get_current_uid_gid_proto;
@@ -383,7 +383,7 @@ index 02c26d974349..6c54f7887e29 100644
  	default:
  		return bpf_base_func_proto(func_id);
  	}
-@@ -6215,8 +6178,18 @@ cg_skb_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
+@@ -6207,8 +6170,18 @@ cg_skb_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
  #ifdef CONFIG_SOCK_CGROUP_DATA
  	case BPF_FUNC_skb_cgroup_id:
  		return &bpf_skb_cgroup_id_proto;
@@ -402,7 +402,7 @@ index 02c26d974349..6c54f7887e29 100644
  	case BPF_FUNC_tcp_sock:
  		return &bpf_tcp_sock_proto;
  	case BPF_FUNC_get_listener_sock:
-@@ -8878,16 +8851,6 @@ int sk_get_filter(struct sock *sk, struct sock_filter __user *ubuf,
+@@ -8863,16 +8836,6 @@ int sk_get_filter(struct sock *sk, struct sock_filter __user *ubuf,
  }
  
  #ifdef CONFIG_INET
@@ -419,7 +419,7 @@ index 02c26d974349..6c54f7887e29 100644
  static void bpf_init_reuseport_kern(struct sk_reuseport_kern *reuse_kern,
  				    struct sock_reuseport *reuse,
  				    struct sock *sk, struct sk_buff *skb,
-@@ -9143,4 +9106,193 @@ const struct bpf_verifier_ops sk_reuseport_verifier_ops = {
+@@ -9128,4 +9091,193 @@ const struct bpf_verifier_ops sk_reuseport_verifier_ops = {
  
  const struct bpf_prog_ops sk_reuseport_prog_ops = {
  };
@@ -614,7 +614,7 @@ index 02c26d974349..6c54f7887e29 100644
 +u32 btf_sock_ids[MAX_BTF_SOCK_TYPE];
 +#endif
 diff --git a/net/core/flow_dissector.c b/net/core/flow_dissector.c
-index 96d2635aaae0..3f7042f28128 100644
+index 5daa72a930a9..9234ce7965bd 100644
 --- a/net/core/flow_dissector.c
 +++ b/net/core/flow_dissector.c
 @@ -27,13 +27,12 @@
@@ -753,7 +753,7 @@ index 96d2635aaae0..3f7042f28128 100644
  /**
   * __skb_flow_get_ports - extract the upper layer ports and return them
   * @skb: sk_buff to extract the ports from
-@@ -914,7 +842,9 @@ bool __skb_flow_dissect(const struct net *net,
+@@ -905,7 +833,9 @@ bool __skb_flow_dissect(const struct net *net,
  	struct flow_dissector_key_icmp *key_icmp;
  	struct flow_dissector_key_tags *key_tags;
  	struct flow_dissector_key_vlan *key_vlan;
@@ -763,7 +763,7 @@ index 96d2635aaae0..3f7042f28128 100644
  	enum flow_dissect_ret fdret;
  	enum flow_dissector_key_id dissector_vlan = FLOW_DISSECTOR_KEY_MAX;
  	int num_hdrs = 0;
-@@ -969,7 +899,10 @@ bool __skb_flow_dissect(const struct net *net,
+@@ -960,7 +890,10 @@ bool __skb_flow_dissect(const struct net *net,
  	WARN_ON_ONCE(!net);
  	if (net) {
  		rcu_read_lock();
@@ -775,7 +775,7 @@ index 96d2635aaae0..3f7042f28128 100644
  
  		if (attached) {
  			struct bpf_flow_keys flow_keys;
-@@ -1791,6 +1724,6 @@ static int __init init_default_flow_dissectors(void)
+@@ -1782,6 +1715,6 @@ static int __init init_default_flow_dissectors(void)
  				flow_keys_basic_dissector_keys,
  				ARRAY_SIZE(flow_keys_basic_dissector_keys));
  
