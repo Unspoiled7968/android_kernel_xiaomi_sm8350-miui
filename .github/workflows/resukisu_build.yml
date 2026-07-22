@@ -11,7 +11,7 @@ on:
         description: 'Apply the 5.10 BPF backport'
         required: true
         type: boolean
-        default: false
+        default: true
       device_name:
         description: 'Select target device'
         required: true
