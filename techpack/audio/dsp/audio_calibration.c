@@ -2,6 +2,7 @@
 /*
  * Copyright (c) 2014, 2016-2017, 2020-2021, The Linux Foundation. All rights reserved.
  */
+#include <linux/compat.h>
 #include <linux/slab.h>
 #include <linux/fs.h>
 #include <linux/module.h>

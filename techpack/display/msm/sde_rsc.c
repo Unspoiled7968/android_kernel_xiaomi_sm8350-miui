@@ -6,6 +6,7 @@
 
 #define pr_fmt(fmt)	"[sde_rsc:%s:%d]: " fmt, __func__, __LINE__
 
+#include <linux/delay.h>
 #include <linux/kernel.h>
 #include <linux/debugfs.h>
 #include <linux/of.h>
