@@ -235,7 +235,14 @@ DEFINE_EVENT(sched_wakeup_template, sched_wakeup_new,
 	     TP_PROTO(struct task_struct *p),
 	     TP_ARGS(p));
 
-#ifdef CREATE_TRACE_POINTS
+/*
+ * Not guarded by CREATE_TRACE_POINTS: kernel/sched/sched.h includes this
+ * header first (without CREATE_TRACE_POINTS) for trace_sched_update_nr_running_tp,
+ * which sets the _TRACE_SCHED_H guard.  kernel/sched/core.c then re-includes it
+ * with CREATE_TRACE_POINTS to emit the tracepoints, but only define_trace.h is
+ * re-read at that point, so anything hidden behind CREATE_TRACE_POINTS here would
+ * never be defined while sched_switch's TP_fast_assign still calls it.
+ */
 static inline long __trace_sched_switch_state(bool preempt, struct task_struct *p)
 {
 	unsigned int state;
@@ -261,7 +268,7 @@ static inline long __trace_sched_switch_state(bool preempt, struct task_struct *
 
 	return state ? (1 << (state - 1)) : state;
 }
-#endif /* CREATE_TRACE_POINTS */
+
 
 /*
  * Tracepoint for task switches, performed by the scheduler:

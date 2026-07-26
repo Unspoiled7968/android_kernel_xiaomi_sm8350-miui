@@ -5926,6 +5926,7 @@ change:
 		if (cpuset_locked)
 			cpuset_unlock();
 		rt_mutex_adjust_pi(p);
+	}
 
 	/* Run balance callbacks after we've adjusted the PI chain: */
 	balance_callback(rq);

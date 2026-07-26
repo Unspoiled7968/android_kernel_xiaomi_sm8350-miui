@@ -864,7 +864,6 @@ noinline int __add_to_page_cache_locked(struct page *page,
 	get_page(page);
 	page->mapping = mapping;
 	page->index = offset;
-	gfp_mask &= GFP_RECLAIM_MASK;
 
 	if (!huge) {
 		error = mem_cgroup_charge(page, current->mm, gfp);
@@ -2755,52 +2754,6 @@ vm_fault_t filemap_fault(struct vm_fault *vmf)
 	struct page *page = NULL;
 	vm_fault_t ret = 0;
 	bool retry = false;
-
-	if (vmf->flags & FAULT_FLAG_SPECULATIVE) {
-		page = find_get_page(mapping, offset);
-		if (unlikely(!page))
-			return VM_FAULT_RETRY;
-
-		if (unlikely(PageReadahead(page)))
-			goto page_put;
-
-		if (!trylock_page(page))
-			goto page_put;
-
-		if (unlikely(compound_head(page)->mapping != mapping))
-			goto page_unlock;
-		VM_BUG_ON_PAGE(page_to_pgoff(page) != offset, page);
-		if (unlikely(!PageUptodate(page)))
-			goto page_unlock;
-
-		max_off = DIV_ROUND_UP(i_size_read(inode), PAGE_SIZE);
-		if (unlikely(offset >= max_off))
-			goto page_unlock;
-
-		/*
-		 * Update readahead mmap_miss statistic.
-		 *
-		 * Note that we are not sure if finish_fault() will
-		 * manage to complete the transaction. If it fails,
-		 * we'll come back to filemap_fault() non-speculative
-		 * case which will update mmap_miss a second time.
-		 * This is not ideal, we would prefer to guarantee the
-		 * update will happen exactly once.
-		 */
-		if (!(vmf->vma->vm_flags & VM_RAND_READ) && ra->ra_pages) {
-			unsigned int mmap_miss = READ_ONCE(ra->mmap_miss);
-			if (mmap_miss)
-				WRITE_ONCE(ra->mmap_miss, --mmap_miss);
-		}
-
-		vmf->page = page;
-		return VM_FAULT_LOCKED;
-page_unlock:
-		unlock_page(page);
-page_put:
-		put_page(page);
-		return VM_FAULT_RETRY;
-	}
 
 	if (vmf->flags & FAULT_FLAG_SPECULATIVE) {
 		page = find_get_page(mapping, offset);
