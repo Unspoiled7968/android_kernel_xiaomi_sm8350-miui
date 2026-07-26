@@ -16,6 +16,7 @@
  * this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <linux/dma-mapping.h>
 #include "msm_drv.h"
 #include "msm_gem.h"
 #include "msm_mmu.h"
