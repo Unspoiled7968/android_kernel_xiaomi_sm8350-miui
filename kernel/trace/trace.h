@@ -1558,7 +1558,7 @@ __event_trigger_test_discard(struct trace_event_file *file,
 #ifdef CONFIG_CORESIGHT_QGKI
 static inline void
 event_trigger_unlock_commit(struct trace_event_file *file,
-			    struct ring_buffer *buffer,
+			    struct trace_buffer *buffer,
 			    struct ring_buffer_event *event,
 			    void *entry, unsigned long irq_flags, int pc,
 			    unsigned long len)
