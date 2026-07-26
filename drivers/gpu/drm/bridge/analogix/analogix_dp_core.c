@@ -1811,18 +1811,6 @@ int analogix_dp_bind(struct analogix_dp_device *dp, struct drm_device *drm_dev)
 {
 	int ret;
 
-	return dp;
-
-err_disable_clk:
-	clk_disable_unprepare(dp->clock);
-	return ERR_PTR(ret);
-}
-EXPORT_SYMBOL_GPL(analogix_dp_probe);
-
-int analogix_dp_bind(struct analogix_dp_device *dp, struct drm_device *drm_dev)
-{
-	int ret;
-
 	dp->drm_dev = drm_dev;
 	dp->encoder = dp->plat_data->encoder;
 
