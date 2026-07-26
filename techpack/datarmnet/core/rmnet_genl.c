@@ -69,7 +69,7 @@ int rmnet_core_userspace_connected;
 
 struct rmnet_pid_node_s {
 	struct hlist_node list;
-	time_t timstamp_last_query;
+	u64 timstamp_last_query;
 	u64 tx_bytes;
 	u64 tx_bytes_last_query;
 	u64 tx_bps;

@@ -1469,8 +1469,8 @@ static int cs35l41_is_speaker_in_handset(struct snd_pcm_substream *substream,
 		return 0;
 
 	for (i = 0; i < rtd->num_codecs; i++) {
-		if (!strcmp(RCV_DAI_NAME, rtd->codec_dais[i]->name))
-			rcv_dai = rtd->codec_dais[i];
+		if (!strcmp(RCV_DAI_NAME, asoc_rtd_to_codec(rtd, i)->name))
+			rcv_dai = asoc_rtd_to_codec(rtd, i);
 	}
 
 	/* Check the tuning on RCV amp */
