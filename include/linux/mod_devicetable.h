@@ -675,7 +675,6 @@ struct x86_cpu_id {
 	/* Solely for kernel-internal use: DO NOT EXPORT to userspace! */
 	__u16 flags;
 	kernel_ulong_t driver_data;
-	__u16 steppings;
 };
 
 /* Wild cards for x86_cpu_id::vendor, family, model and feature */
