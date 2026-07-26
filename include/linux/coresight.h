@@ -529,8 +529,16 @@ void coresight_write64(struct coresight_device *csdev, u64 val, u32 offset);
 
 extern void coresight_disable_reg_clk(struct coresight_device *csdev);
 extern int coresight_enable_reg_clk(struct coresight_device *csdev);
-extern void coresight_disable_all_source_link(void);
-extern void coresight_enable_all_source_link(void);
+/*
+ * CAF used these around TMC sink mode switches to drop and restore every
+ * active source link.  5.10 restructured coresight-core and removed the
+ * machinery they were built on (cs_active_paths, struct coresight_path,
+ * activated_sink, coresight_{enable,disable}_source_link), so they are
+ * no-ops here: coresight tracing is a debug feature and is off unless
+ * explicitly enabled from sysfs.
+ */
+static inline void coresight_disable_all_source_link(void) {}
+static inline void coresight_enable_all_source_link(void) {}
 #else
 static inline struct coresight_device *
 coresight_register(struct coresight_desc *desc) { return NULL; }
