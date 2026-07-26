@@ -83,27 +83,6 @@ int xhci_handshake(void __iomem *ptr, u32 mask, u32 done, u64 timeout_us)
 	return ret;
 }
 
-int xhci_handshake_check_state(struct xhci_hcd *xhci,
-		void __iomem *ptr, u32 mask, u32 done, int usec)
-{
-	u32	result;
-
-	do {
-		result = readl_relaxed(ptr);
-		if (result == ~(u32)0)	/* card removed */
-			return -ENODEV;
-		/* host removed. Bail out */
-		if (xhci->xhc_state & XHCI_STATE_REMOVING)
-			return -ENODEV;
-		result &= mask;
-		if (result == done)
-			return 0;
-		udelay(1);
-		usec--;
-	} while (usec > 0);
-	return -ETIMEDOUT;
-}
-
 /*
  * xhci_handshake_check_state - same as xhci_handshake but takes an additional
  * exit_state parameter, and bails out with an error immediately when xhc_state
