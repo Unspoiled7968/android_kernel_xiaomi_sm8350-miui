@@ -1024,7 +1024,7 @@ static int mem_buf_map_mem_s1(struct hh_sgl_desc *sgl_desc)
 	int i, ret;
 	unsigned int nid;
 	u64 base, size;
-	struct mhp_restrictions restrictions = {};
+	struct mhp_params params = { .pgprot = PAGE_KERNEL };
 
 	if (!sgl_desc || !sgl_desc->n_sgl_entries)
 		return -EINVAL;
@@ -1044,7 +1044,7 @@ static int mem_buf_map_mem_s1(struct hh_sgl_desc *sgl_desc)
 		}
 		nid = memory_add_physaddr_to_nid(base);
 		memblock_add_node(base, size, nid);
-		ret = arch_add_memory(nid, base, size, &restrictions);
+		ret = arch_add_memory(nid, base, size, &params);
 		if (ret) {
 			pr_err("%s failed to map memory in stage 1 rc: %d\n",
 			       __func__, ret);
@@ -2138,8 +2138,7 @@ static int mem_buf_probe(struct platform_device *pdev)
 	int ret;
 	struct device *dev = &pdev->dev;
 	struct device *class_dev;
-	u64 dma_mask = IS_ENABLED(CONFIG_ARM64) ? DMA_BIT_MASK(64) :
-		DMA_BIT_MASK(32);
+	u64 dma_mask = IS_ENABLED(CONFIG_ARM64) ? ~0ULL : DMA_BIT_MASK(32);
 
 	if (of_property_match_string(dev->of_node, "qcom,mem-buf-capabilities",
 				     "supplier") >= 0) {

@@ -808,7 +808,7 @@ retry:
 	if (pid) {
 		iter.tgid = pid_nr_ns(pid, ns);
 		iter.task = pid_task(pid, PIDTYPE_PID);
-		if (!iter.task || !has_group_leader_pid(iter.task)) {
+		if (!iter.task || !thread_group_leader(iter.task)) {
 			iter.tgid += 1;
 			goto retry;
 		}

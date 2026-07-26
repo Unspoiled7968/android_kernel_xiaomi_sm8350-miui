@@ -3,6 +3,7 @@
  * Copyright (c) 2020, The Linux Foundation. All rights reserved.
  */
 
+#include <linux/dma-map-ops.h>
 #include "mem-buf-private.h"
 
 static struct sg_table *dup_hh_sgl_desc_to_sgt(struct hh_sgl_desc *sgl_desc)
