@@ -6,10 +6,6 @@
  *
  *  Copyright (C) 1991-2002  Linus Torvalds
  */
-#define CREATE_TRACE_POINTS
-#include <trace/events/sched.h>
-#undef CREATE_TRACE_POINTS
-
 #include "sched.h"
 
 #include <linux/nospec.h>
@@ -29,8 +25,18 @@
 #include "smp.h"
 #include "walt/walt.h"
 
-#include <trace/hooks/sched.h>
-#include <trace/hooks/dtask.h>
+/*
+ * CREATE_TRACE_POINTS must come *after* sched.h / pelt.h / walt/walt.h:
+ * the CAF/WALT tracepoints in <trace/events/sched.h> expand TP_fast_assign
+ * bodies here and those call scheduler-private helpers (task_rq(), cpu_rq(),
+ * task_load(), task_pl(), cpu_util(), cpu_util_cum(), capacity_curr_of(),
+ * cpu_overutilized(), nohz_flags(), ...) which are only declared by those
+ * headers.  Re-reading the header here is safe: define_trace.h re-includes
+ * it with TRACE_HEADER_MULTI_READ, so the tracepoints are still created even
+ * though kernel/sched/sched.h already pulled it in once.
+ */
+#define CREATE_TRACE_POINTS
+#include <trace/events/sched.h>
 
 #undef CREATE_TRACE_POINTS
 #include <trace/hooks/dtask.h>
