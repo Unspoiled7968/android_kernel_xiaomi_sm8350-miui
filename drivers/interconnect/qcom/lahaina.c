@@ -2706,9 +2706,10 @@ static int qnoc_probe(struct platform_device *pdev)
 
 	provider = &qp->provider;
 	provider->dev = &pdev->dev;
-	provider->set = qcom_icc_set;
+	provider->set = qcom_icc_set_stub;
 	provider->pre_aggregate = qcom_icc_pre_aggregate;
-	provider->aggregate = qcom_icc_aggregate;
+	provider->aggregate = qcom_icc_aggregate_stub;
+	provider->get_bw = qcom_icc_get_bw_stub;
 	provider->xlate = of_icc_xlate_onecell;
 	INIT_LIST_HEAD(&provider->nodes);
 	provider->data = data;
@@ -2787,6 +2788,10 @@ static int qnoc_probe(struct platform_device *pdev)
 
 	for (i = 0; i < qp->num_bcms; i++)
 		qcom_icc_bcm_init(qp->bcms[i], &pdev->dev);
+
+	/* The topology is complete: switch over to the real callbacks. */
+	provider->set = qcom_icc_set;
+	provider->aggregate = qcom_icc_aggregate;
 
 	platform_set_drvdata(pdev, qp);
 

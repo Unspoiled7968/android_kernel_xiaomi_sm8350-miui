@@ -157,6 +157,24 @@ static int qcom_icc_aggregate(struct icc_node *node, u32 tag, u32 avg_bw,
 	return 0;
 }
 
+/*
+ * icc_node_add() performs an initial sync of the hardware state.  Report zero
+ * initial bandwidth and use no-op callbacks while the nodes are registered so
+ * that no bogus L3 vote is programmed before any consumer has requested one.
+ */
+static int qcom_icc_get_bw_stub(struct icc_node *node, u32 *avg, u32 *peak)
+{
+	*avg = 0;
+	*peak = 0;
+
+	return 0;
+}
+
+static int qcom_icc_l3_cpu_set_stub(struct icc_node *src, struct icc_node *dst)
+{
+	return 0;
+}
+
 static int qcom_icc_l3_cpu_set(struct icc_node *src, struct icc_node *dst)
 {
 	struct qcom_epss_l3_icc_provider *qp;
@@ -271,8 +289,9 @@ static int qcom_epss_l3_probe(struct platform_device *pdev)
 
 	provider = &qp->provider;
 	provider->dev = &pdev->dev;
-	provider->set = qcom_icc_l3_cpu_set;
+	provider->set = qcom_icc_l3_cpu_set_stub;
 	provider->aggregate = qcom_icc_aggregate;
+	provider->get_bw = qcom_icc_get_bw_stub;
 	provider->xlate = of_icc_xlate_onecell;
 	INIT_LIST_HEAD(&provider->nodes);
 	provider->data = data;
@@ -310,6 +329,9 @@ static int qcom_epss_l3_probe(struct platform_device *pdev)
 		data->nodes[i] = node;
 	}
 	data->num_nodes = num_nodes;
+
+	/* The topology is complete: switch over to the real callback. */
+	provider->set = qcom_icc_l3_cpu_set;
 
 	platform_set_drvdata(pdev, qp);
 

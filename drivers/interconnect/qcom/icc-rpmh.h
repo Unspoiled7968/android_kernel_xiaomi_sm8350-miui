@@ -146,7 +146,11 @@ struct qcom_icc_desc {
 
 int qcom_icc_aggregate(struct icc_node *node, u32 tag, u32 avg_bw,
 			      u32 peak_bw, u32 *agg_avg, u32 *agg_peak);
+int qcom_icc_aggregate_stub(struct icc_node *node, u32 tag, u32 avg_bw,
+			      u32 peak_bw, u32 *agg_avg, u32 *agg_peak);
 int qcom_icc_set(struct icc_node *src, struct icc_node *dst);
+int qcom_icc_set_stub(struct icc_node *src, struct icc_node *dst);
+int qcom_icc_get_bw_stub(struct icc_node *node, u32 *avg, u32 *peak);
 int qcom_icc_bcm_init(struct qcom_icc_bcm *bcm, struct device *dev);
 void qcom_icc_pre_aggregate(struct icc_node *node);
 int qcom_icc_enable_qos_deps(struct qcom_icc_provider *qp);

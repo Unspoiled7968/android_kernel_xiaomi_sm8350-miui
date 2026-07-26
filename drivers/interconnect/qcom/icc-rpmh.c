@@ -117,6 +117,36 @@ int qcom_icc_set(struct icc_node *src, struct icc_node *dst)
 }
 EXPORT_SYMBOL(qcom_icc_set);
 
+/*
+ * The interconnect framework calls pre_aggregate()/aggregate()/set() from
+ * icc_node_add() in order to sync the initial hardware state.  The RPMh
+ * providers are not ready to talk to RPMh at that point (the BCMs may not be
+ * initialised yet and there is no consumer request to honour), so the
+ * providers install these stubs while registering their nodes and swap in the
+ * real callbacks once the topology is complete.
+ */
+int qcom_icc_aggregate_stub(struct icc_node *node, u32 tag, u32 avg_bw,
+			    u32 peak_bw, u32 *agg_avg, u32 *agg_peak)
+{
+	return 0;
+}
+EXPORT_SYMBOL(qcom_icc_aggregate_stub);
+
+int qcom_icc_set_stub(struct icc_node *src, struct icc_node *dst)
+{
+	return 0;
+}
+EXPORT_SYMBOL(qcom_icc_set_stub);
+
+int qcom_icc_get_bw_stub(struct icc_node *node, u32 *avg, u32 *peak)
+{
+	*avg = 0;
+	*peak = 0;
+
+	return 0;
+}
+EXPORT_SYMBOL(qcom_icc_get_bw_stub);
+
 /**
  * qcom_icc_bcm_init - populates bcm aux data and connect qnodes
  * @bcm: bcm to be initialized
