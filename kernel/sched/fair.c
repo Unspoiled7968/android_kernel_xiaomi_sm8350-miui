@@ -4273,7 +4273,7 @@ static inline bool task_fits_capacity(struct task_struct *p,
 static inline bool task_fits_max(struct task_struct *p, int cpu)
 {
 	unsigned long capacity = capacity_orig_of(cpu);
-	unsigned long max_capacity = cpu_rq(cpu)->rd->max_cpu_capacity.val;
+	unsigned long max_capacity = READ_ONCE(cpu_rq(cpu)->rd->max_cpu_capacity);
 	unsigned long task_boost = per_task_boost(p);
 
 	if (capacity == max_capacity)
@@ -4296,7 +4296,7 @@ static inline bool task_fits_max(struct task_struct *p, int cpu)
 static inline bool task_demand_fits(struct task_struct *p, int cpu)
 {
 	unsigned long capacity = capacity_orig_of(cpu);
-	unsigned long max_capacity = cpu_rq(cpu)->rd->max_cpu_capacity.val;
+	unsigned long max_capacity = READ_ONCE(cpu_rq(cpu)->rd->max_cpu_capacity);
 
 	if (capacity == max_capacity)
 		return true;
@@ -9581,11 +9581,6 @@ group_is_overloaded(unsigned int imbalance_pct, struct sg_lb_stats *sgs)
 	if (sgs->sum_nr_running <= sgs->group_weight)
 		return false;
 
-#ifdef CONFIG_SCHED_WALT
-	if (env->idle != CPU_NOT_IDLE && walt_rotation_enabled)
-		return true;
-#endif
-
 	if ((sgs->group_capacity * 100) <
 			(sgs->group_util * imbalance_pct))
 		return true;
@@ -9596,6 +9591,26 @@ group_is_overloaded(unsigned int imbalance_pct, struct sg_lb_stats *sgs)
 
 	return false;
 }
+
+#ifdef CONFIG_SCHED_WALT
+/*
+ * WALT big task rotation: while rotation is active, a balancing CPU that is
+ * (newly) idle must consider any group running more tasks than it has CPUs as
+ * overloaded, otherwise the rotation can never move those tasks out.
+ *
+ * In the 5.4 CAF tree this test lived inside group_is_overloaded(), which took
+ * a struct lb_env. In 5.10 group_is_overloaded() only receives imbalance_pct
+ * (it is also reached from the wake-up path via update_sg_wakeup_stats(),
+ * where there is no lb_env and where this WALT behaviour must not apply), so
+ * the test is applied by the load-balance caller instead.
+ */
+static inline bool
+walt_rotation_overloaded(struct lb_env *env, struct sg_lb_stats *sgs)
+{
+	return env->idle != CPU_NOT_IDLE && walt_rotation_enabled &&
+	       sgs->sum_nr_running > sgs->group_weight;
+}
+#endif
 
 /*
  * group_smaller_min_cpu_capacity: Returns true if sched_group sg has smaller
@@ -9635,12 +9650,19 @@ group_similar_cpu_capacity(struct sched_group *sg, struct sched_group *ref)
 		asym_cap_siblings(group_first_cpu(sg), group_first_cpu(ref)));
 }
 
+/*
+ * Same as group_classify(), except that the "is this group overloaded"
+ * verdict is supplied by the caller. WALT needs this because it both forces
+ * (big task rotation) and clears (asym capacity siblings with spare capacity)
+ * the overloaded state from update_sd_lb_stats().
+ */
 static inline enum
-group_type group_classify(unsigned int imbalance_pct,
-			  struct sched_group *group,
-			  struct sg_lb_stats *sgs)
+group_type __group_classify(unsigned int imbalance_pct,
+			    struct sched_group *group,
+			    struct sg_lb_stats *sgs,
+			    bool overloaded)
 {
-	if (group_is_overloaded(imbalance_pct, sgs))
+	if (overloaded)
 		return group_overloaded;
 
 	if (sg_imbalanced(group))
@@ -9656,6 +9678,15 @@ group_type group_classify(unsigned int imbalance_pct,
 		return group_fully_busy;
 
 	return group_has_spare;
+}
+
+static inline enum
+group_type group_classify(unsigned int imbalance_pct,
+			  struct sched_group *group,
+			  struct sg_lb_stats *sgs)
+{
+	return __group_classify(imbalance_pct, group, sgs,
+				group_is_overloaded(imbalance_pct, sgs));
 }
 
 /**
@@ -9736,12 +9767,23 @@ static inline void update_sg_lb_stats(struct lb_env *env,
 
 	sgs->group_weight = group->group_weight;
 
-	sgs->group_type = group_classify(env->sd->imbalance_pct, group, sgs);
+	sgs->group_no_capacity = group_is_overloaded(env->sd->imbalance_pct, sgs);
+#ifdef CONFIG_SCHED_WALT
+	if (walt_rotation_overloaded(env, sgs))
+		sgs->group_no_capacity = 1;
+#endif
+
+	sgs->group_type = __group_classify(env->sd->imbalance_pct, group, sgs,
+					   sgs->group_no_capacity);
 
 	/* Computing avg_load makes sense only when group is overloaded */
 	if (sgs->group_type == group_overloaded)
 		sgs->avg_load = (sgs->group_load * SCHED_CAPACITY_SCALE) /
 				sgs->group_capacity;
+
+	/* WALT: only consumed by the load balance tracepoints */
+	if (sgs->sum_nr_running)
+		sgs->load_per_task = sgs->group_load / sgs->sum_nr_running;
 }
 
 /**
@@ -10248,8 +10290,8 @@ static inline void update_sd_lb_stats(struct lb_env *env, struct sd_lb_stats *sd
 			asym_cap_sibling_group_has_capacity(env->dst_cpu,
 						env->sd->imbalance_pct)) {
 			sgs->group_no_capacity = 0;
-			sgs->group_type = group_classify(env->sd->imbalance_pct,
-							sg, sgs);
+			sgs->group_type = __group_classify(env->sd->imbalance_pct,
+							sg, sgs, false);
 		}
 
 		if (update_sd_pick_busiest(env, sds, sg, sgs)) {
@@ -10366,7 +10408,6 @@ static inline long adjust_numa_imbalance(int imbalance, int nr_running)
 static inline void calculate_imbalance(struct lb_env *env, struct sd_lb_stats *sds)
 {
 	struct sg_lb_stats *local, *busiest;
-	bool no_imbalance = false;
 
 	local = &sds->local_stat;
 	busiest = &sds->busiest_stat;
@@ -10561,11 +10602,17 @@ static struct sched_group *find_busiest_group(struct lb_env *env)
 
 	if (sched_energy_enabled()) {
 		struct root_domain *rd = env->dst_rq->rd;
-		int out_balance = 1;
 
 #ifdef CONFIG_SCHED_WALT
+		/*
+		 * WALT tracks overutilization per sched_domain rather than
+		 * per root_domain, and does not use the vendor hook (WALT is
+		 * built in, so there is no vendor module to consult).
+		 */
 		if (rcu_dereference(rd->pd) && !sd_overutilized(env->sd)) {
 #else
+		int out_balance = 1;
+
 		trace_android_rvh_find_busiest_group(sds.busiest, env->dst_rq,
 					&out_balance);
 		if (rcu_dereference(rd->pd) && !READ_ONCE(rd->overutilized)
@@ -12074,7 +12121,6 @@ static bool _nohz_idle_balance(struct rq *this_rq, unsigned int flags,
 	int balance_cpu;
 	int ret = false;
 	struct rq *rq;
-	cpumask_t cpus;
 
 	SCHED_WARN_ON((flags & NOHZ_KICK_MASK) == NOHZ_BALANCE_KICK);
 

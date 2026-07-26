@@ -1709,7 +1709,7 @@ static void check_preempt_equal_prio(struct rq *rq, struct task_struct *p)
 
 #ifdef CONFIG_SCHED_WALT
 #define WALT_RT_PULL_THRESHOLD_NS	250000
-static struct task_struct *pick_highest_pushable_task(struct rq *rq, int cpu);
+/* pick_highest_pushable_task() is declared in sched.h and defined below. */
 static void try_pull_rt_task(struct rq *this_rq)
 {
 	int i, this_cpu = this_rq->cpu, src_cpu = this_cpu;
