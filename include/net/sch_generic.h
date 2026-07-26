@@ -1344,11 +1344,4 @@ static inline void qdisc_synchronize(const struct Qdisc *q)
 		msleep(1);
 }
 
-/* Make sure qdisc is no longer in SCHED state. */
-static inline void qdisc_synchronize(const struct Qdisc *q)
-{
-	while (test_bit(__QDISC_STATE_SCHED, &q->state))
-		msleep(1);
-}
-
 #endif

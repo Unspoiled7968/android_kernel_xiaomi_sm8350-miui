@@ -49,6 +49,7 @@
 #include <asm/sections.h>
 #include <asm/tlbflush.h>
 #include <asm/ptrace.h>
+#include <asm/system_misc.h>
 #include <asm/virt.h>
 
 #define CREATE_TRACE_POINTS

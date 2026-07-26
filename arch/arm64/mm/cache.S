@@ -21,7 +21,7 @@
  *
  *	Corrupted registers: x0-x7, x9-x11
  */
-__flush_dcache_all:
+SYM_FUNC_START_LOCAL(__flush_dcache_all)
 	dmb	sy				// ensure ordering with previous memory accesses
 	mrs	x0, clidr_el1			// read clidr
 	and	x3, x0, #0x7000000		// extract loc from clidr
@@ -68,7 +68,7 @@ finished:
 	dsb	sy
 	isb
 	ret
-ENDPROC(__flush_dcache_all)
+SYM_FUNC_END(__flush_dcache_all)
 
 /*
  *	flush_cache_all()
@@ -79,13 +79,13 @@ ENDPROC(__flush_dcache_all)
  *	instruction cache can still be invalidated back to the point of
  *	unification in a single instruction.
  */
-ENTRY(flush_cache_all)
+SYM_FUNC_START(flush_cache_all)
 	mov	x12, lr
 	bl	__flush_dcache_all
 	mov	x0, #0
 	ic	ialluis				// I+BTB cache invalidate
 	ret	x12
-ENDPROC(flush_cache_all)
+SYM_FUNC_END(flush_cache_all)
 
 /*
  *	flush_icache_range(start,end)
