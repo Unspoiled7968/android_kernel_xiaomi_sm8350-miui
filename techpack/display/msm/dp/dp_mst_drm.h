@@ -7,7 +7,20 @@
 #define _DP_MST_DRM_H_
 
 #include <linux/types.h>
-#include <drm/drmP.h>
+/*
+ * <drm/drmP.h> was removed upstream in v5.5 ("drm: remove drmP.h").
+ * Pull in the individual headers it used to provide for this file.
+ */
+#include <drm/drm_atomic.h>
+#include <drm/drm_crtc.h>
+/* v5.10: drm_crtc.h no longer pulls in drm_bridge.h - include it directly */
+#include <drm/drm_bridge.h>
+#include <drm/drm_device.h>
+#include <drm/drm_drv.h>
+#include <drm/drm_file.h>
+#include <drm/drm_print.h>
+#include <drm/drm_probe_helper.h>
+#include <drm/drm_vblank.h>
 #include <drm/drm_crtc.h>
 
 #include "dp_display.h"

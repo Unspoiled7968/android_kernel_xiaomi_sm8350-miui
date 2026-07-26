@@ -55,9 +55,16 @@
 struct dp_drm_mst_fw_helper_ops {
 	int (*calc_pbn_mode)(struct dp_display_mode *dp_mode);
 	int (*find_vcpi_slots)(struct drm_dp_mst_topology_mgr *mgr, int pbn);
+	/*
+	 * v5.10: drm_dp_atomic_find_vcpi_slots() gained a trailing @pbn_div
+	 * argument (values <= 0 mean "use mgr->pbn_div", i.e. the pre-5.5
+	 * behaviour).  Mirror it here so the core function can still be
+	 * assigned to this callback directly.
+	 */
 	int (*atomic_find_vcpi_slots)(struct drm_atomic_state *state,
 				  struct drm_dp_mst_topology_mgr *mgr,
-				  struct drm_dp_mst_port *port, int pbn);
+				  struct drm_dp_mst_port *port, int pbn,
+				  int pbn_div);
 	bool (*allocate_vcpi)(struct drm_dp_mst_topology_mgr *mgr,
 			      struct drm_dp_mst_port *port,
 			      int pbn, int slots);
@@ -238,11 +245,20 @@ static void dp_mst_sim_destroy_port(struct kref *ref)
 	if (port->cached_edid)
 		kfree(port->cached_edid);
 
+	/*
+	 * v5.10: the MST core replaced mgr->destroy_connector_{lock,list,work}
+	 * with the generic delayed-destroy machinery (destroy_port_list /
+	 * delayed_destroy_lock / delayed_destroy_wq / delayed_destroy_work).
+	 * drm_dp_delayed_destroy_port() performs exactly what the old
+	 * ->destroy_connector callback used to do (unregister + put), so queue
+	 * onto that instead.  Mirrors drm_dp_destroy_port() in
+	 * drivers/gpu/drm/drm_dp_mst_topology.c.
+	 */
 	if (port->connector) {
-		mutex_lock(&mgr->destroy_connector_lock);
-		list_add(&port->next, &mgr->destroy_connector_list);
-		mutex_unlock(&mgr->destroy_connector_lock);
-		schedule_work(&mgr->destroy_connector_work);
+		mutex_lock(&mgr->delayed_destroy_lock);
+		list_add(&port->next, &mgr->destroy_port_list);
+		mutex_unlock(&mgr->delayed_destroy_lock);
+		queue_work(mgr->delayed_destroy_wq, &mgr->delayed_destroy_work);
 		return;
 	}
 
@@ -322,7 +338,8 @@ static void dp_mst_sim_add_port(struct dp_mst_private *mst,
 	mutex_unlock(&mstb->mgr->lock);
 
 	/* use fixed pbn for simulator ports */
-	port->available_pbn = 2520;
+	/* v5.10: drm_dp_mst_port.available_pbn was renamed to full_pbn */
+	port->full_pbn = 2520;
 
 	if (!port->input) {
 		port->connector = (*mstb->mgr->cbs->add_connector)
@@ -335,7 +352,13 @@ static void dp_mst_sim_add_port(struct dp_mst_private *mst,
 			dp_mst_sim_topology_put_port(port);
 			goto put_port;
 		}
-		(*mstb->mgr->cbs->register_connector)(port->connector);
+		/*
+		 * v5.10: struct drm_dp_mst_topology_cbs lost ->register_connector.
+		 * Connector registration (and the initial ->detect() that primed
+		 * connector->status) is now done by the ->add_connector callback
+		 * itself - see dp_mst_add_and_register_connector() - so there is
+		 * nothing left to call here.
+		 */
 	}
 
 put_port:
@@ -639,8 +662,14 @@ static enum drm_connector_status dp_mst_detect_port(
 			struct dp_mst_private, mst_mgr);
 	enum drm_connector_status status = connector_status_disconnected;
 
+	/*
+	 * v5.10: drm_dp_mst_detect_port() gained a struct drm_modeset_acquire_ctx
+	 * argument (it takes mgr->base.lock internally).  This callback is the
+	 * legacy non-ctx ->detect hook, so pass NULL - drm_modeset_lock() falls
+	 * back to a plain ww_mutex_lock() in that case.
+	 */
 	if (mst->mst_session_state)
-		status = drm_dp_mst_detect_port(connector, mgr, port);
+		status = drm_dp_mst_detect_port(connector, NULL, mgr, port);
 
 	DP_MST_DEBUG("mst port status: %d, session state: %d\n",
 		status, mst->mst_session_state);
@@ -681,7 +710,13 @@ static int dp_mst_calc_pbn_mode(struct dp_display_mode *dp_mode)
 		DSC_BPP(dp_mode->timing.comp_info.dsc_info.config)
 		: dp_mode->timing.bpp;
 
-	pbn = drm_dp_calc_pbn_mode(dp_mode->timing.pixel_clk_khz, bpp);
+	/*
+	 * v5.10: drm_dp_calc_pbn_mode() gained a "dsc" argument.  Pass false:
+	 * with dsc=true the core expects @bpp in 1/16 units, whereas this driver
+	 * passes whole bits-per-pixel and applies the DSC/FEC overhead itself
+	 * below.  dsc=false therefore reproduces the pre-5.5 behaviour exactly.
+	 */
+	pbn = drm_dp_calc_pbn_mode(dp_mode->timing.pixel_clk_khz, bpp, false);
 	pbn_fp = drm_fixp_from_fraction(pbn, 1);
 
 	DP_DEBUG("before overhead pbn:%d, bpp:%d\n", pbn, bpp);
@@ -734,7 +769,9 @@ static const struct dp_drm_mst_fw_helper_ops drm_dp_sim_mst_fw_helper_ops = {
 
 /* DP MST Bridge OPs */
 
-static int dp_mst_bridge_attach(struct drm_bridge *dp_bridge)
+/* v5.10: drm_bridge_funcs::attach() gained a flags argument - see dp_drm.c */
+static int dp_mst_bridge_attach(struct drm_bridge *dp_bridge,
+		enum drm_bridge_attach_flags flags)
 {
 	struct dp_mst_bridge *bridge;
 
@@ -812,8 +849,9 @@ static int _dp_mst_compute_config(struct drm_atomic_state *state,
 
 	pbn = mst->mst_fw_cbs->calc_pbn_mode(mode);
 
+	/* pbn_div = 0 -> core falls back to mgr->pbn_div (pre-5.5 behaviour) */
 	slots = mst->mst_fw_cbs->atomic_find_vcpi_slots(state,
-			&mst->mst_mgr, c_conn->mst_port, pbn);
+			&mst->mst_mgr, c_conn->mst_port, pbn, 0);
 	if (slots < 0) {
 		DP_ERR("conn:%d failed to find vcpi slots. pbn:%d, slots:%d\n",
 				connector->base.id, pbn, slots);
@@ -1294,7 +1332,8 @@ int dp_mst_drm_bridge_init(void *data, struct drm_encoder *encoder)
 
 	priv = dev->dev_private;
 
-	rc = drm_bridge_attach(encoder, &bridge->base, NULL);
+	/* v5.10: drm_bridge_attach() gained a trailing flags argument */
+	rc = drm_bridge_attach(encoder, &bridge->base, NULL, 0);
 	if (rc) {
 		DP_ERR("failed to attach bridge, rc=%d\n", rc);
 		goto end;
@@ -1466,7 +1505,8 @@ enum drm_mode_status dp_mst_connector_mode_valid(
 	}
 
 	if (active_enc_cnt < DP_STREAM_MAX) {
-		available_pbn = mst_port->available_pbn;
+		/* v5.10: drm_dp_mst_port.available_pbn is now full_pbn */
+		available_pbn = mst_port->full_pbn;
 		available_slots = tot_slots - slots_in_use;
 	} else {
 		DP_DEBUG("all mst streams are active\n");
@@ -1881,7 +1921,36 @@ static void dp_mst_register_connector(struct drm_connector *connector)
 	SDE_EVT32_EXTERNAL(SDE_EVTLOG_FUNC_EXIT, connector->base.id);
 }
 
-static void dp_mst_destroy_connector(struct drm_dp_mst_topology_mgr *mgr,
+/*
+ * v5.10: struct drm_dp_mst_topology_cbs no longer has ->register_connector;
+ * the MST core calls drm_connector_register() itself immediately after
+ * ->add_connector() returns.  Wrap ->add_connector so the extra work the old
+ * ->register_connector callback did (priming connector->status with an initial
+ * ->detect()) still happens at the same point in the sequence.
+ */
+static struct drm_connector *
+dp_mst_add_and_register_connector(struct drm_dp_mst_topology_mgr *mgr,
+		struct drm_dp_mst_port *port, const char *pathprop)
+{
+	struct drm_connector *connector;
+
+	connector = dp_mst_add_connector(mgr, port, pathprop);
+	if (connector)
+		dp_mst_register_connector(connector);
+
+	return connector;
+}
+
+/*
+ * v5.10: struct drm_dp_mst_topology_cbs no longer has ->destroy_connector
+ * either.  drm_dp_delayed_destroy_port() in the MST core now performs exactly
+ * what this callback used to do (drm_connector_unregister() followed by
+ * drm_connector_put()), so this function is kept only for reference and is no
+ * longer wired up.  See dp_mst_destroy_fixed_connector() below for the one
+ * behavioural difference this causes.
+ */
+static void __maybe_unused dp_mst_destroy_connector(
+					   struct drm_dp_mst_topology_mgr *mgr,
 					   struct drm_connector *connector)
 {
 	DP_MST_DEBUG("enter\n");
@@ -2050,8 +2119,18 @@ dp_mst_add_fixed_connector(struct drm_dp_mst_topology_mgr *mgr,
 	else {
 		/* if port is already reserved, return immediately */
 		connector = dp_mst_find_fixed_connector(dp_mst, port);
-		if (connector != NULL)
+		if (connector != NULL) {
+			/*
+			 * v5.10: the MST core drops a connector reference in
+			 * drm_dp_delayed_destroy_port() (it absorbed the old
+			 * ->destroy_connector callback, which used to skip the
+			 * put for fixed-topology connectors).  Take a reference
+			 * here so that put stays balanced and the pre-created
+			 * fixed connector is not freed from under mst_bridge[].
+			 */
+			drm_connector_get(connector);
 			return connector;
+		}
 
 		/* first available bridge index for non-reserved port */
 		enc_idx = dp_mst_find_first_available_encoder_idx(dp_mst);
@@ -2066,9 +2145,15 @@ dp_mst_add_fixed_connector(struct drm_dp_mst_topology_mgr *mgr,
 
 	drm_modeset_lock_all(dev);
 
-	/* clear encoder list */
-	for (i = 0; i < DRM_CONNECTOR_MAX_ENCODER; i++)
-		connector->encoder_ids[i] = 0;
+	/*
+	 * clear encoder list
+	 *
+	 * v5.10: drm_connector.encoder_ids[DRM_CONNECTOR_MAX_ENCODER] was
+	 * replaced by the drm_connector.possible_encoders bitmask (upstream
+	 * commit "drm/connector: Allow max possible encoders to attach to a
+	 * connector"), so clearing the array becomes clearing the mask.
+	 */
+	connector->possible_encoders = 0;
 
 	/* re-attach encoders from first available encoders */
 	for (i = enc_idx; i < MAX_DP_MST_DRM_BRIDGES; i++)
@@ -2106,7 +2191,32 @@ static void dp_mst_register_fixed_connector(struct drm_connector *connector)
 	SDE_EVT32_EXTERNAL(SDE_EVTLOG_FUNC_EXIT, connector->base.id);
 }
 
-static void dp_mst_destroy_fixed_connector(struct drm_dp_mst_topology_mgr *mgr,
+/* see dp_mst_add_and_register_connector() for why this wrapper exists */
+static struct drm_connector *
+dp_mst_add_and_register_fixed_connector(struct drm_dp_mst_topology_mgr *mgr,
+		struct drm_dp_mst_port *port, const char *pathprop)
+{
+	struct drm_connector *connector;
+
+	connector = dp_mst_add_fixed_connector(mgr, port, pathprop);
+	if (connector)
+		dp_mst_register_fixed_connector(connector);
+
+	return connector;
+}
+
+/*
+ * v5.10: no ->destroy_connector hook exists any more, so the "skip destroy for
+ * fixed topology ports" special case below can no longer be honoured; the MST
+ * core unconditionally unregisters and puts port->connector.  The reference is
+ * balanced by the drm_connector_get() added in dp_mst_add_fixed_connector(),
+ * and the connector is re-registered by the core on the next ->add_connector,
+ * so the only loss is the fixed_port_added bookkeeping.  Fixed MST topology is
+ * opt-in via the "qcom,mst-fixed-topology" DT property and is not used on this
+ * target; kept here (unwired) for reference.
+ */
+static void __maybe_unused dp_mst_destroy_fixed_connector(
+					   struct drm_dp_mst_topology_mgr *mgr,
 					   struct drm_connector *connector)
 {
 	struct dp_mst_private *dp_mst;
@@ -2367,16 +2477,17 @@ static const struct dp_mst_drm_cbs dp_mst_display_cbs = {
 	.set_mgr_state = dp_mst_display_set_mgr_state,
 };
 
+/*
+ * v5.10: struct drm_dp_mst_topology_cbs only has ->add_connector (and an
+ * optional ->poll_hpd_irq) left; ->register_connector and ->destroy_connector
+ * were removed and folded into the MST core.  See the wrappers above.
+ */
 static const struct drm_dp_mst_topology_cbs dp_mst_drm_cbs = {
-	.add_connector = dp_mst_add_connector,
-	.register_connector = dp_mst_register_connector,
-	.destroy_connector = dp_mst_destroy_connector,
+	.add_connector = dp_mst_add_and_register_connector,
 };
 
 static const struct drm_dp_mst_topology_cbs dp_mst_fixed_drm_cbs = {
-	.add_connector = dp_mst_add_fixed_connector,
-	.register_connector = dp_mst_register_fixed_connector,
-	.destroy_connector = dp_mst_destroy_fixed_connector,
+	.add_connector = dp_mst_add_and_register_fixed_connector,
 };
 
 static void dp_mst_sim_init(struct dp_mst_private *mst)

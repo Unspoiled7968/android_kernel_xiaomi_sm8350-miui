@@ -682,7 +682,7 @@ static int arm_lpae_map_sg(struct io_pgtable_ops *ops, unsigned long iova,
 			goto out_err;
 
 		while (size) {
-			size_t pgsize = iommu_pgsize(
+			size_t pgsize = qcom_iommu_pgsize(
 				cfg->pgsize_bitmap, iova | phys, size);
 
 			if (ms.pgtable && (iova < ms.iova_end)) {
@@ -786,7 +786,7 @@ static size_t arm_lpae_split_blk_unmap(struct arm_lpae_io_pgtable *data,
 	void *cookie = data->iop.cookie;
 	int child_cnt = 0;
 
-	size = iommu_pgsize(data->iop.cfg.pgsize_bitmap, iova, size);
+	size = qcom_iommu_pgsize(data->iop.cfg.pgsize_bitmap, iova, size);
 
 	if (WARN_ON(lvl == ARM_LPAE_MAX_LEVELS))
 		return 0;
@@ -929,7 +929,7 @@ static size_t arm_lpae_unmap(struct io_pgtable_ops *ops, unsigned long iova,
 		size_t ret, size_to_unmap, remaining;
 
 		remaining = (size - unmapped);
-		size_to_unmap = iommu_pgsize(data->iop.cfg.pgsize_bitmap, iova,
+		size_to_unmap = qcom_iommu_pgsize(data->iop.cfg.pgsize_bitmap, iova,
 						remaining);
 		size_to_unmap = size_to_unmap >= SZ_2M ?
 				size_to_unmap :

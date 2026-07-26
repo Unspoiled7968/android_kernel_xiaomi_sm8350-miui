@@ -1467,7 +1467,7 @@ static int dp_panel_read_dpcd(struct dp_panel *dp_panel, bool multi_func)
 {
 	int rlen, rc = 0;
 	struct dp_panel_private *panel;
-	struct drm_dp_link *link_info;
+	struct dp_link_info *link_info;
 	struct drm_dp_aux *drm_aux;
 	u8 *dpcd, rx_feature, temp;
 	u32 dfp_count = 0, offset = DP_DPCD_REV;
@@ -1600,7 +1600,7 @@ end:
 
 static int dp_panel_set_default_link_params(struct dp_panel *dp_panel)
 {
-	struct drm_dp_link *link_info;
+	struct dp_link_info *link_info;
 	const int default_bw_code = 162000;
 	const int default_num_lanes = 1;
 

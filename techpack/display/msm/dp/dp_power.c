@@ -5,7 +5,18 @@
 
 #include <linux/clk.h>
 #include <linux/pm_runtime.h>
-#include <drm/drmP.h>
+/*
+ * <drm/drmP.h> was removed upstream in v5.5 ("drm: remove drmP.h").
+ * Pull in the individual headers it used to provide for this file.
+ */
+#include <drm/drm_atomic.h>
+#include <drm/drm_crtc.h>
+#include <drm/drm_device.h>
+#include <drm/drm_drv.h>
+#include <drm/drm_file.h>
+#include <drm/drm_print.h>
+#include <drm/drm_probe_helper.h>
+#include <drm/drm_vblank.h>
 #include "dp_power.h"
 #include "dp_catalog.h"
 #include "dp_debug.h"

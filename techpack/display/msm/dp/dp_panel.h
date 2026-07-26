@@ -95,7 +95,7 @@ struct dp_panel {
 	u8 fec_dpcd;
 	u8 fec_sts_dpcd[DP_RECEIVER_FEC_STATUS_SIZE + 1];
 
-	struct drm_dp_link link_info;
+	struct dp_link_info link_info;
 	struct sde_edid_ctrl *edid_ctrl;
 	struct dp_panel_info pinfo;
 	bool video_test;

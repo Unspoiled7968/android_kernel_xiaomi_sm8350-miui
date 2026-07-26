@@ -534,7 +534,7 @@ static int dp_ctrl_link_train(struct dp_ctrl_private *ctrl)
 {
 	int ret = 0;
 	u8 const encoding = 0x1, downspread = 0x00;
-	struct drm_dp_link link_info = {0};
+	struct dp_link_info link_info = {0};
 
 	ctrl->link->phy_params.p_level = 0;
 	ctrl->link->phy_params.v_level = 0;
@@ -544,7 +544,7 @@ static int dp_ctrl_link_train(struct dp_ctrl_private *ctrl)
 		ctrl->link->link_params.bw_code);
 	link_info.capabilities = ctrl->panel->link_info.capabilities;
 
-	ret = drm_dp_link_configure(ctrl->aux->drm_aux, &link_info);
+	ret = dp_link_configure(ctrl->aux->drm_aux, &link_info);
 	if (ret)
 		goto end;
 
@@ -973,28 +973,28 @@ static void dp_ctrl_send_phy_test_pattern(struct dp_ctrl_private *ctrl)
 	switch (pattern_sent) {
 	case MR_LINK_TRAINING1:
 		if (pattern_requested ==
-				DP_TEST_PHY_PATTERN_D10_2_NO_SCRAMBLING)
+				DP_PHY_TEST_PATTERN_D10_2)
 			success = true;
 		break;
 	case MR_LINK_SYMBOL_ERM:
 		if ((pattern_requested ==
-				DP_TEST_PHY_PATTERN_SYMBOL_ERR_MEASUREMENT_CNT)
+				DP_PHY_TEST_PATTERN_ERROR_COUNT)
 			|| (pattern_requested ==
-				DP_TEST_PHY_PATTERN_CP2520_PATTERN_1))
+				DP_PHY_TEST_PATTERN_CP2520_PAT_1))
 			success = true;
 		break;
 	case MR_LINK_PRBS7:
-		if (pattern_requested == DP_TEST_PHY_PATTERN_PRBS7)
+		if (pattern_requested == DP_PHY_TEST_PATTERN_PRBS7)
 			success = true;
 		break;
 	case MR_LINK_CUSTOM80:
 		if (pattern_requested ==
-				DP_TEST_PHY_PATTERN_80_BIT_CUSTOM_PATTERN)
+				DP_PHY_TEST_PATTERN_80BIT_CUSTOM)
 			success = true;
 		break;
 	case MR_LINK_TRAINING4:
 		if (pattern_requested ==
-				DP_TEST_PHY_PATTERN_CP2520_PATTERN_3)
+				DP_PHY_TEST_PATTERN_CP2520_PAT_3)
 			success = true;
 		break;
 	default:

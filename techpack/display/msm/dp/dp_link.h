@@ -7,6 +7,7 @@
 #define _DP_LINK_H_
 
 #include "dp_aux.h"
+#include "dp_drm_compat.h"
 
 #define DS_PORT_STATUS_CHANGED 0x200
 #define DP_TEST_BIT_DEPTH_UNKNOWN 0xFFFFFFFF
@@ -120,32 +121,29 @@ struct dp_link {
 	int (*send_psm_request)(struct dp_link *dp_link, bool req);
 	void (*send_test_response)(struct dp_link *dp_link);
 	int (*psm_config)(struct dp_link *dp_link,
-		struct drm_dp_link *link_info, bool enable);
+		struct dp_link_info *link_info, bool enable);
 	void (*send_edid_checksum)(struct dp_link *dp_link, u8 checksum);
 };
 
 static inline char *dp_link_get_phy_test_pattern(u32 phy_test_pattern_sel)
 {
 	switch (phy_test_pattern_sel) {
-	case DP_TEST_PHY_PATTERN_NONE:
-		return DP_LINK_ENUM_STR(DP_TEST_PHY_PATTERN_NONE);
-	case DP_TEST_PHY_PATTERN_D10_2_NO_SCRAMBLING:
-		return DP_LINK_ENUM_STR(
-			DP_TEST_PHY_PATTERN_D10_2_NO_SCRAMBLING);
-	case DP_TEST_PHY_PATTERN_SYMBOL_ERR_MEASUREMENT_CNT:
-		return DP_LINK_ENUM_STR(
-			DP_TEST_PHY_PATTERN_SYMBOL_ERR_MEASUREMENT_CNT);
-	case DP_TEST_PHY_PATTERN_PRBS7:
-		return DP_LINK_ENUM_STR(DP_TEST_PHY_PATTERN_PRBS7);
-	case DP_TEST_PHY_PATTERN_80_BIT_CUSTOM_PATTERN:
-		return DP_LINK_ENUM_STR(
-			DP_TEST_PHY_PATTERN_80_BIT_CUSTOM_PATTERN);
-	case DP_TEST_PHY_PATTERN_CP2520_PATTERN_1:
-		return DP_LINK_ENUM_STR(DP_TEST_PHY_PATTERN_CP2520_PATTERN_1);
-	case DP_TEST_PHY_PATTERN_CP2520_PATTERN_2:
-		return DP_LINK_ENUM_STR(DP_TEST_PHY_PATTERN_CP2520_PATTERN_2);
-	case DP_TEST_PHY_PATTERN_CP2520_PATTERN_3:
-		return DP_LINK_ENUM_STR(DP_TEST_PHY_PATTERN_CP2520_PATTERN_3);
+	case DP_PHY_TEST_PATTERN_NONE:
+		return DP_LINK_ENUM_STR(DP_PHY_TEST_PATTERN_NONE);
+	case DP_PHY_TEST_PATTERN_D10_2:
+		return DP_LINK_ENUM_STR(DP_PHY_TEST_PATTERN_D10_2);
+	case DP_PHY_TEST_PATTERN_ERROR_COUNT:
+		return DP_LINK_ENUM_STR(DP_PHY_TEST_PATTERN_ERROR_COUNT);
+	case DP_PHY_TEST_PATTERN_PRBS7:
+		return DP_LINK_ENUM_STR(DP_PHY_TEST_PATTERN_PRBS7);
+	case DP_PHY_TEST_PATTERN_80BIT_CUSTOM:
+		return DP_LINK_ENUM_STR(DP_PHY_TEST_PATTERN_80BIT_CUSTOM);
+	case DP_PHY_TEST_PATTERN_CP2520_PAT_1:
+		return DP_LINK_ENUM_STR(DP_PHY_TEST_PATTERN_CP2520_PAT_1);
+	case DP_PHY_TEST_PATTERN_CP2520_PAT_2:
+		return DP_LINK_ENUM_STR(DP_PHY_TEST_PATTERN_CP2520_PAT_2);
+	case DP_PHY_TEST_PATTERN_CP2520_PAT_3:
+		return DP_LINK_ENUM_STR(DP_PHY_TEST_PATTERN_CP2520_PAT_3);
 	default:
 		return "unknown";
 	}

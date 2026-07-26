@@ -665,13 +665,13 @@ exit:
 static bool dp_link_is_phy_test_pattern_supported(u32 phy_test_pattern_sel)
 {
 	switch (phy_test_pattern_sel) {
-	case DP_TEST_PHY_PATTERN_NONE:
-	case DP_TEST_PHY_PATTERN_D10_2_NO_SCRAMBLING:
-	case DP_TEST_PHY_PATTERN_SYMBOL_ERR_MEASUREMENT_CNT:
-	case DP_TEST_PHY_PATTERN_PRBS7:
-	case DP_TEST_PHY_PATTERN_80_BIT_CUSTOM_PATTERN:
-	case DP_TEST_PHY_PATTERN_CP2520_PATTERN_1:
-	case DP_TEST_PHY_PATTERN_CP2520_PATTERN_3:
+	case DP_PHY_TEST_PATTERN_NONE:
+	case DP_PHY_TEST_PATTERN_D10_2:
+	case DP_PHY_TEST_PATTERN_ERROR_COUNT:
+	case DP_PHY_TEST_PATTERN_PRBS7:
+	case DP_PHY_TEST_PATTERN_80BIT_CUSTOM:
+	case DP_PHY_TEST_PATTERN_CP2520_PAT_1:
+	case DP_PHY_TEST_PATTERN_CP2520_PAT_3:
 		return true;
 	default:
 		return false;
@@ -693,7 +693,7 @@ static int dp_link_parse_phy_test_params(struct dp_link_private *link)
 	int const param_len = 0x1;
 	int ret = 0;
 
-	rlen = drm_dp_dpcd_read(link->aux->drm_aux, DP_TEST_PHY_PATTERN,
+	rlen = drm_dp_dpcd_read(link->aux->drm_aux, DP_PHY_TEST_PATTERN,
 			&bp, param_len);
 	if (rlen < param_len) {
 		DP_ERR("failed to read phy link pattern\n");
@@ -934,7 +934,7 @@ static void dp_link_send_test_response(struct dp_link *dp_link)
 }
 
 static int dp_link_psm_config(struct dp_link *dp_link,
-	struct drm_dp_link *link_info, bool enable)
+	struct dp_link_info *link_info, bool enable)
 {
 	struct dp_link_private *link = NULL;
 	int ret = 0;
@@ -947,9 +947,9 @@ static int dp_link_psm_config(struct dp_link *dp_link,
 	link = container_of(dp_link, struct dp_link_private, dp_link);
 
 	if (enable)
-		ret = drm_dp_link_power_down(link->aux->drm_aux, link_info);
+		ret = dp_link_power_down(link->aux->drm_aux, link_info);
 	else
-		ret = drm_dp_link_power_up(link->aux->drm_aux, link_info);
+		ret = dp_link_power_up(link->aux->drm_aux, link_info);
 
 	if (ret)
 		DP_ERR("Failed to %s low power mode\n",

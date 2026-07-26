@@ -556,8 +556,43 @@ extern int iommu_uapi_sva_unbind_gpasid(struct iommu_domain *domain,
 extern int iommu_sva_unbind_gpasid(struct iommu_domain *domain,
 				   struct device *dev, ioasid_t pasid);
 extern struct iommu_domain *iommu_get_domain_for_dev(struct device *dev);
-extern size_t iommu_pgsize(unsigned long pgsize_bitmap,
-			   unsigned long addr_merge, size_t size);
+/*
+ * CAF helper: pick the largest supported page size for (addr_merge, size).
+ * 5.10 has its own static iommu_pgsize() inside drivers/iommu/iommu.c with a
+ * different signature, so this one is renamed and made inline here.
+ */
+static inline size_t qcom_iommu_pgsize(unsigned long pgsize_bitmap,
+				       unsigned long addr_merge, size_t size)
+{
+	unsigned int pgsize_idx;
+	size_t pgsize;
+
+	/* Max page size that still fits into 'size' */
+	pgsize_idx = __fls(size);
+
+	/* need to consider alignment requirements ? */
+	if (likely(addr_merge)) {
+		/* Max page size allowed by address */
+		unsigned int align_pgsize_idx = __ffs(addr_merge);
+
+		pgsize_idx = min(pgsize_idx, align_pgsize_idx);
+	}
+
+	/* build a mask of acceptable page sizes */
+	pgsize = (1UL << (pgsize_idx + 1)) - 1;
+
+	/* throw away page sizes not supported by the hardware */
+	pgsize &= pgsize_bitmap;
+
+	if (!pgsize)
+		return 0;
+
+	/* pick the biggest page */
+	pgsize_idx = __fls(pgsize);
+	pgsize = 1UL << pgsize_idx;
+
+	return pgsize;
+}
 extern struct iommu_domain *iommu_get_dma_domain(struct device *dev);
 extern int iommu_map(struct iommu_domain *domain, unsigned long iova,
 		     phys_addr_t paddr, size_t size, int prot);
