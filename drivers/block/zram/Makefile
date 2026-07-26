@@ -2,6 +2,9 @@
 zram-y	:=	zcomp.o zram_drv.o
 zram-$(CONFIG_ZRAM_DEDUP)	+=	zram_dedup.o
 
+# lz4p includes "lz4defs.h", which lives in lib/lz4
+ccflags-$(CONFIG_ZRAM_LZ4P) += -I$(srctree)/lib/lz4
+
 zram-$(CONFIG_ZRAM_LZ4P)		+=	lz4p/lz4p.o
 zram-$(CONFIG_ZRAM_LZ4P)		+=	lz4p/lz4p_compress.o
 zram-$(CONFIG_ZRAM_LZ4P)		+=	lz4p/lz4p_decompress.o
