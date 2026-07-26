@@ -61,6 +61,7 @@ void drm_panel_init(struct drm_panel *panel, struct device *dev,
 		DRM_WARN("%s: %s: a valid connector type is required!\n", __func__, dev_name(dev));
 
 	INIT_LIST_HEAD(&panel->list);
+	BLOCKING_INIT_NOTIFIER_HEAD(&panel->nh);
 	panel->dev = dev;
 	panel->funcs = funcs;
 	panel->connector_type = connector_type;
@@ -351,6 +352,34 @@ int drm_panel_of_backlight(struct drm_panel *panel)
 }
 EXPORT_SYMBOL(drm_panel_of_backlight);
 #endif
+
+/*
+ * The panel blank/unblank notifier chain is a downstream (CAF/Android)
+ * addition that survived into include/drm/drm_panel.h here but whose
+ * implementation was lost when drm_panel.c was taken from ACK 5.10.  Every
+ * touchscreen driver in drivers/input/touchscreen/ and the MSM display stack
+ * use it, so restore it verbatim from the 5.4 tree.
+ */
+int drm_panel_notifier_register(struct drm_panel *panel,
+	struct notifier_block *nb)
+{
+	return blocking_notifier_chain_register(&panel->nh, nb);
+}
+EXPORT_SYMBOL_GPL(drm_panel_notifier_register);
+
+int drm_panel_notifier_unregister(struct drm_panel *panel,
+	struct notifier_block *nb)
+{
+	return blocking_notifier_chain_unregister(&panel->nh, nb);
+}
+EXPORT_SYMBOL_GPL(drm_panel_notifier_unregister);
+
+int drm_panel_notifier_call_chain(struct drm_panel *panel,
+	unsigned long val, void *v)
+{
+	return blocking_notifier_call_chain(&panel->nh, val, v);
+}
+EXPORT_SYMBOL_GPL(drm_panel_notifier_call_chain);
 
 MODULE_AUTHOR("Thierry Reding <treding@nvidia.com>");
 MODULE_DESCRIPTION("DRM panel infrastructure");

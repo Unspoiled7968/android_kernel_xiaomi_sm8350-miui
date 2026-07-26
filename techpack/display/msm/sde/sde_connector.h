@@ -7,7 +7,10 @@
 #define _SDE_CONNECTOR_H_
 
 #include <drm/msm_drm_pp.h>
-#include <drm/drmP.h>
+/* <drm/drmP.h> was removed upstream in v5.5 ("drm: remove drmP.h"). */
+#include <drm/drm_device.h>
+#include <drm/drm_print.h>
+#include <drm/drm_crtc.h>
 #include <drm/drm_atomic.h>
 #include <drm/drm_panel.h>
 
@@ -502,6 +505,13 @@ struct sde_connector {
 	void *display;
 	void *drv_panel;
 	void *mst_port;
+
+	/*
+	 * 5.10 dropped the downstream drm_connector::panel back-pointer, so
+	 * keep it here.  It is the drm_panel whose blank/unblank notifier
+	 * chain the touch drivers subscribe to.
+	 */
+	struct drm_panel *panel;
 
 	struct msm_gem_address_space *aspace[SDE_IOMMU_DOMAIN_MAX];
 

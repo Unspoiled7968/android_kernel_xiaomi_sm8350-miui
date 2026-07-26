@@ -949,8 +949,11 @@ static void _sde_kms_drm_check_dpms(struct drm_atomic_state *old_state,
 		if ((old_mode != new_mode) || (old_fps != new_fps)) {
 			struct drm_panel_notifier notifier_data;
 
+			struct drm_panel *panel =
+					to_sde_connector(connector)->panel;
+
 			SDE_EVT32(old_mode, new_mode, old_fps, new_fps,
-				connector->panel, crtc->state->active,
+				panel, crtc->state->active,
 				old_conn_state->crtc, event);
 			pr_debug("change detected (power mode %d->%d, fps %d->%d)\n",
 				old_mode, new_mode, old_fps, new_fps);
@@ -967,8 +970,8 @@ static void _sde_kms_drm_check_dpms(struct drm_atomic_state *old_state,
 			notifier_data.refresh_rate = new_fps;
 			notifier_data.id = connector->base.id;
 
-			if (connector->panel)
-				drm_panel_notifier_call_chain(connector->panel,
+			if (panel)
+				drm_panel_notifier_call_chain(panel,
 							event, &notifier_data);
 		}
 	}
@@ -3255,8 +3258,13 @@ static int sde_kms_inform_cont_splash_res_disable(struct msm_kms *kms,
 			if (!dsi_display || !encoder) {
 				sde_conn->ops.cont_splash_res_disable
 						(sde_conn->display);
-			} else if (connector->encoder_ids[0]
-					== encoder->base.id) {
+			} else if (connector->possible_encoders &
+					drm_encoder_mask(encoder)) {
+				/*
+				 * 5.8 replaced connector->encoder_ids[] with
+				 * the possible_encoders bitmask; SDE only ever
+				 * attaches one encoder to a DSI connector.
+				 */
 				/**
 				 * This handles dual DSI
 				 * configuration where one DSI
@@ -3446,7 +3454,8 @@ static int sde_kms_cont_splash_config(struct msm_kms *kms,
 			 * ever have to support continuous splash for
 			 * external displays in MST configuration.
 			 */
-			if (connector->encoder_ids[0] == encoder->base.id)
+			if (connector->possible_encoders &
+					drm_encoder_mask(encoder))
 				break;
 		}
 		drm_connector_list_iter_end(&conn_iter);

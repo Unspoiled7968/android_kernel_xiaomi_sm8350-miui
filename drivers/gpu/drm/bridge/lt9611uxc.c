@@ -23,7 +23,12 @@
 #include <linux/regulator/consumer.h>
 #include <linux/firmware.h>
 #include <linux/hdmi.h>
-#include <drm/drmP.h>
+/* <drm/drmP.h> was removed upstream in v5.5 ("drm: remove drmP.h"). */
+#include <drm/drm_device.h>
+#include <drm/drm_drv.h>
+#include <drm/drm_print.h>
+#include <drm/drm_connector.h>
+#include <drm/drm_modes.h>
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_edid.h>
@@ -1521,7 +1526,9 @@ static const struct drm_connector_funcs lt9611_connector_funcs = {
 };
 
 
-static int lt9611_bridge_attach(struct drm_bridge *bridge)
+/* 5.10: drm_bridge_funcs::attach gained an attach-flags argument */
+static int lt9611_bridge_attach(struct drm_bridge *bridge,
+				enum drm_bridge_attach_flags flags)
 {
 	struct mipi_dsi_host *host;
 	struct mipi_dsi_device *dsi;

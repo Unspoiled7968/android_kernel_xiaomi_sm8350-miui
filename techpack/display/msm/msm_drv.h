@@ -39,7 +39,33 @@
 #include <linux/sizes.h>
 #include <linux/kthread.h>
 
-#include <drm/drmP.h>
+/*
+ * <drm/drmP.h> was removed upstream in v5.5 ("drm: remove drmP.h").  This is
+ * the subset of what it used to pull in that techpack/display actually needs;
+ * it is included from the tree's central header so the sde/dsi sources keep
+ * seeing the same set of declarations they did on 5.4.
+ */
+#include <linux/io.h>
+#include <linux/mm.h>
+#include <linux/uaccess.h>
+#include <uapi/drm/drm.h>
+#include <uapi/drm/drm_mode.h>
+#include <drm/drm_device.h>
+#include <drm/drm_drv.h>
+#include <drm/drm_file.h>
+#include <drm/drm_ioctl.h>
+#include <drm/drm_debugfs.h>
+#include <drm/drm_print.h>
+#include <drm/drm_prime.h>
+#include <drm/drm_sysfs.h>
+#include <drm/drm_vblank.h>
+#include <drm/drm_crtc.h>
+#include <drm/drm_encoder.h>
+#include <drm/drm_bridge.h>
+#include <drm/drm_framebuffer.h>
+#include <drm/drm_fourcc.h>
+#include <drm/drm_mm.h>
+#include <drm/drm_probe_helper.h>
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_plane_helper.h>
@@ -1101,6 +1127,7 @@ int msm_gem_madvise(struct drm_gem_object *obj, unsigned madv);
 int msm_gem_cpu_prep(struct drm_gem_object *obj, uint32_t op, ktime_t *timeout);
 int msm_gem_cpu_fini(struct drm_gem_object *obj);
 void msm_gem_free_object(struct drm_gem_object *obj);
+void msm_gem_free_object_unlocked(struct drm_gem_object *obj);
 int msm_gem_new_handle(struct drm_device *dev, struct drm_file *file,
 		uint32_t size, uint32_t flags, uint32_t *handle, char *name);
 struct drm_gem_object *msm_gem_new(struct drm_device *dev,

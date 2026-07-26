@@ -10,7 +10,9 @@
 #include <linux/platform_device.h>
 #include <linux/types.h>
 #include <linux/clk.h>
-#include <drm/drmP.h>
+/* <drm/drmP.h> was removed upstream in v5.5 ("drm: remove drmP.h"). */
+#include <drm/drm_device.h>
+#include <drm/drm_print.h>
 
 #define MAX_STRING_LEN 32
 #define MAX_DSI_CTRL 2

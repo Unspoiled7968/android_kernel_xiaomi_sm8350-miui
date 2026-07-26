@@ -637,7 +637,7 @@ int dp_drm_bridge_init(void *data, struct drm_encoder *encoder,
 		goto error_free_bridge;
 	}
 
-	encoder->bridge = &bridge->base;
+	/* 5.7+ : drm_bridge_attach() links the bridge chain itself */
 	priv->bridges[priv->num_bridges++] = &bridge->base;
 	display->bridge = bridge;
 	display->max_mixer_count = max_mixer_count;
@@ -655,8 +655,11 @@ void dp_drm_bridge_deinit(void *data)
 	struct dp_display *display = data;
 	struct dp_bridge *bridge = display->bridge;
 
-	if (bridge && bridge->base.encoder)
-		bridge->base.encoder->bridge = NULL;
+	if (bridge && bridge->base.dev) {
+		list_del_init(&bridge->base.chain_node);
+		bridge->base.dev = NULL;
+		bridge->base.encoder = NULL;
+	}
 
 	kfree(bridge);
 }

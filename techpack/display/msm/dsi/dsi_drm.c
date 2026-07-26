@@ -167,7 +167,8 @@ void dsi_convert_to_drm_mode(const struct dsi_display_mode *dsi_mode,
 			video_mode ? "vid" : "cmd");
 }
 
-static int dsi_bridge_attach(struct drm_bridge *bridge)
+static int dsi_bridge_attach(struct drm_bridge *bridge,
+			     enum drm_bridge_attach_flags flags)
 {
 	struct dsi_bridge *c_bridge = to_dsi_bridge(bridge);
 
@@ -1270,6 +1271,7 @@ int dsi_conn_post_kickoff(struct drm_connector *connector,
 	struct msm_display_conn_params *params)
 {
 	struct drm_encoder *encoder;
+	struct drm_bridge *drm_bridge;
 	struct dsi_bridge *c_bridge;
 	struct dsi_display_mode adj_mode;
 	struct dsi_display *display;
@@ -1289,7 +1291,14 @@ int dsi_conn_post_kickoff(struct drm_connector *connector,
 		return 0;
 	}
 
-	c_bridge = to_dsi_bridge(encoder->bridge);
+	/* 5.7: encoder->bridge became the encoder->bridge_chain list */
+	drm_bridge = drm_bridge_chain_get_first_bridge(encoder);
+	if (!drm_bridge) {
+		DSI_DEBUG("no bridge attached to encoder\n");
+		return 0;
+	}
+
+	c_bridge = to_dsi_bridge(drm_bridge);
 	adj_mode = c_bridge->dsi_mode;
 	display = c_bridge->display;
 	dyn_clk_caps = &(display->panel->dyn_clk_caps);
@@ -1371,13 +1380,17 @@ struct dsi_bridge *dsi_drm_bridge_init(struct dsi_display *display,
 	bridge->base.funcs = &dsi_bridge_ops;
 	bridge->base.encoder = encoder;
 
-	rc = drm_bridge_attach(encoder, &bridge->base, NULL);
+	/*
+	 * 5.10: drm_bridge_attach() gained an attach-flags argument.  0 keeps
+	 * the legacy behaviour (the bridge is responsible for its own
+	 * connector - here SDE creates it) and links the bridge into
+	 * encoder->bridge_chain, which replaced encoder->bridge in 5.7.
+	 */
+	rc = drm_bridge_attach(encoder, &bridge->base, NULL, 0);
 	if (rc) {
 		DSI_ERR("failed to attach bridge, rc=%d\n", rc);
 		goto error_free_bridge;
 	}
-
-	encoder->bridge = &bridge->base;
 
 	bridge->is_dsi_drm_bridge = true;
 	mutex_init(&bridge->lock);
@@ -1409,8 +1422,16 @@ error:
 
 void dsi_drm_bridge_cleanup(struct dsi_bridge *bridge)
 {
-	if (bridge && bridge->base.encoder)
-		bridge->base.encoder->bridge = NULL;
+	/*
+	 * 5.7 replaced encoder->bridge with the encoder->bridge_chain list
+	 * and drm_bridge_detach() is private to the core, so unlink by hand
+	 * before the bridge is freed.
+	 */
+	if (bridge && bridge->base.dev) {
+		list_del_init(&bridge->base.chain_node);
+		bridge->base.dev = NULL;
+		bridge->base.encoder = NULL;
+	}
 
 	if (bridge == gbridge) {
 		atomic_set(&prim_panel_is_on, false);

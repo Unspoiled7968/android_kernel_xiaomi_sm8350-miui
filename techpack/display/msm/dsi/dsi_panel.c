@@ -3870,21 +3870,23 @@ struct dsi_panel *dsi_panel_get(struct device *parent,
 	}
 
 	panel->power_mode = SDE_MODE_DPMS_OFF;
-	drm_panel_init(&panel->drm_panel);
-	panel->drm_panel.dev = &panel->mipi_device.dev;
+	/*
+	 * 5.10: drm_panel_init() takes the parent device, the (optional) funcs
+	 * and the connector type, and drm_panel_add() returns void.  This
+	 * drm_panel exists only to carry the panel blank/unblank notifier
+	 * chain that the touch drivers subscribe to, hence funcs == NULL.
+	 */
+	drm_panel_init(&panel->drm_panel, &panel->mipi_device.dev, NULL,
+			DRM_MODE_CONNECTOR_DSI);
 	panel->mipi_device.dev.of_node = of_node;
 
-	rc = drm_panel_add(&panel->drm_panel);
-	if (rc)
-		goto error_vreg_put;
+	drm_panel_add(&panel->drm_panel);
 
 	mutex_init(&panel->panel_lock);
 
 	mi_dsi_panel_init(panel);
 
 	return panel;
-error_vreg_put:
-	(void)dsi_panel_vreg_put(panel);
 error:
 	kfree(panel);
 	return ERR_PTR(rc);

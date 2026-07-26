@@ -160,15 +160,16 @@ struct drm_fb_helper *msm_fbdev_init(struct drm_device *dev)
 
 	drm_fb_helper_prepare(dev, helper, &msm_fb_helper_funcs);
 
-	ret = drm_fb_helper_init(dev, helper, priv->num_connectors);
+	/*
+	 * 5.7 dropped the max_conn_count argument of drm_fb_helper_init() and
+	 * 5.10 removed drm_fb_helper_single_add_all_connectors() entirely -
+	 * drm_fb_helper_initial_config() now walks the connector list itself.
+	 */
+	ret = drm_fb_helper_init(dev, helper);
 	if (ret) {
 		DRM_DEV_ERROR(dev->dev, "could not init fbdev: ret=%d\n", ret);
 		goto fail;
 	}
-
-	ret = drm_fb_helper_single_add_all_connectors(helper);
-	if (ret)
-		goto fini;
 
 	/* the fw fb could be anywhere in memory */
 	drm_fb_helper_remove_conflicting_framebuffers(NULL, "msm", false);

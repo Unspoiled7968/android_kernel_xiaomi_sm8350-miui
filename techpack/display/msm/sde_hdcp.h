@@ -12,7 +12,9 @@
 #include <linux/of_device.h>
 #include <linux/i2c.h>
 #include <linux/list.h>
-#include <drm/drmP.h>
+/* <drm/drmP.h> was removed upstream in v5.5 ("drm: remove drmP.h"). */
+#include <drm/drm_device.h>
+#include <drm/drm_print.h>
 #include <drm/drm_crtc.h>
 #include <drm/drm_edid.h>
 #include <linux/hdcp_qseecom.h>

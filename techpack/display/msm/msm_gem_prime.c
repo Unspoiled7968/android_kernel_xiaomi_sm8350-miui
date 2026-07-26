@@ -33,7 +33,8 @@ struct sg_table *msm_gem_prime_get_sg_table(struct drm_gem_object *obj)
 	if (WARN_ON(!msm_obj->pages))  /* should have already pinned! */
 		return NULL;
 
-	return drm_prime_pages_to_sg(msm_obj->pages, npages);
+	/* 5.10: drm_prime_pages_to_sg() gained a struct drm_device * arg */
+	return drm_prime_pages_to_sg(obj->dev, msm_obj->pages, npages);
 }
 
 void *msm_gem_prime_vmap(struct drm_gem_object *obj)

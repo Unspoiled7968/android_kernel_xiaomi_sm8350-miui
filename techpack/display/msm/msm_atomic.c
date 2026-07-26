@@ -199,7 +199,7 @@ msm_disable_outputs(struct drm_device *dev, struct drm_atomic_state *old_state)
 		 * Each encoder has at most one connector (since we always steal
 		 * it away), so we won't call disable hooks twice.
 		 */
-		drm_bridge_disable(encoder->bridge);
+		drm_bridge_chain_disable(drm_bridge_chain_get_first_bridge(encoder));
 
 		/* Right function depends upon target state. */
 		if (connector->state->crtc && funcs->prepare)
@@ -209,7 +209,7 @@ msm_disable_outputs(struct drm_device *dev, struct drm_atomic_state *old_state)
 		else
 			funcs->dpms(encoder, DRM_MODE_DPMS_OFF);
 
-		drm_bridge_post_disable(encoder->bridge);
+		drm_bridge_chain_post_disable(drm_bridge_chain_get_first_bridge(encoder));
 	}
 
 	for_each_old_crtc_in_state(old_state, crtc, old_crtc_state, i) {
@@ -305,7 +305,8 @@ msm_crtc_set_mode(struct drm_device *dev, struct drm_atomic_state *old_state)
 		if (funcs->mode_set)
 			funcs->mode_set(encoder, mode, adjusted_mode);
 
-		drm_bridge_mode_set(encoder->bridge, mode, adjusted_mode);
+		drm_bridge_chain_mode_set(drm_bridge_chain_get_first_bridge(encoder),
+				  mode, adjusted_mode);
 		SDE_ATRACE_END("msm_set_mode");
 	}
 }
@@ -423,7 +424,7 @@ static void msm_atomic_helper_commit_modeset_enables(struct drm_device *dev,
 		 * Each encoder has at most one connector (since we always steal
 		 * it away), so we won't call enable hooks twice.
 		 */
-		drm_bridge_pre_enable(encoder->bridge);
+		drm_bridge_chain_pre_enable(drm_bridge_chain_get_first_bridge(encoder));
 		++bridge_enable_count;
 
 		if (funcs->enable)
@@ -466,7 +467,7 @@ static void msm_atomic_helper_commit_modeset_enables(struct drm_device *dev,
 		DRM_DEBUG_ATOMIC("bridge enable enabling [ENCODER:%d:%s]\n",
 				 encoder->base.id, encoder->name);
 
-		drm_bridge_enable(encoder->bridge);
+		drm_bridge_chain_enable(drm_bridge_chain_get_first_bridge(encoder));
 	}
 	SDE_ATRACE_END("msm_enable");
 }
@@ -617,7 +618,11 @@ static void msm_atomic_commit_dispatch(struct drm_device *dev,
 		if (ret == -EINVAL)
 			DRM_ERROR("failed to dispatch commit to any CRTC\n");
 		else
-			DRM_DEBUG_DRIVER_RATELIMITED("empty crtc state\n");
+			/*
+			 * 5.10 only keeps DRM_DEBUG_KMS_RATELIMITED();
+			 * DRM_DEBUG_DRIVER_RATELIMITED() no longer exists.
+			 */
+			DRM_DEBUG_KMS_RATELIMITED("empty crtc state\n");
 
 		/**
 		 * this is not expected to happen, but at this point the state

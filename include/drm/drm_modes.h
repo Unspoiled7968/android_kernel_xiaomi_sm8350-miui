@@ -389,6 +389,43 @@ struct drm_display_mode {
 	 */
 	enum hdmi_picture_aspect picture_aspect_ratio;
 
+	/**
+	 * @vrefresh:
+	 *
+	 * Vertical refresh rate, in Hz.
+	 *
+	 * Upstream removed this in v5.9 ("drm: Nuke mode->vrefresh") on the
+	 * assumption that the rate can always be recomputed from
+	 * clock/htotal/vtotal.  That assumption does not hold for the MSM DSI
+	 * command-mode panels driven by techpack/display: there the pixel
+	 * clock is derived from the DSI byte clock / MDP transfer time
+	 * (dsi_panel_calc_dsi_transfer_time()) and is deliberately decoupled
+	 * from htotal * vtotal * fps, and with DSC the drm htotal is the
+	 * uncompressed width while the pixel clock uses the compressed one.
+	 * dsi_display_find_mode() matches on the refresh rate, so it has to
+	 * be carried explicitly.  Kept as an override: drm_mode_vrefresh()
+	 * falls back to the computed value when this is 0, which is what
+	 * every non-MSM driver ends up using.
+	 */
+	int vrefresh;
+
+	/**
+	 * @private:
+	 *
+	 * Pointer for driver private data. This can only be used for mode
+	 * objects passed to drivers in modeset operations. Restored for
+	 * techpack/display, which stashes the per-mode
+	 * dsi_display_mode_priv_info here.
+	 */
+	int *private;
+
+	/**
+	 * @private_flags:
+	 *
+	 * Similar to @private, but just an integer. Restored for
+	 * techpack/display (MSM_MODE_FLAG_SEAMLESS_* in msm_kms.h).
+	 */
+	int private_flags;
 };
 
 /**

@@ -100,7 +100,8 @@ static struct page **get_pages(struct drm_gem_object *obj)
 
 		msm_obj->pages = p;
 
-		msm_obj->sgt = drm_prime_pages_to_sg(p, npages);
+		/* 5.10: drm_prime_pages_to_sg() gained a struct drm_device * arg */
+		msm_obj->sgt = drm_prime_pages_to_sg(dev, p, npages);
 		if (IS_ERR(msm_obj->sgt)) {
 			void *ptr = ERR_CAST(msm_obj->sgt);
 
@@ -1048,6 +1049,23 @@ void msm_gem_free_object(struct drm_gem_object *obj)
 
 	mutex_unlock(&msm_obj->lock);
 	kfree(msm_obj);
+}
+
+/*
+ * 5.9 removed drm_driver::gem_free_object (the variant the core invoked with
+ * dev->struct_mutex held); only ->gem_free_object_unlocked survives and it is
+ * called from drm_gem_object_free() without any lock.  msm_gem_free_object()
+ * still needs struct_mutex - it unlinks the object from priv->inactive_list -
+ * and every in-driver caller already takes the lock around it, so acquire it
+ * here for the core's benefit instead of changing the driver's locking rules.
+ */
+void msm_gem_free_object_unlocked(struct drm_gem_object *obj)
+{
+	struct drm_device *dev = obj->dev;
+
+	mutex_lock(&dev->struct_mutex);
+	msm_gem_free_object(obj);
+	mutex_unlock(&dev->struct_mutex);
 }
 
 /* convenience method to construct a GEM buffer object, and userspace handle */

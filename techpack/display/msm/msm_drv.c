@@ -1056,7 +1056,12 @@ static void msm_lastclose(struct drm_device *dev)
 		if (rc)
 			DRM_ERROR("restore FBDEV mode failed: %d\n", rc);
 	} else if (kms && kms->client.dev) {
-		rc = drm_client_modeset_commit_force(&kms->client);
+		/*
+		 * 5.10 dropped drm_client_modeset_commit_force();
+		 * drm_client_modeset_commit_locked() is the identical
+		 * "commit without checking for a DRM master" variant.
+		 */
+		rc = drm_client_modeset_commit_locked(&kms->client);
 		if (rc)
 			DRM_ERROR("client modeset commit failed: %d\n", rc);
 	}
@@ -1178,7 +1183,7 @@ static int msm_ioctl_gem_madvise(struct drm_device *dev, void *data,
 		struct drm_file *file)
 {
 	struct drm_msm_gem_madvise *args = data;
-	struct drm_gem_object *obj;
+	struct drm_gem_object *obj = NULL;
 	int ret;
 
 	switch (args->madv) {
@@ -1205,10 +1210,15 @@ static int msm_ioctl_gem_madvise(struct drm_device *dev, void *data,
 		ret = 0;
 	}
 
-	drm_gem_object_put(obj);
-
 unlock:
 	mutex_unlock(&dev->struct_mutex);
+	/*
+	 * 5.10 only has the unlocked drm_gem_object_put(); dropping the last
+	 * reference now runs ->gem_free_object_unlocked(), which takes
+	 * struct_mutex, so the reference has to go after the unlock.
+	 */
+	if (obj)
+		drm_gem_object_put(obj);
 	return ret;
 }
 
@@ -1732,7 +1742,8 @@ static struct drm_driver msm_driver = {
 	.irq_preinstall     = msm_irq_preinstall,
 	.irq_postinstall    = msm_irq_postinstall,
 	.irq_uninstall      = msm_irq_uninstall,
-	.gem_free_object    = msm_gem_free_object,
+	/* 5.9 deleted drm_driver::gem_free_object; see msm_gem.c */
+	.gem_free_object_unlocked = msm_gem_free_object_unlocked,
 	.gem_vm_ops         = &vm_ops,
 	.dumb_create        = msm_gem_dumb_create,
 	.dumb_map_offset    = msm_gem_dumb_map_offset,

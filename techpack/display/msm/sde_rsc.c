@@ -18,7 +18,10 @@
 #include <linux/module.h>
 
 #include <soc/qcom/rpmh.h>
-#include <drm/drmP.h>
+/* <drm/drmP.h> was removed upstream in v5.5 ("drm: remove drmP.h"). */
+#include <drm/drm_device.h>
+#include <drm/drm_drv.h>
+#include <drm/drm_print.h>
 #include <drm/drm_irq.h>
 #include "sde_rsc_priv.h"
 #include "sde_dbg.h"
