@@ -59,7 +59,7 @@ static void guestvm_isolate_cpu(void)
 	int cpu, ret;
 
 	for_each_cpu_and(cpu, &guestvm_reserve_cpus, cpu_online_mask) {
-		ret = cpu_down(cpu);
+		ret = remove_cpu(cpu);
 		if (ret < 0) {
 			pr_err("fail to offline CPU%d. ret=%d\n", cpu, ret);
 			continue;
@@ -78,7 +78,7 @@ static void guestvm_unisolate_cpu(void)
 	int i, ret;
 
 	for_each_cpu(i, &guestvm_isolated_cpus) {
-		ret = cpu_up(i);
+		ret = add_cpu(i);
 		if (ret < 0) {
 			pr_err("fail to online CPU%d. ret=%d\n", i, ret);
 			continue;

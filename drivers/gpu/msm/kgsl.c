@@ -15,6 +15,7 @@
 #include <linux/ion.h>
 #include <linux/mman.h>
 #include <linux/mm.h>
+#include <linux/dma-map-ops.h>
 #include <linux/mm_types.h>
 #include <linux/msm_kgsl.h>
 #include <linux/of.h>

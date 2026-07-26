@@ -505,7 +505,7 @@ static int firmware_param_path_set(const char *val, const struct kernel_param *k
 		}
 
 		if (end != NULL)
-			*end = ' ';
+			*end = '\0';
 		else {
 			/* end of the string reached and no other tockens ','  */
 			strscpy(fw_path_para[i], path, PATH_SIZE);
@@ -528,7 +528,7 @@ static int firmware_param_path_get(char *buffer, const struct kernel_param *kp)
 			count += scnprintf(buffer + count, PATH_SIZE, "%s%s", fw_path_para[i], ",");
 	}
 
-	buffer[count - 1] = ' ';
+	buffer[count - 1] = '\0';
 
 	return count - 1;
 }
