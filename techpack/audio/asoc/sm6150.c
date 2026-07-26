@@ -5851,7 +5851,7 @@ static int msm_fe_qos_prepare(struct snd_pcm_substream *substream)
 	cpumask_t mask;
 
 	if (pm_qos_request_active(&substream->latency_pm_qos_req))
-		pm_qos_remove_request(&substream->latency_pm_qos_req);
+		cpu_latency_qos_remove_request(&substream->latency_pm_qos_req);
 
 	cpumask_clear(&mask);
 	cpumask_set_cpu(1, &mask); /* affine to core 1 */
@@ -5860,9 +5860,7 @@ static int msm_fe_qos_prepare(struct snd_pcm_substream *substream)
 
 	substream->latency_pm_qos_req.type = PM_QOS_REQ_AFFINE_CORES;
 
-	pm_qos_add_request(&substream->latency_pm_qos_req,
-			  PM_QOS_CPU_DMA_LATENCY,
-			  MSM_LL_QOS_VALUE);
+	cpu_latency_qos_add_request(&substream->latency_pm_qos_req, MSM_LL_QOS_VALUE);
 	return 0;
 }
 

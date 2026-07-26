@@ -3853,12 +3853,12 @@ static int hdd_wlan_register_pm_qos_notifier(struct hdd_context *hdd_ctx)
 
 	qdf_spinlock_create(&hdd_ctx->pm_qos_lock);
 	hdd_ctx->pm_qos_notifier.notifier_call = wlan_hdd_pm_qos_notify;
-	ret = pm_qos_add_notifier(PM_QOS_CPU_DMA_LATENCY,
-				  &hdd_ctx->pm_qos_notifier);
-	if (ret)
-		hdd_err("Failed to register PM_QOS notifier: %d", ret);
-	else
-		hdd_debug("PM QOS Notifier registered");
+	/*
+	 * 5.10 removed the global cpu-latency PM QoS notifier chain (only the
+	 * per-device dev_pm_qos notifiers remain). This only drives a runtime-PM
+	 * optimisation, so skip registration rather than lose the driver.
+	 */
+	hdd_debug("PM QOS notifier unavailable on this kernel");
 
 	return ret;
 }
@@ -3881,10 +3881,7 @@ static void hdd_wlan_unregister_pm_qos_notifier(struct hdd_context *hdd_ctx)
 		return;
 	}
 
-	ret = pm_qos_remove_notifier(PM_QOS_CPU_DMA_LATENCY,
-				     &hdd_ctx->pm_qos_notifier);
-	if (ret)
-		hdd_warn("Failed to remove qos notifier, err = %d\n", ret);
+	/* see hdd_wlan_register_pm_qos_notifier(): no global notifier in 5.10 */
 
 	qdf_spin_lock_irqsave(&hdd_ctx->pm_qos_lock);
 
@@ -9992,10 +9989,10 @@ static inline void hdd_pm_qos_update_request(struct hdd_context *hdd_ctx,
 	COPY_CPU_MASK(&hdd_ctx->pm_qos_req.cpus_affine, pm_qos_cpu_mask);
 
 	if (cpumask_empty(pm_qos_cpu_mask))
-		pm_qos_update_request(&hdd_ctx->pm_qos_req,
+		cpu_latency_qos_update_request(&hdd_ctx->pm_qos_req,
 				      PM_QOS_DEFAULT_VALUE);
 	else
-		pm_qos_update_request(&hdd_ctx->pm_qos_req, 1);
+		cpu_latency_qos_update_request(&hdd_ctx->pm_qos_req, 1);
 }
 
 #if defined(CONFIG_SMP) && defined(MSM_PLATFORM)
@@ -10017,17 +10014,16 @@ static inline void hdd_set_default_pm_qos_mask(struct hdd_context *hdd_ctx)
 }
 #endif
 
-static inline void hdd_pm_qos_add_request(struct hdd_context *hdd_ctx)
+static inline void hdd_cpu_latency_qos_add_request(struct hdd_context *hdd_ctx)
 {
 	hdd_set_default_pm_qos_mask(hdd_ctx);
-	pm_qos_add_request(&hdd_ctx->pm_qos_req, PM_QOS_CPU_DMA_LATENCY,
-			   PM_QOS_DEFAULT_VALUE);
+	pm_qos_add_request(&hdd_ctx->pm_qos_req, PM_QOS_DEFAULT_VALUE);
 	DUMP_CPU_AFFINE();
 }
 
 static inline void hdd_pm_qos_remove_request(struct hdd_context *hdd_ctx)
 {
-	pm_qos_remove_request(&hdd_ctx->pm_qos_req);
+	cpu_latency_qos_remove_request(&hdd_ctx->pm_qos_req);
 }
 #endif /* CLD_DEV_PM_QOS */
 
@@ -10086,14 +10082,14 @@ void wlan_hdd_set_pm_qos_request(struct hdd_context *hdd_ctx,
 		hdd_ctx->pm_qos_request = true;
 		if (!hdd_ctx->hbw_requested) {
 			cpumask_setall(&hdd_ctx->pm_qos_req.cpus_affine);
-			pm_qos_update_request(&hdd_ctx->pm_qos_req,
+			cpu_latency_qos_update_request(&hdd_ctx->pm_qos_req,
 					      DISABLE_KRAIT_IDLE_PS_VAL);
 			hdd_ctx->hbw_requested = true;
 		}
 	} else {
 		if (hdd_ctx->hbw_requested) {
 			cpumask_clear(&hdd_ctx->pm_qos_req.cpus_affine);
-			pm_qos_update_request(&hdd_ctx->pm_qos_req,
+			cpu_latency_qos_update_request(&hdd_ctx->pm_qos_req,
 					      PM_QOS_DEFAULT_VALUE);
 			hdd_ctx->hbw_requested = false;
 		}

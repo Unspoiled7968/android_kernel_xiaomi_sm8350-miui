@@ -1085,8 +1085,7 @@ static int aw8622x_haptic_rtp_init(struct aw8622x *aw8622x)
 	unsigned char glb_state_val = 0;
 
 	aw_dev_err(aw8622x->dev, "%s enter\n", __func__);
-	pm_qos_add_request(&aw8622x_pm_qos_req_vb, PM_QOS_CPU_DMA_LATENCY,
-			   AW8622X_PM_QOS_VALUE_VB);
+	cpu_latency_qos_add_request(&aw8622x_pm_qos_req_vb, AW8622X_PM_QOS_VALUE_VB);
 	aw8622x->rtp_cnt = 0;
 	mutex_lock(&aw8622x->rtp_lock);
 	while ((!aw8622x_haptic_rtp_get_fifo_afs(aw8622x))
@@ -1132,7 +1131,7 @@ static int aw8622x_haptic_rtp_init(struct aw8622x *aw8622x)
 					__func__, glb_state_val,
 					aw8622x->rtp_cnt);
 			aw8622x->rtp_cnt = 0;
-			pm_qos_remove_request(&aw8622x_pm_qos_req_vb);
+			cpu_latency_qos_remove_request(&aw8622x_pm_qos_req_vb);
 			mutex_unlock(&aw8622x->rtp_lock);
 			return 0;
 		}
@@ -1144,7 +1143,7 @@ static int aw8622x_haptic_rtp_init(struct aw8622x *aw8622x)
 		aw8622x_haptic_set_rtp_aei(aw8622x, true);
 
 	aw_dev_err(aw8622x->dev, "%s exit\n", __func__);
-	pm_qos_remove_request(&aw8622x_pm_qos_req_vb);
+	cpu_latency_qos_remove_request(&aw8622x_pm_qos_req_vb);
 	return 0;
 }
 
@@ -1411,8 +1410,7 @@ static int aw8622x_rtp_osc_calibration(struct aw8622x *aw8622x)
 	/* haptic go */
 	aw8622x_haptic_play_go(aw8622x, true);
 	/* require latency of CPU & DMA not more then PM_QOS_VALUE_VB us */
-	pm_qos_add_request(&aw8622x_pm_qos_req_vb, PM_QOS_CPU_DMA_LATENCY,
-			   AW8622X_PM_QOS_VALUE_VB);
+	cpu_latency_qos_add_request(&aw8622x_pm_qos_req_vb, AW8622X_PM_QOS_VALUE_VB);
 	while (1) {
 		if (!aw8622x_haptic_rtp_get_fifo_afs(aw8622x)) {
 			mutex_lock(&aw8622x->rtp_lock);
@@ -1456,7 +1454,7 @@ static int aw8622x_rtp_osc_calibration(struct aw8622x *aw8622x)
 			break;
 		}
 	}
-	pm_qos_remove_request(&aw8622x_pm_qos_req_vb);
+	cpu_latency_qos_remove_request(&aw8622x_pm_qos_req_vb);
 	enable_irq(gpio_to_irq(aw8622x->irq_gpio));
 
 	aw8622x->microsecond =
