@@ -27,4 +27,4 @@ $(obj)/%.dtbo: $(src)/%.dts FORCE
 
 $(call multi_depend, $(dtbo), , -base)
 
-always +=  $(dtbo)
+always-y += $(dtbo)
