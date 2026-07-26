@@ -24,7 +24,14 @@
 #define RMNET_INGRESS_FORMAT_DL_MARKER_V2       BIT(29)
 
 #define RMNET_FLAGS_INGRESS_COALESCE            BIT(4)
+/*
+ * 5.10's uapi if_link.h gained RMNET_FLAGS_INGRESS_MAP_CKSUMV5 as (1U << 4),
+ * which is this stack's COALESCE bit. The vendor datarmnet driver and the
+ * userspace built against it use BIT(5)/BIT(6), so keep those values here.
+ */
+#undef RMNET_FLAGS_INGRESS_MAP_CKSUMV5
 #define RMNET_FLAGS_INGRESS_MAP_CKSUMV5         BIT(5)
+#undef RMNET_FLAGS_EGRESS_MAP_CKSUMV5
 #define RMNET_FLAGS_EGRESS_MAP_CKSUMV5          BIT(6)
 
 #define RMNET_INGRESS_FORMAT_DL_MARKER  (RMNET_INGRESS_FORMAT_DL_MARKER_V1 |\
