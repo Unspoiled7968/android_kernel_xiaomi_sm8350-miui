@@ -68,7 +68,7 @@
 #define ARM_32_LPAE_TCR_EAE		(1 << 31)
 #define ARM_64_LPAE_S2_TCR_RES1		(1 << 31)
 
-#define AV8L_FAST_TCR_TG0_4K		(0 << 14)
+#define AV8L_FAST_TCR_TG0_4K		0
 #define AV8L_FAST_TCR_TG0_64K		(1 << 14)
 #define AV8L_FAST_TCR_TG0_16K		(2 << 14)
 
@@ -246,7 +246,7 @@ av8l_fast_prot_to_pte(struct av8l_fast_io_pgtable *data, int prot)
 }
 
 static int av8l_fast_map(struct io_pgtable_ops *ops, unsigned long iova,
-			 phys_addr_t paddr, size_t size, int prot)
+			 phys_addr_t paddr, size_t size, int prot, gfp_t gfp)
 {
 	struct av8l_fast_io_pgtable *data = iof_pgtable_ops_to_data(ops);
 	struct io_pgtable *iop = iof_pgtable_ops_to_pgtable(ops);
@@ -268,7 +268,7 @@ static int av8l_fast_map(struct io_pgtable_ops *ops, unsigned long iova,
 int av8l_fast_map_public(struct io_pgtable_ops *ops, unsigned long iova,
 			 phys_addr_t paddr, size_t size, int prot)
 {
-	return av8l_fast_map(ops, iova, paddr, size, prot);
+	return av8l_fast_map(ops, iova, paddr, size, prot, GFP_ATOMIC);
 }
 
 static size_t
@@ -315,7 +315,8 @@ static int av8l_fast_map_sg(struct io_pgtable_ops *ops,
 	int i;
 
 	for_each_sg(sgl, sg, nents, i) {
-		av8l_fast_map(ops, iova, sg_phys(sg), sg->length, prot);
+		av8l_fast_map(ops, iova, sg_phys(sg), sg->length, prot,
+			      GFP_ATOMIC);
 		iova += sg->length;
 	}
 
@@ -552,6 +553,7 @@ av8l_fast_alloc_pgtable(struct io_pgtable_cfg *cfg, void *cookie)
 	u64 reg;
 	struct av8l_fast_io_pgtable *data =
 		av8l_fast_alloc_pgtable_data(cfg);
+	typeof(&cfg->arm_lpae_s1_cfg.tcr) tcr = &cfg->arm_lpae_s1_cfg.tcr;
 
 	if (!data)
 		return NULL;
@@ -561,50 +563,46 @@ av8l_fast_alloc_pgtable(struct io_pgtable_cfg *cfg, void *cookie)
 	cfg->pgsize_bitmap = SZ_4K;
 
 	/* TCR */
-	if (cfg->quirks & IO_PGTABLE_QUIRK_QCOM_USE_UPSTREAM_HINT)
-		reg = (AV8L_FAST_TCR_SH_OS << AV8L_FAST_TCR_SH0_SHIFT) |
-			(AV8L_FAST_TCR_RGN_NC << AV8L_FAST_TCR_IRGN0_SHIFT) |
-			(AV8L_FAST_TCR_RGN_WBWA << AV8L_FAST_TCR_ORGN0_SHIFT);
-	else if (cfg->coherent_walk)
-		reg = (AV8L_FAST_TCR_SH_OS << AV8L_FAST_TCR_SH0_SHIFT) |
-			(AV8L_FAST_TCR_RGN_WBWA << AV8L_FAST_TCR_IRGN0_SHIFT) |
-			(AV8L_FAST_TCR_RGN_WBWA << AV8L_FAST_TCR_ORGN0_SHIFT);
-	else
-		reg = (AV8L_FAST_TCR_SH_OS << AV8L_FAST_TCR_SH0_SHIFT) |
-			(AV8L_FAST_TCR_RGN_NC << AV8L_FAST_TCR_IRGN0_SHIFT) |
-			(AV8L_FAST_TCR_RGN_NC << AV8L_FAST_TCR_ORGN0_SHIFT);
+	if (cfg->quirks & IO_PGTABLE_QUIRK_QCOM_USE_UPSTREAM_HINT) {
+		tcr->sh = AV8L_FAST_TCR_SH_OS;
+		tcr->irgn = AV8L_FAST_TCR_RGN_NC;
+		tcr->orgn = AV8L_FAST_TCR_RGN_WBWA;
+	} else if (cfg->coherent_walk) {
+		tcr->sh = AV8L_FAST_TCR_SH_OS;
+		tcr->irgn = AV8L_FAST_TCR_RGN_WBWA;
+		tcr->orgn = AV8L_FAST_TCR_RGN_WBWA;
+	} else {
+		tcr->sh = AV8L_FAST_TCR_SH_OS;
+		tcr->irgn = AV8L_FAST_TCR_RGN_NC;
+		tcr->orgn = AV8L_FAST_TCR_RGN_NC;
+	}
 
-	reg |= AV8L_FAST_TCR_TG0_4K;
+	tcr->tg = AV8L_FAST_TCR_TG0_4K;
 
 	switch (cfg->oas) {
 	case 32:
-		reg |= (AV8L_FAST_TCR_PS_32_BIT << AV8L_FAST_TCR_IPS_SHIFT);
+		tcr->ips = AV8L_FAST_TCR_PS_32_BIT;
 		break;
 	case 36:
-		reg |= (AV8L_FAST_TCR_PS_36_BIT << AV8L_FAST_TCR_IPS_SHIFT);
+		tcr->ips = AV8L_FAST_TCR_PS_36_BIT;
 		break;
 	case 40:
-		reg |= (AV8L_FAST_TCR_PS_40_BIT << AV8L_FAST_TCR_IPS_SHIFT);
+		tcr->ips = AV8L_FAST_TCR_PS_40_BIT;
 		break;
 	case 42:
-		reg |= (AV8L_FAST_TCR_PS_42_BIT << AV8L_FAST_TCR_IPS_SHIFT);
+		tcr->ips = AV8L_FAST_TCR_PS_42_BIT;
 		break;
 	case 44:
-		reg |= (AV8L_FAST_TCR_PS_44_BIT << AV8L_FAST_TCR_IPS_SHIFT);
+		tcr->ips = AV8L_FAST_TCR_PS_44_BIT;
 		break;
 	case 48:
-		reg |= (AV8L_FAST_TCR_PS_48_BIT << AV8L_FAST_TCR_IPS_SHIFT);
+		tcr->ips = AV8L_FAST_TCR_PS_48_BIT;
 		break;
 	default:
 		goto out_free_data;
 	}
 
-	reg |= (64ULL - cfg->ias) << AV8L_FAST_TCR_T0SZ_SHIFT;
-	reg |= AV8L_FAST_TCR_EPD1_FAULT << AV8L_FAST_TCR_EPD1_SHIFT;
-#if defined(CONFIG_ARM)
-	reg |= ARM_32_LPAE_TCR_EAE;
-#endif
-	cfg->arm_lpae_s1_cfg.tcr = reg;
+	tcr->tsz = 64ULL - cfg->ias;
 
 	/* MAIRs */
 	reg = (AV8L_FAST_MAIR_ATTR_NC
@@ -616,16 +614,14 @@ av8l_fast_alloc_pgtable(struct io_pgtable_cfg *cfg, void *cookie)
 	      (AV8L_FAST_MAIR_ATTR_UPSTREAM
 	       << AV8L_FAST_MAIR_ATTR_SHIFT(AV8L_FAST_MAIR_ATTR_IDX_UPSTREAM));
 
-	cfg->arm_lpae_s1_cfg.mair[0] = reg;
-	cfg->arm_lpae_s1_cfg.mair[1] = 0;
+	cfg->arm_lpae_s1_cfg.mair = reg;
 
 	/* Allocate all page table memory! */
 	if (av8l_fast_prepopulate_pgtables(data, cfg, cookie))
 		goto out_free_data;
 
-	/* TTBRs */
-	cfg->arm_lpae_s1_cfg.ttbr[0] = virt_to_phys(data->pgd);
-	cfg->arm_lpae_s1_cfg.ttbr[1] = 0;
+	/* TTBR */
+	cfg->arm_lpae_s1_cfg.ttbr = virt_to_phys(data->pgd);
 	return &data->iop;
 
 out_free_data:
@@ -653,7 +649,7 @@ struct io_pgtable_init_fns io_pgtable_av8l_fast_init_fns = {
 
 #ifdef CONFIG_IOMMU_IO_PGTABLE_FAST_SELFTEST
 
-#include <linux/dma-contiguous.h>
+#include <linux/dma-map-ops.h>
 
 static struct io_pgtable_cfg *cfg_cookie;
 
@@ -677,7 +673,6 @@ static void dummy_tlb_add_page(struct iommu_iotlb_gather *gather,
 static struct iommu_flush_ops dummy_tlb_ops __initdata = {
 	.tlb_flush_all	= dummy_tlb_flush_all,
 	.tlb_flush_walk	= dummy_tlb_flush,
-	.tlb_flush_leaf	= dummy_tlb_flush,
 	.tlb_add_page	= dummy_tlb_add_page,
 };
 
@@ -737,7 +732,7 @@ static int __init av8l_fast_positive_testing(void)
 
 	/* map the entire 4GB VA space with 4K map calls */
 	for (iova = base; iova < max; iova += SZ_4K) {
-		if (WARN_ON(ops->map(ops, iova, iova, SZ_4K, IOMMU_READ))) {
+		if (WARN_ON(ops->map(ops, iova, iova, SZ_4K, IOMMU_READ, GFP_KERNEL))) {
 			failed++;
 			continue;
 		}
@@ -757,7 +752,7 @@ static int __init av8l_fast_positive_testing(void)
 
 	/* map the entire 4GB VA space with 8K map calls */
 	for (iova = base; iova < max; iova += SZ_8K) {
-		if (WARN_ON(ops->map(ops, iova, iova, SZ_8K, IOMMU_READ))) {
+		if (WARN_ON(ops->map(ops, iova, iova, SZ_8K, IOMMU_READ, GFP_KERNEL))) {
 			failed++;
 			continue;
 		}
@@ -778,7 +773,7 @@ static int __init av8l_fast_positive_testing(void)
 
 	/* map the entire 4GB VA space with 16K map calls */
 	for (iova = base; iova < max; iova += SZ_16K) {
-		if (WARN_ON(ops->map(ops, iova, iova, SZ_16K, IOMMU_READ))) {
+		if (WARN_ON(ops->map(ops, iova, iova, SZ_16K, IOMMU_READ, GFP_KERNEL))) {
 			failed++;
 			continue;
 		}
@@ -799,7 +794,7 @@ static int __init av8l_fast_positive_testing(void)
 
 	/* map the entire 4GB VA space with 64K map calls */
 	for (iova = base; iova < max; iova += SZ_64K) {
-		if (WARN_ON(ops->map(ops, iova, iova, SZ_64K, IOMMU_READ))) {
+		if (WARN_ON(ops->map(ops, iova, iova, SZ_64K, IOMMU_READ, GFP_KERNEL))) {
 			failed++;
 			continue;
 		}

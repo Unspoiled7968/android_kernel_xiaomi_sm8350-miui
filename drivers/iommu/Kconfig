@@ -590,7 +590,7 @@ if IOMMU_DEBUG
 config IOMMU_TESTS
 	bool "Interactive IOMMU performance/functional tests"
 	select IOMMU_API
-	select ARM64_PTDUMP_CORE
+	select PTDUMP_CORE
 	help
 	  Enables a suite of IOMMU unit tests.  The tests are runnable
 	  through debugfs. The impact of enabling this option to overall

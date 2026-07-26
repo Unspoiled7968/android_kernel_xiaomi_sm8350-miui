@@ -3,10 +3,9 @@
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
  */
 
-#include <linux/dma-contiguous.h>
+#include <linux/dma-map-ops.h>
 #include <linux/dma-mapping.h>
 #include <linux/dma-mapping-fast.h>
-#include <linux/dma-noncoherent.h>
 #include <linux/io-pgtable-fast.h>
 #include <linux/vmalloc.h>
 #include <asm/cacheflush.h>
@@ -31,30 +30,28 @@ static pgprot_t __get_dma_pgprot(unsigned long attrs, pgprot_t prot,
 	return prot;
 }
 
-static struct gen_pool *fast_atomic_pool __ro_after_init;
-
-static int __init fast_smmu_dma_init(void)
+/*
+ * 5.10 no longer exposes a private atomic pool constructor
+ * (__dma_atomic_pool_init()/__dma_alloc_from_pool()); use the generic
+ * coherent pool instead (CONFIG_DMA_COHERENT_POOL, selected by
+ * DMA_DIRECT_REMAP on arm64).
+ */
+static void *fast_dma_alloc_from_pool(struct device *dev, size_t size,
+				      struct page **ret_page, gfp_t flags)
 {
-	struct gen_pool *pool = __dma_atomic_pool_init();
+	void *addr = NULL;
 
-	if (!IS_ERR(pool)) {
-		fast_atomic_pool = pool;
-		return 0;
-	}
+	*ret_page = dma_alloc_from_pool(dev, size, &addr, flags, NULL);
+	if (!*ret_page)
+		return NULL;
 
-	return PTR_ERR(pool);
-}
-arch_initcall(fast_smmu_dma_init);
-
-static void *fast_dma_alloc_from_pool(size_t size, struct page **ret_page,
-				      gfp_t flags)
-{
-	return __dma_alloc_from_pool(fast_atomic_pool, size, ret_page, flags);
+	return addr;
 }
 
-static bool fast_dma_free_from_pool(void *start, size_t size)
+static bool fast_dma_free_from_pool(struct device *dev, void *start,
+				    size_t size)
 {
-	return __dma_free_from_pool(fast_atomic_pool, start, size);
+	return dma_free_from_pool(dev, start, size);
 }
 
 static bool is_dma_coherent(struct device *dev, unsigned long attrs)
@@ -418,7 +415,8 @@ static void *fast_smmu_alloc_atomic(struct dma_fast_smmu_mapping *mapping,
 		page = alloc_pages(gfp, get_order(size));
 		addr = page ? page_address(page) : NULL;
 	} else
-		addr = fast_dma_alloc_from_pool(size, &page, gfp);
+		addr = fast_dma_alloc_from_pool(mapping->dev, size, &page,
+						gfp);
 	if (!addr)
 		return NULL;
 
@@ -445,7 +443,7 @@ out_free_page:
 	if (coherent)
 		__free_pages(page, get_order(size));
 	else
-		fast_dma_free_from_pool(addr, size);
+		fast_dma_free_from_pool(mapping->dev, addr, size);
 	return NULL;
 }
 
@@ -657,7 +655,7 @@ static void fast_smmu_free(struct device *dev, size_t size,
 	__fast_smmu_free_iova(mapping, dma_handle, size);
 	spin_unlock_irqrestore(&mapping->lock, flags);
 
-	if (fast_dma_free_from_pool(cpu_addr, size))
+	if (fast_dma_free_from_pool(dev, cpu_addr, size))
 		return;
 
 	if (is_vmalloc_addr(cpu_addr)) {

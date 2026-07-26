@@ -649,7 +649,11 @@ static int glink_pkt_init_rpmsg(struct glink_pkt_device *gpdev)
 	struct rpmsg_device_id *match;
 	char *drv_name;
 
-	match = devm_kzalloc(dev, sizeof(*match), GFP_KERNEL);
+	/*
+	 * rpmsg_dev_match() walks the id_table until it hits an entry with an
+	 * empty name, so the array must have a NULL terminator entry.
+	 */
+	match = devm_kzalloc(dev, sizeof(*match) * 2, GFP_KERNEL);
 	if (!match)
 		return -ENOMEM;
 	strlcpy(match->name, gpdev->ch_name, RPMSG_NAME_SIZE);

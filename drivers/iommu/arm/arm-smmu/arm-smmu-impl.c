@@ -217,10 +217,19 @@ struct arm_smmu_device *arm_smmu_impl_init(struct arm_smmu_device *smmu)
 	if (of_device_is_compatible(np, "nvidia,tegra194-smmu"))
 		return nvidia_smmu_impl_init(smmu);
 
+	/*
+	 * "qcom,qsmmu-v500" is the QTI MMU-500 integration used by
+	 * lahaina/shima/direwolf etc. Those device trees carry
+	 * "qcom,skip-init", meaning the bootloader has already programmed
+	 * stream mappings that must survive the Linux reset. The qcom impl
+	 * snapshots and pins the existing SMR/S2CR state, which is the 5.10
+	 * equivalent of that behaviour.
+	 */
 	if (of_device_is_compatible(np, "qcom,sdm845-smmu-500") ||
 	    of_device_is_compatible(np, "qcom,sc7180-smmu-500") ||
 	    of_device_is_compatible(np, "qcom,sm8150-smmu-500") ||
-	    of_device_is_compatible(np, "qcom,sm8250-smmu-500"))
+	    of_device_is_compatible(np, "qcom,sm8250-smmu-500") ||
+	    of_device_is_compatible(np, "qcom,qsmmu-v500"))
 		return qcom_smmu_impl_init(smmu);
 
 	if (of_device_is_compatible(smmu->dev->of_node, "qcom,adreno-smmu"))

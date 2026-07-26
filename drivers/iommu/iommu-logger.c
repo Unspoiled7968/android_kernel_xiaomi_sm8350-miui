@@ -56,7 +56,7 @@ static int iommu_logger_domain_ttbrs(struct io_pgtable *iop, void **ttbr0_ptr,
 				     void **ttbr1_ptr)
 {
 	int ret;
-	u64 ttbr0, ttbr1;
+	u64 ttbr0;
 
 	switch (iop->fmt) {
 	case ARM_32_LPAE_S1:
@@ -64,8 +64,7 @@ static int iommu_logger_domain_ttbrs(struct io_pgtable *iop, void **ttbr0_ptr,
 #ifdef CONFIG_IOMMU_IO_PGTABLE_FAST
 	case ARM_V8L_FAST:
 #endif
-		ttbr0 = iop->cfg.arm_lpae_s1_cfg.ttbr[0];
-		ttbr1 = iop->cfg.arm_lpae_s1_cfg.ttbr[1];
+		ttbr0 = iop->cfg.arm_lpae_s1_cfg.ttbr;
 		ret = 0;
 		break;
 	default:
@@ -74,7 +73,12 @@ static int iommu_logger_domain_ttbrs(struct io_pgtable *iop, void **ttbr0_ptr,
 
 	if (!ret) {
 		*ttbr0_ptr = phys_to_virt(ttbr0);
-		*ttbr1_ptr = ttbr1 ? phys_to_virt(ttbr1) : NULL;
+		/*
+		 * struct arm_lpae_s1_cfg no longer carries a second TTBR in
+		 * 5.10 (split-table support lives in the pgtable driver), so
+		 * there is nothing to report here.
+		 */
+		*ttbr1_ptr = NULL;
 	}
 
 	return ret;
@@ -111,7 +115,7 @@ static struct iommu_debug_attachment *iommu_logger_init(
 		return ERR_PTR(-ENOMEM);
 	}
 
-	group = iommu_group_get_for_dev(dev);
+	group = iommu_group_get(dev);
 	iommu_group_put(group);
 
 	INIT_LIST_HEAD(&logger->list);

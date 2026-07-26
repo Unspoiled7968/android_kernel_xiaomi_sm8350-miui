@@ -36,6 +36,7 @@
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/ratelimit.h>
+#include <linux/regulator/consumer.h>
 #include <linux/slab.h>
 
 #include <linux/amba/bus.h>
@@ -1951,6 +1952,14 @@ static const struct of_device_id arm_smmu_of_match[] = {
 	{ .compatible = "cavium,smmu-v2", .data = &cavium_smmuv2 },
 	{ .compatible = "nvidia,smmu-500", .data = &arm_mmu500 },
 	{ .compatible = "qcom,smmu-v2", .data = &qcom_smmuv2 },
+	/*
+	 * QTI "QSMMUv500" (lahaina/shima/direwolf apps_smmu, kgsl_smmu, ...)
+	 * is an MMU-500 with QTI-specific TBU/TCU debug blocks described as
+	 * child nodes ("qcom,qsmmuv500-tbu"). The child nodes are not
+	 * populated here, so the core MMU-500 support is all that is needed
+	 * for the SMMU itself to probe and translate.
+	 */
+	{ .compatible = "qcom,qsmmu-v500", .data = &arm_mmu500 },
 	{ },
 };
 MODULE_DEVICE_TABLE(of, arm_smmu_of_match);
@@ -2104,6 +2113,44 @@ err_reset_platform_ops: __maybe_unused;
 	return err;
 }
 
+/*
+ * QTI device trees describe the power resources an SMMU needs with a
+ * "qcom,regulator-names" string list plus matching <name>-supply phandles
+ * (for example the GPU SMMU on lahaina needs gpu_cc_cx_gdsc). Without those
+ * enabled, reading the SMMU ID registers below faults the AP. Vote for them
+ * for the lifetime of the device - this mirrors the downstream
+ * ARM_SMMU_POWER_ALWAYS_ON behaviour and is enough to let the SMMU probe.
+ */
+static int arm_smmu_qcom_power_on(struct device *dev)
+{
+	struct regulator_bulk_data *consumers;
+	int num_consumers, i, ret;
+
+	num_consumers = of_property_count_strings(dev->of_node,
+						  "qcom,regulator-names");
+	if (num_consumers <= 0)
+		return 0;
+
+	consumers = devm_kcalloc(dev, num_consumers, sizeof(*consumers),
+				 GFP_KERNEL);
+	if (!consumers)
+		return -ENOMEM;
+
+	for (i = 0; i < num_consumers; i++) {
+		ret = of_property_read_string_index(dev->of_node,
+						    "qcom,regulator-names", i,
+						    &consumers[i].supply);
+		if (ret)
+			return ret;
+	}
+
+	ret = devm_regulator_bulk_get(dev, num_consumers, consumers);
+	if (ret)
+		return ret;
+
+	return regulator_bulk_enable(num_consumers, consumers);
+}
+
 static int arm_smmu_device_probe(struct platform_device *pdev)
 {
 	struct resource *res;
@@ -2127,6 +2174,11 @@ static int arm_smmu_device_probe(struct platform_device *pdev)
 
 	if (err)
 		return err;
+
+	err = arm_smmu_qcom_power_on(dev);
+	if (err)
+		return dev_err_probe(dev, err,
+				     "failed to enable SMMU power resources\n");
 
 	smmu->base = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(smmu->base))

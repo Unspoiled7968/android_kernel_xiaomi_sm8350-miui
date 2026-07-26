@@ -22,6 +22,10 @@ static int qcom_sdm845_smmu500_cfg_probe(struct arm_smmu_device *smmu)
 	u32 smr;
 	int i;
 
+	/* Nothing to snapshot on a stream-indexing (no SMR) implementation */
+	if (!smmu->smrs)
+		return 0;
+
 	for (i = 0; i < smmu->num_mapping_groups; i++) {
 		smr = arm_smmu_gr0_read(smmu, ARM_SMMU_GR0_SMR(i));
 		s2cr = arm_smmu_gr0_read(smmu, ARM_SMMU_GR0_S2CR(i));

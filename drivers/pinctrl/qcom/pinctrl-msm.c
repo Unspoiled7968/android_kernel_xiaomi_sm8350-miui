@@ -1581,7 +1581,6 @@ static int msm_gpio_init(struct msm_pinctrl *pctrl)
 	girq->parent_handler = msm_gpio_irq_handler;
 	girq->fwnode = pctrl->dev->fwnode;
 	girq->num_parents = 1;
-	girq->fwnode = pctrl->dev->fwnode;
 	girq->parents = devm_kcalloc(pctrl->dev, 1, sizeof(*girq->parents),
 				     GFP_KERNEL);
 	if (!girq->parents)
@@ -1761,6 +1760,9 @@ int msm_gpio_mpm_wake_set(unsigned int gpio, bool enable)
 	const struct msm_pingroup *g;
 	unsigned long flags;
 	u32 val;
+
+	if (!msm_pinctrl_data || gpio >= msm_pinctrl_data->soc->ngpios)
+		return -EINVAL;
 
 	g = &msm_pinctrl_data->soc->groups[gpio];
 	if (g->wake_bit == -1)

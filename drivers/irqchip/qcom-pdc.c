@@ -26,7 +26,6 @@
 #define PDC_MAX_IRQS		168
 #define PDC_IPC_LOG_SZ		2
 
-#define PDC_MAX_IRQS		168
 #define PDC_MAX_GPIO_IRQS	256
 
 #define CLEAR_INTR(reg, intr)	(reg & ~(1 << intr))
@@ -221,12 +220,18 @@ enum pdc_irq_config_bits {
 static int qcom_pdc_gic_set_type(struct irq_data *d, unsigned int type)
 {
 	int pin_out = d->hwirq;
-	int parent_hwirq = d->parent_data->hwirq;
+	int parent_hwirq;
 	enum pdc_irq_config_bits pdc_type;
 	int ret;
 
-	if (pin_out == GPIO_NO_WAKE_IRQ)
+	/*
+	 * The hierarchy is trimmed (irq_domain_disconnect_hierarchy()) for
+	 * GPIOs that have no PDC mapping, so d->parent_data is NULL there.
+	 */
+	if (pin_out == GPIO_NO_WAKE_IRQ || !d->parent_data)
 		return 0;
+
+	parent_hwirq = d->parent_data->hwirq;
 
 	switch (type) {
 	case IRQ_TYPE_EDGE_RISING:
@@ -257,13 +262,6 @@ static int qcom_pdc_gic_set_type(struct irq_data *d, unsigned int type)
 		       pin_out, pdc_type, type);
 
 	/* Additionally, configure (only) the GPIO in the f/w */
-	if (irq_domain_qcom_handle_wakeup(d->domain)) {
-		ret = spi_configure_type(parent_hwirq, type);
-		if (ret)
-			return ret;
-	}
-
-	/* Additionally, configure (only) the GPIO in the f/w */
 	ret = spi_configure_type(parent_hwirq, type);
 	if (ret)
 		return ret;
@@ -284,7 +282,8 @@ static struct irq_chip qcom_pdc_gic_chip = {
 	.irq_set_type		= qcom_pdc_gic_set_type,
 	.flags			= IRQCHIP_MASK_ON_SUSPEND |
 				  IRQCHIP_SET_TYPE_MASKED |
-				  IRQCHIP_SKIP_SET_WAKE,
+				  IRQCHIP_SKIP_SET_WAKE |
+				  IRQCHIP_ENABLE_WAKEUP_ON_SUSPEND,
 	.irq_set_vcpu_affinity	= irq_chip_set_vcpu_affinity_parent,
 	.irq_set_affinity	= irq_chip_set_affinity_parent,
 };
@@ -339,7 +338,7 @@ static int qcom_pdc_alloc(struct irq_domain *domain, unsigned int virq,
 
 	parent_hwirq = get_parent_hwirq(hwirq);
 	if (parent_hwirq == PDC_NO_PARENT_IRQ)
-		return 0;
+		return irq_domain_disconnect_hierarchy(domain->parent, virq);
 
 	if (type & IRQ_TYPE_EDGE_BOTH)
 		type = IRQ_TYPE_EDGE_RISING;
@@ -378,17 +377,17 @@ static int qcom_pdc_gpio_alloc(struct irq_domain *domain, unsigned int virq,
 	if (ret)
 		return ret;
 
+	if (hwirq == GPIO_NO_WAKE_IRQ)
+		return irq_domain_disconnect_hierarchy(domain, virq);
+
 	ret = irq_domain_set_hwirq_and_chip(domain, virq, hwirq,
 					    &qcom_pdc_gic_chip, NULL);
 	if (ret)
 		return ret;
 
-	if (hwirq == GPIO_NO_WAKE_IRQ)
-		return 0;
-
 	parent_hwirq = get_parent_hwirq(hwirq);
 	if (parent_hwirq == PDC_NO_PARENT_IRQ)
-		return 0;
+		return irq_domain_disconnect_hierarchy(domain->parent, virq);
 
 	if (type & IRQ_TYPE_EDGE_BOTH)
 		type = IRQ_TYPE_EDGE_RISING;

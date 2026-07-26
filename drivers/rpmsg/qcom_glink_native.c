@@ -710,7 +710,7 @@ static void qcom_glink_receive_version(struct qcom_glink *glink,
 		break;
 	case GLINK_VERSION_1:
 		glink->features &= features;
-		/* FALLTHROUGH */
+		fallthrough;
 	default:
 		qcom_glink_send_version_ack(glink);
 		break;
@@ -743,7 +743,7 @@ static void qcom_glink_receive_version_ack(struct qcom_glink *glink,
 			break;
 
 		glink->features &= features;
-		/* FALLTHROUGH */
+		fallthrough;
 	default:
 		qcom_glink_send_version(glink);
 		break;
@@ -2000,10 +2000,18 @@ static void qcom_glink_work(struct work_struct *work)
 static ssize_t rpmsg_name_show(struct device *dev,
 			       struct device_attribute *attr, char *buf)
 {
-	struct rpmsg_device *rpdev = to_rpmsg_device(dev);
-	struct glink_channel *channel = to_glink_channel(rpdev->ept);
+	const char *name;
+	int ret;
 
-	return snprintf(buf, RPMSG_NAME_SIZE, "%s\n", channel->glink->name);
+	/*
+	 * This group is attached to the transport's platform device, not to an
+	 * rpmsg_device, so the name has to come from the device tree node.
+	 */
+	ret = of_property_read_string(dev->of_node, "label", &name);
+	if (ret < 0)
+		name = dev->of_node->name;
+
+	return snprintf(buf, RPMSG_NAME_SIZE, "%s\n", name);
 }
 static DEVICE_ATTR_RO(rpmsg_name);
 
@@ -2020,6 +2028,7 @@ static void qcom_glink_device_release(struct device *dev)
 
 	/* Release qcom_glink_alloc_channel() reference */
 	kref_put(&channel->refcount, qcom_glink_channel_release);
+	kfree(rpdev->driver_override);
 	kfree(rpdev);
 }
 
@@ -2115,6 +2124,14 @@ struct qcom_glink *qcom_glink_native_probe(struct device *dev,
 
 	glink->dev = dev;
 	glink->dev->groups = qcom_glink_groups;
+
+	/*
+	 * @dev is already registered by the time we get here, so assigning
+	 * dev->groups has no effect - add the group explicitly.
+	 */
+	ret = device_add_groups(dev, qcom_glink_groups);
+	if (ret)
+		dev_err(dev, "failed to add groups\n");
 
 	glink->tx_pipe = tx;
 	glink->rx_pipe = rx;
