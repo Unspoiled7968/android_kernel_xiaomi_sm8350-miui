@@ -9888,14 +9888,9 @@ static inline void hdd_pm_qos_update_cpu_mask(cpumask_t *mask,
 	}
 }
 
-#ifdef MSM_PLATFORM
-#define COPY_CPU_MASK(a, b) cpumask_copy(a, b)
-#define DUMP_CPU_AFFINE() hdd_info("Set cpu_mask %*pb for affine_cores", \
-			  cpumask_pr_args(&hdd_ctx->pm_qos_req.cpus_affine))
-#else
+/* struct pm_qos_request lost cpus_affine in 5.10 */
 #define COPY_CPU_MASK(a, b) /* no-op*/
 #define DUMP_CPU_AFFINE() /* no-op*/
-#endif
 
 #ifdef CLD_DEV_PM_QOS
 /**
@@ -10003,9 +9998,7 @@ static inline void hdd_pm_qos_update_request(struct hdd_context *hdd_ctx,
  */
 static inline void hdd_set_default_pm_qos_mask(struct hdd_context *hdd_ctx)
 {
-	hdd_ctx->pm_qos_req.type = PM_QOS_REQ_AFFINE_CORES;
-	qdf_cpumask_clear(&hdd_ctx->pm_qos_req.cpus_affine);
-	hdd_pm_qos_update_cpu_mask(&hdd_ctx->pm_qos_req.cpus_affine, false);
+	/* 5.10 dropped per-request CPU affinity from struct pm_qos_request */
 }
 #else
 static inline void hdd_set_default_pm_qos_mask(struct hdd_context *hdd_ctx)
@@ -10016,7 +10009,8 @@ static inline void hdd_set_default_pm_qos_mask(struct hdd_context *hdd_ctx)
 static inline void hdd_cpu_latency_qos_add_request(struct hdd_context *hdd_ctx)
 {
 	hdd_set_default_pm_qos_mask(hdd_ctx);
-	pm_qos_add_request(&hdd_ctx->pm_qos_req, PM_QOS_DEFAULT_VALUE);
+	cpu_latency_qos_add_request(&hdd_ctx->pm_qos_req,
+				    PM_QOS_DEFAULT_VALUE);
 	DUMP_CPU_AFFINE();
 }
 

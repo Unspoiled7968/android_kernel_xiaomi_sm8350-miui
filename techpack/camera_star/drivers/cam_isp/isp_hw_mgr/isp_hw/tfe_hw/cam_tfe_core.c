@@ -175,9 +175,9 @@ int cam_tfe_get_hw_caps(void *hw_priv, void *get_hw_cap_args,
 
 void cam_tfe_get_timestamp(struct cam_isp_timestamp *time_stamp)
 {
-	struct timespec ts;
+	struct timespec64 ts;
 
-	ts = ktime_to_timespec(ktime_get_boottime());
+	ts = ktime_to_timespec64(ktime_get_boottime());
 	time_stamp->mono_time.tv_sec    = ts.tv_sec;
 	time_stamp->mono_time.tv_usec   = ts.tv_nsec/1000;
 }

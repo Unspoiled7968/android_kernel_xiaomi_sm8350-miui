@@ -2126,7 +2126,7 @@ static int iris_hfi_core_release(void *dev)
 	mutex_lock(&device->lock);
 	dprintk(CVP_WARN, "Core releasing\n");
 	if (device->res->pm_qos_latency_us &&
-		pm_qos_request_active(&device->qos))
+		cpu_latency_qos_request_active(&device->qos))
 		cpu_latency_qos_remove_request(&device->qos);
 
 	__resume(device);
@@ -4103,7 +4103,7 @@ static inline int __suspend(struct iris_hfi_device *device)
 	dprintk(CVP_PWR, "Entering suspend\n");
 
 	if (device->res->pm_qos_latency_us &&
-		pm_qos_request_active(&device->qos))
+		cpu_latency_qos_request_active(&device->qos))
 		cpu_latency_qos_remove_request(&device->qos);
 
 	rc = __tzbsp_set_cvp_state(TZ_SUBSYS_STATE_SUSPEND);
