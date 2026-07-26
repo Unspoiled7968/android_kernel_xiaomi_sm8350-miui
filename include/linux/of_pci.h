@@ -17,6 +17,14 @@ struct device_node *of_pci_find_child_device(struct device_node *parent,
 #endif
 int of_pci_get_devfn(struct device_node *np);
 void of_pci_check_probe_only(void);
+
+/*
+ * 5.10 made this static in drivers/pci/of.c; the CAF pci-msm host controller
+ * parses its own ranges with it, so keep it visible.
+ */
+int devm_of_pci_get_host_bridge_resources(struct device *dev,
+			unsigned char busno, unsigned char bus_max,
+			struct list_head *resources, resource_size_t *io_base);
 #else
 #ifdef CONFIG_PCI_QTI
 static inline struct device_node *of_pci_find_child_device(struct pci_dev *dev)

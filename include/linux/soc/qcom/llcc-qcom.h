@@ -202,4 +202,14 @@ static inline int llcc_slice_deactivate(struct llcc_slice_desc *desc)
 }
 #endif
 
+struct platform_device;
+
+/*
+ * Implemented by drivers/soc/qcom/llcc-qcom.c and used by the per-SoC
+ * llcc-<soc>.c drivers (lahaina, shima, yupik, direwolf, ...).
+ */
+int qcom_llcc_probe(struct platform_device *pdev,
+		    const struct llcc_slice_config *llcc_cfg, u32 sz);
+int qcom_llcc_remove(struct platform_device *pdev);
+
 #endif

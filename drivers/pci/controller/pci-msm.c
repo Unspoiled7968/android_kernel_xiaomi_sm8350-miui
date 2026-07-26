@@ -1352,7 +1352,7 @@ int msm_pcie_reg_dump(struct pci_dev *pci_dev, u8 *buff, u32 len)
 	if (!pci_dev)
 		return -EINVAL;
 
-	root_pci_dev = pci_find_pcie_root_port(pci_dev);
+	root_pci_dev = pcie_find_root_port(pci_dev);
 	if (!root_pci_dev)
 		return -ENODEV;
 
@@ -5393,7 +5393,7 @@ static irqreturn_t handle_aer_irq(int irq, void *data)
 
 #ifdef CONFIG_PCI_QTI
 		/* Clear status bits for ERR_NONFATAL errors only */
-		pci_cleanup_aer_uncorrect_error_status(pcidev);
+		pci_aer_clear_nonfatal_status(pcidev);
 #endif
 	}
 out:
@@ -6738,7 +6738,7 @@ void msm_pcie_allow_l1(struct pci_dev *pci_dev)
 	struct pci_dev *root_pci_dev;
 	struct msm_pcie_dev_t *pcie_dev;
 
-	root_pci_dev = pci_find_pcie_root_port(pci_dev);
+	root_pci_dev = pcie_find_root_port(pci_dev);
 	if (!root_pci_dev)
 		return;
 
@@ -6787,7 +6787,7 @@ int msm_pcie_prevent_l1(struct pci_dev *pci_dev)
 	u32 cnt_max = 1000; /* 100ms timeout */
 	int ret = 0;
 
-	root_pci_dev = pci_find_pcie_root_port(pci_dev);
+	root_pci_dev = pcie_find_root_port(pci_dev);
 	if (!root_pci_dev)
 		return -ENODEV;
 
@@ -6926,7 +6926,7 @@ int msm_pcie_set_link_bandwidth(struct pci_dev *pci_dev, u16 target_link_speed,
 	if (!pci_dev)
 		return -EINVAL;
 
-	root_pci_dev = pci_find_pcie_root_port(pci_dev);
+	root_pci_dev = pcie_find_root_port(pci_dev);
 	if (!root_pci_dev)
 		return -ENODEV;
 
@@ -7040,7 +7040,7 @@ static int msm_pci_probe(struct pci_dev *pci_dev,
 	root_dev->pci_dev = pci_dev;
 	dev_set_drvdata(&pci_dev->dev, root_dev);
 
-	ret = dma_set_mask_and_coherent(&pci_dev->dev, DMA_BIT_MASK(64));
+	ret = dma_set_mask_and_coherent(&pci_dev->dev, ~0ULL);
 	if (ret) {
 		PCIE_ERR(pcie_dev, "DMA set mask failed (%d)\n", ret);
 		return ret;
