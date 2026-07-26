@@ -391,15 +391,11 @@ static void __init enumerate_scm_devices(struct dentry *parent)
 	if (IS_ERR_OR_NULL(dentry))
 		goto out;
 
-	dentry = debugfs_create_u32("sw_entity_group", 0644,
+	/* debugfs_create_u32() returns void as of 5.10 */
+	debugfs_create_u32("sw_entity_group", 0644,
 			data->dir, &data->sw_entity_group);
-	if (IS_ERR_OR_NULL(dentry))
-		goto out;
-
-	dentry = debugfs_create_u32("sw_event_group", 0644,
+	debugfs_create_u32("sw_event_group", 0644,
 			data->dir, &data->sw_event_group);
-	if (IS_ERR_OR_NULL(dentry))
-		goto out;
 
 	dentry = debugfs_create_file_unsafe("tag", 0444,
 			data->dir, data, &fops_tag);
@@ -430,7 +426,7 @@ static int __init remoteqdss_init(void)
 
 	/* Set up DMA */
 	arch_setup_dma_ops(&dma_dev, 0, U64_MAX, NULL, false);
-	ret = dma_coerce_mask_and_coherent(&dma_dev, DMA_BIT_MASK(64));
+	ret = dma_coerce_mask_and_coherent(&dma_dev, ~0ULL);
 	if (ret)
 		return ret;
 

@@ -1,6 +1,6 @@
 #include <linux/module.h>
 #include <linux/firmware.h>
-#include <linux/dma-contiguous.h>
+#include <linux/dma-map-ops.h>
 #include <cam_sensor_cmn_header.h>
 #include "cam_ois_core.h"
 #include "cam_ois_soc.h"

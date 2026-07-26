@@ -30,7 +30,7 @@
 #include <asm/pgalloc.h>
 #include <asm/pgtable.h>
 #include <linux/dma-mapping.h>
-#include <linux/dma-contiguous.h>
+#include <linux/dma-map-ops.h>
 
 #define DEFAULT_BLOCK_ORDER 2
 #define DEFAULT_ALLOC_TIMES 16384
