@@ -237,6 +237,9 @@ static int get_value(struct parse_opt_ctx_t *p,
 		return err;
 
 	case OPTION_CALLBACK:
+		if (opt->set)
+			*(bool *)opt->set = true;
+
 		if (unset)
 			return (*opt->callback)(opt, NULL, 1) ? (-1) : 0;
 		if (opt->flags & PARSE_OPT_NOARG)
@@ -634,9 +637,11 @@ int parse_options_subcommand(int argc, const char **argv, const struct option *o
 
 	/* build usage string if it's not provided */
 	if (subcommands && !usagestr[0]) {
+		int i;
+
 		astrcatf(&buf, "%s %s [<options>] {", subcmd_config.exec_name, argv[0]);
 
-		for (int i = 0; subcommands[i]; i++) {
+		for (i = 0; subcommands[i]; i++) {
 			if (i)
 				astrcat(&buf, "|");
 			astrcat(&buf, subcommands[i]);
@@ -662,7 +667,9 @@ int parse_options_subcommand(int argc, const char **argv, const struct option *o
 		exit(130);
 	case PARSE_OPT_LIST_SUBCMDS:
 		if (subcommands) {
-			for (int i = 0; subcommands[i]; i++)
+			int i;
+
+			for (i = 0; subcommands[i]; i++)
 				printf("%s ", subcommands[i]);
 		}
 		putchar('\n');

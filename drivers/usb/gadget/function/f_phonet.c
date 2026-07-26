@@ -48,7 +48,7 @@ struct f_phonet {
 	struct usb_ep			*in_ep, *out_ep;
 
 	struct usb_request		*in_req;
-	struct usb_request		*out_reqv[0];
+	struct usb_request		*out_reqv[];
 };
 
 static int phonet_rxq_size = 17;
@@ -212,7 +212,7 @@ static void pn_tx_complete(struct usb_ep *ep, struct usb_request *req)
 	case -ESHUTDOWN: /* disconnected */
 	case -ECONNRESET: /* disabled */
 		dev->stats.tx_aborted_errors++;
-		/* fall through */
+		fallthrough;
 	default:
 		dev->stats.tx_errors++;
 	}
@@ -330,6 +330,15 @@ static void pn_rx_complete(struct usb_ep *ep, struct usb_request *req)
 		if (unlikely(!skb))
 			break;
 
+		if (unlikely(skb_shinfo(skb)->nr_frags >= MAX_SKB_FRAGS)) {
+			/* Frame count from host exceeds frags[] capacity */
+			dev_kfree_skb_any(skb);
+			if (fp->rx.skb == skb)
+				fp->rx.skb = NULL;
+			dev->stats.rx_length_errors++;
+			break;
+		}
+
 		if (skb->len == 0) { /* First fragment */
 			skb->protocol = htons(ETH_P_PHONET);
 			skb_reset_mac_header(skb);
@@ -360,7 +369,7 @@ static void pn_rx_complete(struct usb_ep *ep, struct usb_request *req)
 	/* Do resubmit in these cases: */
 	case -EOVERFLOW: /* request buffer overflow */
 		dev->stats.rx_over_errors++;
-		/* fall through */
+		fallthrough;
 	default:
 		dev->stats.rx_errors++;
 		break;

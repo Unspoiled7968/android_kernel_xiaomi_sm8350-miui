@@ -46,7 +46,7 @@ extern struct iscsi_param *iscsi_find_param_from_key(char *, struct iscsi_param_
 extern int iscsi_extract_key_value(char *, char **, char **);
 extern int iscsi_update_param_value(struct iscsi_param *, char *);
 extern int iscsi_decode_text_input(u8, u8, char *, u32, struct iscsi_conn *);
-extern int iscsi_encode_text_output(u8, u8, char *, u32 *,
+extern int iscsi_encode_text_output(u8, u8, char *, u32 *, u32,
 			struct iscsi_param_list *, bool);
 extern int iscsi_check_negotiated_keys(struct iscsi_param_list *);
 extern void iscsi_set_connection_parameters(struct iscsi_conn_ops *,
@@ -93,9 +93,6 @@ extern void iscsi_set_session_parameters(struct iscsi_sess_ops *,
 #define OFMARKER			"OFMarker"
 #define IFMARKINT			"IFMarkInt"
 #define OFMARKINT			"OFMarkInt"
-#define X_EXTENSIONKEY			"X-com.sbei.version"
-#define X_EXTENSIONKEY_CISCO_NEW	"X-com.cisco.protocol"
-#define X_EXTENSIONKEY_CISCO_OLD	"X-com.cisco.iscsi.draft"
 
 /*
  * Parameter names of iSCSI Extentions for RDMA (iSER).  See RFC-5046

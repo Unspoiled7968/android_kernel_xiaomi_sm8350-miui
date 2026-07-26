@@ -46,7 +46,10 @@ static int amd_gpio_get_direction(struct gpio_chip *gc, unsigned offset)
 	pin_reg = readl(gpio_dev->base + offset * 4);
 	raw_spin_unlock_irqrestore(&gpio_dev->lock, flags);
 
-	return !(pin_reg & BIT(OUTPUT_ENABLE_OFF));
+	if (pin_reg & BIT(OUTPUT_ENABLE_OFF))
+		return GPIO_LINE_DIRECTION_OUT;
+
+	return GPIO_LINE_DIRECTION_IN;
 }
 
 static int amd_gpio_direction_input(struct gpio_chip *gc, unsigned offset)
@@ -411,21 +414,12 @@ static int amd_gpio_irq_set_type(struct irq_data *d, unsigned int type)
 {
 	int ret = 0;
 	u32 pin_reg, pin_reg_irq_en, mask;
-	unsigned long flags, irq_flags;
+	unsigned long flags;
 	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
 	struct amd_gpio *gpio_dev = gpiochip_get_data(gc);
 
 	raw_spin_lock_irqsave(&gpio_dev->lock, flags);
 	pin_reg = readl(gpio_dev->base + (d->hwirq)*4);
-
-	/* Ignore the settings coming from the client and
-	 * read the values from the ACPI tables
-	 * while setting the trigger type
-	 */
-
-	irq_flags = irq_get_trigger_type(d->irq);
-	if (irq_flags != IRQ_TYPE_NONE)
-		type = irq_flags;
 
 	switch (type & IRQ_TYPE_SENSE_MASK) {
 	case IRQ_TYPE_EDGE_RISING:
@@ -906,7 +900,7 @@ static int amd_gpio_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	gpio_dev->base = devm_ioremap_nocache(&pdev->dev, res->start,
+	gpio_dev->base = devm_ioremap(&pdev->dev, res->start,
 						resource_size(res));
 	if (!gpio_dev->base)
 		return -ENOMEM;
@@ -1003,6 +997,7 @@ static int amd_gpio_remove(struct platform_device *pdev)
 	return 0;
 }
 
+#ifdef CONFIG_ACPI
 static const struct acpi_device_id amd_gpio_acpi_match[] = {
 	{ "AMD0030", 0 },
 	{ "AMDI0030", 0},
@@ -1010,6 +1005,7 @@ static const struct acpi_device_id amd_gpio_acpi_match[] = {
 	{ },
 };
 MODULE_DEVICE_TABLE(acpi, amd_gpio_acpi_match);
+#endif
 
 static struct platform_driver amd_gpio_driver = {
 	.driver		= {

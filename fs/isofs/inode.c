@@ -545,43 +545,41 @@ static int isofs_show_options(struct seq_file *m, struct dentry *root)
 
 static unsigned int isofs_get_last_session(struct super_block *sb, s32 session)
 {
-	struct cdrom_multisession ms_info;
-	unsigned int vol_desc_start;
-	struct block_device *bdev = sb->s_bdev;
-	int i;
+	struct cdrom_device_info *cdi = disk_to_cdi(sb->s_bdev->bd_disk);
+	unsigned int vol_desc_start = 0;
 
-	vol_desc_start=0;
-	ms_info.addr_format=CDROM_LBA;
 	if (session > 0) {
-		struct cdrom_tocentry Te;
-		Te.cdte_track=session;
-		Te.cdte_format=CDROM_LBA;
-		i = ioctl_by_bdev(bdev, CDROMREADTOCENTRY, (unsigned long) &Te);
-		if (!i) {
+		struct cdrom_tocentry te;
+
+		if (!cdi)
+			return 0;
+
+		te.cdte_track = session;
+		te.cdte_format = CDROM_LBA;
+		if (cdrom_read_tocentry(cdi, &te) == 0) {
 			printk(KERN_DEBUG "ISOFS: Session %d start %d type %d\n",
-				session, Te.cdte_addr.lba,
-				Te.cdte_ctrl&CDROM_DATA_TRACK);
-			if ((Te.cdte_ctrl&CDROM_DATA_TRACK) == 4)
-				return Te.cdte_addr.lba;
+				session, te.cdte_addr.lba,
+				te.cdte_ctrl & CDROM_DATA_TRACK);
+			if ((te.cdte_ctrl & CDROM_DATA_TRACK) == 4)
+				return te.cdte_addr.lba;
 		}
 
 		printk(KERN_ERR "ISOFS: Invalid session number or type of track\n");
 	}
-	i = ioctl_by_bdev(bdev, CDROMMULTISESSION, (unsigned long) &ms_info);
-	if (session > 0)
-		printk(KERN_ERR "ISOFS: Invalid session number\n");
-#if 0
-	printk(KERN_DEBUG "isofs.inode: CDROMMULTISESSION: rc=%d\n",i);
-	if (i==0) {
-		printk(KERN_DEBUG "isofs.inode: XA disk: %s\n",ms_info.xa_flag?"yes":"no");
-		printk(KERN_DEBUG "isofs.inode: vol_desc_start = %d\n", ms_info.addr.lba);
-	}
-#endif
-	if (i==0)
+
+	if (cdi) {
+		struct cdrom_multisession ms_info;
+
+		ms_info.addr_format = CDROM_LBA;
+		if (cdrom_multisession(cdi, &ms_info) == 0) {
 #if WE_OBEY_THE_WRITTEN_STANDARDS
-		if (ms_info.xa_flag) /* necessary for a valid ms_info.addr */
+			/* necessary for a valid ms_info.addr */
+			if (ms_info.xa_flag)
 #endif
-			vol_desc_start=ms_info.addr.lba;
+				vol_desc_start = ms_info.addr.lba;
+		}
+	}
+
 	return vol_desc_start;
 }
 
@@ -615,9 +613,6 @@ static bool rootdir_empty(struct super_block *sb, unsigned long block)
 
 /*
  * Initialize the superblock and read the root inode.
- *
- * Note: a check_disk_change() has been done immediately prior
- * to this call, so we don't need to check again.
  */
 static int isofs_fill_super(struct super_block *s, void *data, int silent)
 {
@@ -1056,8 +1051,7 @@ static int isofs_statfs (struct dentry *dentry, struct kstatfs *buf)
 	buf->f_bavail = 0;
 	buf->f_files = ISOFS_SB(sb)->s_ninodes;
 	buf->f_ffree = 0;
-	buf->f_fsid.val[0] = (u32)id;
-	buf->f_fsid.val[1] = (u32)(id >> 32);
+	buf->f_fsid = u64_to_fsid(id);
 	buf->f_namelen = NAME_MAX;
 	return 0;
 }
@@ -1198,10 +1192,9 @@ static int isofs_readpage(struct file *file, struct page *page)
 	return mpage_readpage(page, isofs_get_block);
 }
 
-static int isofs_readpages(struct file *file, struct address_space *mapping,
-			struct list_head *pages, unsigned nr_pages)
+static void isofs_readahead(struct readahead_control *rac)
 {
-	return mpage_readpages(mapping, pages, nr_pages, isofs_get_block);
+	mpage_readahead(rac, isofs_get_block);
 }
 
 static sector_t _isofs_bmap(struct address_space *mapping, sector_t block)
@@ -1211,7 +1204,7 @@ static sector_t _isofs_bmap(struct address_space *mapping, sector_t block)
 
 static const struct address_space_operations isofs_aops = {
 	.readpage = isofs_readpage,
-	.readpages = isofs_readpages,
+	.readahead = isofs_readahead,
 	.bmap = _isofs_bmap
 };
 
@@ -1499,9 +1492,16 @@ static int isofs_read_inode(struct inode *inode, int relocated)
 		inode->i_op = &page_symlink_inode_operations;
 		inode_nohighmem(inode);
 		inode->i_data.a_ops = &isofs_symlink_aops;
-	} else
+	} else if (S_ISCHR(inode->i_mode) || S_ISBLK(inode->i_mode) ||
+		   S_ISFIFO(inode->i_mode) || S_ISSOCK(inode->i_mode)) {
 		/* XXX - parse_rock_ridge_inode() had already set i_rdev. */
 		init_special_inode(inode, inode->i_mode, inode->i_rdev);
+	} else {
+		printk(KERN_DEBUG "ISOFS: Invalid file type 0%04o for inode %lu.\n",
+			inode->i_mode, inode->i_ino);
+		ret = -EIO;
+		goto fail;
+	}
 
 	ret = 0;
 out:
@@ -1633,3 +1633,4 @@ static void __exit exit_iso9660_fs(void)
 module_init(init_iso9660_fs)
 module_exit(exit_iso9660_fs)
 MODULE_LICENSE("GPL");
+MODULE_IMPORT_NS(ANDROID_GKI_VFS_EXPORT_ONLY);

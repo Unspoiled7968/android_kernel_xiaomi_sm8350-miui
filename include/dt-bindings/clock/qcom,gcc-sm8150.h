@@ -253,4 +253,8 @@
 #define GCC_VIDEO_AXI0_CLK_BCR				30
 #define GCC_VIDEO_AXI1_CLK_BCR				31
 
+/* GCC GDSCRs */
+#define USB30_PRIM_GDSC                     4
+#define USB30_SEC_GDSC						5
+
 #endif

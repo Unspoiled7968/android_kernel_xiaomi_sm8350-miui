@@ -58,7 +58,11 @@ struct clk_regmap {
 #define QCOM_CLK_IS_CRITICAL	BIT(0)
 	unsigned long flags;
 };
-#define to_clk_regmap(_hw) container_of(_hw, struct clk_regmap, hw)
+
+static inline struct clk_regmap *to_clk_regmap(struct clk_hw *hw)
+{
+	return container_of(hw, struct clk_regmap, hw);
+}
 
 int clk_is_enabled_regmap(struct clk_hw *hw);
 int clk_enable_regmap(struct clk_hw *hw);

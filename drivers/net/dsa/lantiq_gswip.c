@@ -495,8 +495,9 @@ static int gswip_mdio_rd(struct mii_bus *bus, int addr, int reg)
 static int gswip_mdio(struct gswip_priv *priv, struct device_node *mdio_np)
 {
 	struct dsa_switch *ds = priv->ds;
+	int err;
 
-	ds->slave_mii_bus = devm_mdiobus_alloc(priv->dev);
+	ds->slave_mii_bus = mdiobus_alloc();
 	if (!ds->slave_mii_bus)
 		return -ENOMEM;
 
@@ -509,7 +510,11 @@ static int gswip_mdio(struct gswip_priv *priv, struct device_node *mdio_np)
 	ds->slave_mii_bus->parent = priv->dev;
 	ds->slave_mii_bus->phy_mask = ~ds->phys_mii_mask;
 
-	return of_mdiobus_register(ds->slave_mii_bus, mdio_np);
+	err = of_mdiobus_register(ds->slave_mii_bus, mdio_np);
+	if (err)
+		mdiobus_free(ds->slave_mii_bus);
+
+	return err;
 }
 
 static int gswip_pce_table_entry_read(struct gswip_priv *priv,
@@ -737,14 +742,23 @@ static int gswip_pce_load_microcode(struct gswip_priv *priv)
 }
 
 static int gswip_port_vlan_filtering(struct dsa_switch *ds, int port,
-				     bool vlan_filtering)
+				     bool vlan_filtering,
+				     struct switchdev_trans *trans)
 {
 	struct gswip_priv *priv = ds->priv;
-	struct net_device *bridge = dsa_to_port(ds, port)->bridge_dev;
 
 	/* Do not allow changing the VLAN filtering options while in bridge */
-	if (!!(priv->port_vlan_filter & BIT(port)) != vlan_filtering && bridge)
-		return -EIO;
+	if (switchdev_trans_ph_prepare(trans)) {
+		struct net_device *bridge = dsa_to_port(ds, port)->bridge_dev;
+
+		if (!bridge)
+			return 0;
+
+		if (!!(priv->port_vlan_filter & BIT(port)) != vlan_filtering)
+			return -EIO;
+
+		return 0;
+	}
 
 	if (vlan_filtering) {
 		/* Use port based VLAN tag */
@@ -782,8 +796,15 @@ static int gswip_setup(struct dsa_switch *ds)
 
 	/* disable port fetch/store dma on all ports */
 	for (i = 0; i < priv->hw_info->max_ports; i++) {
+		struct switchdev_trans trans;
+
+		/* Skip the prepare phase, this shouldn't return an error
+		 * during setup.
+		 */
+		trans.ph_prepare = false;
+
 		gswip_port_disable(ds, i);
-		gswip_port_vlan_filtering(ds, i, false);
+		gswip_port_vlan_filtering(ds, i, false, &trans);
 	}
 
 	/* enable Switch */
@@ -860,7 +881,8 @@ static int gswip_setup(struct dsa_switch *ds)
 }
 
 static enum dsa_tag_protocol gswip_get_tag_protocol(struct dsa_switch *ds,
-						    int port)
+						    int port,
+						    enum dsa_tag_protocol mp)
 {
 	return DSA_TAG_PROTO_GSWIP;
 }
@@ -1625,11 +1647,6 @@ static void gswip_phylink_mac_config(struct dsa_switch *ds, int port,
 			   GSWIP_MII_CFG_RGMII_IBS | GSWIP_MII_CFG_LDCLKDIS,
 			   miicfg, port);
 
-	gswip_port_set_speed(priv, port, state->speed, state->interface);
-	gswip_port_set_duplex(priv, port, state->duplex);
-	gswip_port_set_pause(priv, port, !!(state->pause & MLO_PAUSE_TX),
-			     !!(state->pause & MLO_PAUSE_RX));
-
 	switch (state->interface) {
 	case PHY_INTERFACE_MODE_RGMII_ID:
 		gswip_mii_mask_pcdu(priv, GSWIP_MII_PCDU_TXDLY_MASK |
@@ -1661,12 +1678,18 @@ static void gswip_phylink_mac_link_down(struct dsa_switch *ds, int port,
 static void gswip_phylink_mac_link_up(struct dsa_switch *ds, int port,
 				      unsigned int mode,
 				      phy_interface_t interface,
-				      struct phy_device *phydev)
+				      struct phy_device *phydev,
+				      int speed, int duplex,
+				      bool tx_pause, bool rx_pause)
 {
 	struct gswip_priv *priv = ds->priv;
 
-	if (!dsa_is_cpu_port(ds, port))
+	if (!dsa_is_cpu_port(ds, port)) {
 		gswip_port_set_link(priv, port, true);
+		gswip_port_set_speed(priv, port, speed, interface);
+		gswip_port_set_duplex(priv, port, duplex);
+		gswip_port_set_pause(priv, port, tx_pause, rx_pause);
+	}
 
 	gswip_mii_mask_cfg(priv, 0, GSWIP_MII_CFG_EN, port);
 }
@@ -2012,10 +2035,12 @@ static int gswip_probe(struct platform_device *pdev)
 	if (!priv->hw_info)
 		return -EINVAL;
 
-	priv->ds = dsa_switch_alloc(dev, priv->hw_info->max_ports);
+	priv->ds = devm_kzalloc(dev, sizeof(*priv->ds), GFP_KERNEL);
 	if (!priv->ds)
 		return -ENOMEM;
 
+	priv->ds->dev = dev;
+	priv->ds->num_ports = priv->hw_info->max_ports;
 	priv->ds->priv = priv;
 	priv->ds->ops = &gswip_switch_ops;
 	priv->dev = dev;
@@ -2065,8 +2090,10 @@ disable_switch:
 	gswip_mdio_mask(priv, GSWIP_MDIO_GLOB_ENABLE, 0, GSWIP_MDIO_GLOB);
 	dsa_unregister_switch(priv->ds);
 mdio_bus:
-	if (mdio_np)
+	if (mdio_np) {
 		mdiobus_unregister(priv->ds->slave_mii_bus);
+		mdiobus_free(priv->ds->slave_mii_bus);
+	}
 put_mdio_node:
 	of_node_put(mdio_np);
 	for (i = 0; i < priv->num_gphy_fw; i++)
@@ -2087,6 +2114,7 @@ static int gswip_remove(struct platform_device *pdev)
 	if (priv->ds->slave_mii_bus) {
 		mdiobus_unregister(priv->ds->slave_mii_bus);
 		of_node_put(priv->ds->slave_mii_bus->dev.of_node);
+		mdiobus_free(priv->ds->slave_mii_bus);
 	}
 
 	for (i = 0; i < priv->num_gphy_fw; i++)

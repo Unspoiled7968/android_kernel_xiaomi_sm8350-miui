@@ -185,7 +185,7 @@ static int acm_wb_alloc(struct acm *acm)
 	for (;;) {
 		wb = &acm->wb[wbn];
 		if (!wb->use) {
-			wb->use = 1;
+			wb->use = true;
 			wb->len = 0;
 			return wbn;
 		}
@@ -203,7 +203,8 @@ static int acm_wb_is_avail(struct acm *acm)
 	n = ACM_NW;
 	spin_lock_irqsave(&acm->write_lock, flags);
 	for (i = 0; i < ACM_NW; i++)
-		n -= acm->wb[i].use;
+		if(acm->wb[i].use)
+			n--;
 	spin_unlock_irqrestore(&acm->write_lock, flags);
 	return n;
 }
@@ -213,7 +214,7 @@ static int acm_wb_is_avail(struct acm *acm)
  */
 static void acm_write_done(struct acm *acm, struct acm_wb *wb)
 {
-	wb->use = 0;
+	wb->use = false;
 	acm->transmitting--;
 	usb_autopm_put_interface_async(acm->control);
 }
@@ -359,7 +360,7 @@ static void acm_process_notification(struct acm *acm, unsigned char *buf)
 static void acm_ctrl_irq(struct urb *urb)
 {
 	struct acm *acm = urb->context;
-	struct usb_cdc_notification *dr = urb->transfer_buffer;
+	struct usb_cdc_notification *dr;
 	unsigned int current_size = urb->actual_length;
 	unsigned int expected_size, copy_size, alloc_size;
 	int retval;
@@ -386,14 +387,25 @@ static void acm_ctrl_irq(struct urb *urb)
 
 	usb_mark_last_busy(acm->dev);
 
-	if (acm->nb_index)
+	if (acm->nb_index == 0) {
+		/*
+		 * The first chunk of a message must contain at least the
+		 * notification header with the length field, otherwise we
+		 * can't get an expected_size.
+		 */
+		if (current_size < sizeof(struct usb_cdc_notification)) {
+			dev_dbg(&acm->control->dev, "urb too short\n");
+			goto exit;
+		}
+		dr = urb->transfer_buffer;
+	} else {
 		dr = (struct usb_cdc_notification *)acm->notification_buffer;
-
+	}
 	/* size = notification-header + (optional) data */
 	expected_size = sizeof(struct usb_cdc_notification) +
 					le16_to_cpu(dr->wLength);
 
-	if (current_size < expected_size) {
+	if (acm->nb_index != 0 || current_size < expected_size) {
 		/* notification is transmitted fragmented, reassemble */
 		if (acm->nb_size < expected_size) {
 			u8 *new_buffer;
@@ -763,7 +775,7 @@ static void acm_port_shutdown(struct tty_port *port)
 		if (!urb)
 			break;
 		wb = urb->context;
-		wb->use = 0;
+		wb->use = false;
 		usb_autopm_put_interface_async(acm->control);
 	}
 
@@ -815,7 +827,7 @@ static int acm_tty_write(struct tty_struct *tty,
 	wb = &acm->wb[wbn];
 
 	if (!acm->dev) {
-		wb->use = 0;
+		wb->use = false;
 		spin_unlock_irqrestore(&acm->write_lock, flags);
 		return -ENODEV;
 	}
@@ -827,7 +839,7 @@ static int acm_tty_write(struct tty_struct *tty,
 
 	stat = usb_autopm_get_interface_async(acm->control);
 	if (stat) {
-		wb->use = 0;
+		wb->use = false;
 		spin_unlock_irqrestore(&acm->write_lock, flags);
 		return stat;
 	}
@@ -895,6 +907,9 @@ static int acm_tty_break_ctl(struct tty_struct *tty, int state)
 	struct acm *acm = tty->driver_data;
 	int retval;
 
+	if (!(acm->ctrl_caps & USB_CDC_CAP_BRK))
+		return -EOPNOTSUPP;
+
 	retval = acm_send_break(acm, state ? 0xffff : 0);
 	if (retval < 0)
 		dev_dbg(&acm->control->dev,
@@ -938,10 +953,12 @@ static int get_serial_info(struct tty_struct *tty, struct serial_struct *ss)
 	struct acm *acm = tty->driver_data;
 
 	ss->line = acm->minor;
+	mutex_lock(&acm->port.mutex);
 	ss->close_delay	= jiffies_to_msecs(acm->port.close_delay) / 10;
 	ss->closing_wait = acm->port.closing_wait == ASYNC_CLOSING_WAIT_NONE ?
 				ASYNC_CLOSING_WAIT_NONE :
 				jiffies_to_msecs(acm->port.closing_wait) / 10;
+	mutex_unlock(&acm->port.mutex);
 	return 0;
 }
 
@@ -1201,6 +1218,12 @@ static int acm_probe(struct usb_interface *intf,
 		if (!data_interface || !control_interface)
 			return -ENODEV;
 		goto skip_normal_probe;
+	} else if (quirks == NO_UNION_12) {
+		data_interface = usb_ifnum_to_if(usb_dev, 2);
+		control_interface = usb_ifnum_to_if(usb_dev, 1);
+		if (!data_interface || !control_interface)
+			 return -ENODEV;
+		goto skip_normal_probe;
 	}
 
 	/* normal probing*/
@@ -1208,9 +1231,6 @@ static int acm_probe(struct usb_interface *intf,
 		dev_err(&intf->dev, "Weird descriptor references\n");
 		return -EINVAL;
 	}
-
-	if (!intf->cur_altsetting)
-		return -EINVAL;
 
 	if (!buflen) {
 		if (intf->cur_altsetting->endpoint &&
@@ -1234,26 +1254,19 @@ static int acm_probe(struct usb_interface *intf,
 		call_intf_num = cmgmd->bDataInterface;
 
 	if (!union_header) {
-		if (call_intf_num > 0) {
+		if (intf->cur_altsetting->desc.bNumEndpoints == 3) {
+			dev_dbg(&intf->dev, "No union descriptor, assuming single interface\n");
+			combined_interfaces = 1;
+			control_interface = data_interface = intf;
+			goto look_for_collapsed_interface;
+		} else if (call_intf_num > 0) {
 			dev_dbg(&intf->dev, "No union descriptor, using call management descriptor\n");
-			/* quirks for Droids MuIn LCD */
-			if (quirks & NO_DATA_INTERFACE) {
-				data_interface = usb_ifnum_to_if(usb_dev, 0);
-			} else {
-				data_intf_num = call_intf_num;
-				data_interface = usb_ifnum_to_if(usb_dev, data_intf_num);
-			}
+			data_intf_num = call_intf_num;
+			data_interface = usb_ifnum_to_if(usb_dev, data_intf_num);
 			control_interface = intf;
 		} else {
-			if (intf->cur_altsetting->desc.bNumEndpoints != 3) {
-				dev_dbg(&intf->dev,"No union descriptor, giving up\n");
-				return -ENODEV;
-			} else {
-				dev_warn(&intf->dev,"No union descriptor, testing for castrated device\n");
-				combined_interfaces = 1;
-				control_interface = data_interface = intf;
-				goto look_for_collapsed_interface;
-			}
+			dev_dbg(&intf->dev, "No union descriptor, giving up\n");
+			return -ENODEV;
 		}
 	} else {
 		int class = -1;
@@ -1277,8 +1290,6 @@ static int acm_probe(struct usb_interface *intf,
 		dev_dbg(&intf->dev, "no interfaces\n");
 		return -ENODEV;
 	}
-	if (!data_interface->cur_altsetting || !control_interface->cur_altsetting)
-		return -ENODEV;
 
 	if (data_intf_num != call_intf_num)
 		dev_dbg(&intf->dev, "Separate call control interface. That is not fully supported.\n");
@@ -1305,10 +1316,8 @@ look_for_collapsed_interface:
 skip_normal_probe:
 
 	/*workaround for switched interfaces */
-	if (data_interface->cur_altsetting->desc.bInterfaceClass
-						!= CDC_DATA_INTERFACE_TYPE) {
-		if (control_interface->cur_altsetting->desc.bInterfaceClass
-						== CDC_DATA_INTERFACE_TYPE) {
+	if (data_interface->cur_altsetting->desc.bInterfaceClass != USB_CLASS_CDC_DATA) {
+		if (control_interface->cur_altsetting->desc.bInterfaceClass == USB_CLASS_CDC_DATA) {
 			dev_dbg(&intf->dev,
 				"Your device has switched interfaces.\n");
 			swap(control_interface, data_interface);
@@ -1376,6 +1385,8 @@ made_compressed_probe:
 		acm->ctrl_caps = h.usb_cdc_acm_descriptor->bmCapabilities;
 	if (quirks & NO_CAP_LINE)
 		acm->ctrl_caps &= ~USB_CDC_CAP_LINE;
+	if (quirks & MISSING_CAP_BRK)
+		acm->ctrl_caps |= USB_CDC_CAP_BRK;
 	acm->ctrlsize = ctrlsize;
 	acm->readsize = readsize;
 	acm->rx_buflimit = num_rx_buf;
@@ -1507,14 +1518,18 @@ skip_countries:
 	acm->nb_index = 0;
 	acm->nb_size = 0;
 
-	dev_info(&intf->dev, "ttyACM%d: USB ACM device\n", minor);
-
 	acm->line.dwDTERate = cpu_to_le32(9600);
 	acm->line.bDataBits = 8;
 	acm_set_line(acm, &acm->line);
 
 	usb_driver_claim_interface(&acm_driver, data_interface, acm);
 	usb_set_intfdata(data_interface, acm);
+
+	if (quirks & CLEAR_HALT_CONDITIONS) {
+		/* errors intentionally ignored */
+		usb_clear_halt(usb_dev, acm->in);
+		usb_clear_halt(usb_dev, acm->out);
+	}
 
 	tty_dev = tty_port_register_device(&acm->port, acm_tty_driver, minor,
 			&control_interface->dev);
@@ -1523,10 +1538,7 @@ skip_countries:
 		goto alloc_fail6;
 	}
 
-	if (quirks & CLEAR_HALT_CONDITIONS) {
-		usb_clear_halt(usb_dev, acm->in);
-		usb_clear_halt(usb_dev, acm->out);
-	}
+	dev_info(&intf->dev, "ttyACM%d: USB ACM device\n", minor);
 
 	return 0;
 alloc_fail6:
@@ -1731,14 +1743,20 @@ static const struct usb_device_id acm_ids[] = {
 	{ USB_DEVICE(0x0870, 0x0001), /* Metricom GS Modem */
 	.driver_info = NO_UNION_NORMAL, /* has no union descriptor */
 	},
-	{ USB_DEVICE(0x045b, 0x023c),	/* Renesas USB Download mode */
+	{ USB_DEVICE(0x045b, 0x023c),	/* Renesas R-Car H3 USB Download mode */
 	.driver_info = DISABLE_ECHO,	/* Don't echo banner */
 	},
-	{ USB_DEVICE(0x045b, 0x0248),	/* Renesas USB Download mode */
+	{ USB_DEVICE(0x045b, 0x0247),	/* Renesas R-Car D3 USB Download mode */
 	.driver_info = DISABLE_ECHO,	/* Don't echo banner */
 	},
-	{ USB_DEVICE(0x045b, 0x024D),	/* Renesas USB Download mode */
+	{ USB_DEVICE(0x045b, 0x0248),	/* Renesas R-Car M3-N USB Download mode */
 	.driver_info = DISABLE_ECHO,	/* Don't echo banner */
+	},
+	{ USB_DEVICE(0x045b, 0x024D),	/* Renesas R-Car E3 USB Download mode */
+	.driver_info = DISABLE_ECHO,	/* Don't echo banner */
+	},
+	{ USB_DEVICE(0x04b8, 0x0d12),	/* EPSON HMD Com&Sens */
+	.driver_info = NO_UNION_12,	/* union descriptor is garbage */
 	},
 	{ USB_DEVICE(0x0e8d, 0x0003), /* FIREFLY, MediaTek Inc; andrey.arapov@gmail.com */
 	.driver_info = NO_UNION_NORMAL, /* has no union descriptor */
@@ -1926,16 +1944,17 @@ static const struct usb_device_id acm_ids[] = {
 
 	/* NOTE: non-Nokia COMM/ACM/0xff is likely MSFT RNDIS... NOT a modem! */
 
-	/* Support for Droids MuIn LCD */
-	{ USB_DEVICE(0x04d8, 0x000b),
-	.driver_info = NO_DATA_INTERFACE,
-	},
-
 #if IS_ENABLED(CONFIG_INPUT_IMS_PCU)
 	{ USB_DEVICE(0x04d8, 0x0082),	/* Application mode */
 	.driver_info = IGNORE_DEVICE,
 	},
 	{ USB_DEVICE(0x04d8, 0x0083),	/* Bootloader mode */
+	.driver_info = IGNORE_DEVICE,
+	},
+#endif
+
+#if IS_ENABLED(CONFIG_IR_TOY)
+	{ USB_DEVICE(0x04d8, 0xfd08),
 	.driver_info = IGNORE_DEVICE,
 	},
 
@@ -1981,6 +2000,9 @@ static const struct usb_device_id acm_ids[] = {
 	{ USB_DEVICE(0x32a7, 0x0000),
 	.driver_info = IGNORE_DEVICE,
 	},
+
+	/* CH343 supports CAP_BRK, but doesn't advertise it */
+	{ USB_DEVICE(0x1a86, 0x55d3), .driver_info = MISSING_CAP_BRK, },
 
 	/* control interfaces without any protocol set */
 	{ USB_INTERFACE_INFO(USB_CLASS_COMM, USB_CDC_SUBCLASS_ACM,

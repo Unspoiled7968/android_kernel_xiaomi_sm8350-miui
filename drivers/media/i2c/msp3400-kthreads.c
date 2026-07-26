@@ -592,6 +592,8 @@ restart:
 				"carrier2 val: %5d / %s\n", val, cd[i].name);
 		}
 
+		if (max1 < 0 || max1 > 3)
+			goto restart;
 		/* program the msp3400 according to the results */
 		state->main = msp3400c_carrier_detect_main[max1].cdo;
 		switch (max1) {
@@ -646,7 +648,7 @@ restart:
 			break;
 		case 0: /* 4.5 */
 			state->detected_std = V4L2_STD_MN;
-			/* fall-through */
+			fallthrough;
 		default:
 no_second:
 			state->second = msp3400c_carrier_detect_main[max1].cdo;

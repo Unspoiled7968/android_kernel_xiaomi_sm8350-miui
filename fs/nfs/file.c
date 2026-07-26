@@ -207,44 +207,40 @@ EXPORT_SYMBOL_GPL(nfs_file_mmap);
 static int
 nfs_file_fsync_commit(struct file *file, int datasync)
 {
-	struct nfs_open_context *ctx = nfs_file_open_context(file);
 	struct inode *inode = file_inode(file);
-	int do_resend, status;
-	int ret = 0;
+	int ret, ret2;
 
 	dprintk("NFS: fsync file(%pD2) datasync %d\n", file, datasync);
 
 	nfs_inc_stats(inode, NFSIOS_VFSFSYNC);
-	do_resend = test_and_clear_bit(NFS_CONTEXT_RESEND_WRITES, &ctx->flags);
-	status = nfs_commit_inode(inode, FLUSH_SYNC);
-	if (status == 0)
-		status = file_check_and_advance_wb_err(file);
-	if (status < 0) {
-		ret = status;
-		goto out;
-	}
-	do_resend |= test_bit(NFS_CONTEXT_RESEND_WRITES, &ctx->flags);
-	if (do_resend)
-		ret = -EAGAIN;
-out:
+	ret = nfs_commit_inode(inode, FLUSH_SYNC);
+	ret2 = file_check_and_advance_wb_err(file);
+	if (ret2 < 0)
+		return ret2;
 	return ret;
 }
 
 int
 nfs_file_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 {
-	int ret;
+	struct nfs_open_context *ctx = nfs_file_open_context(file);
 	struct inode *inode = file_inode(file);
+	int ret;
 
 	trace_nfs_fsync_enter(inode);
 
-	do {
+	for (;;) {
 		ret = file_write_and_wait_range(file, start, end);
 		if (ret != 0)
 			break;
 		ret = nfs_file_fsync_commit(file, datasync);
-		if (!ret)
-			ret = pnfs_sync_inode(inode, !!datasync);
+		if (ret != 0)
+			break;
+		ret = pnfs_sync_inode(inode, !!datasync);
+		if (ret != 0)
+			break;
+		if (!test_and_clear_bit(NFS_CONTEXT_RESEND_WRITES, &ctx->flags))
+			break;
 		/*
 		 * If nfs_file_fsync_commit detected a server reboot, then
 		 * resend all dirty pages that might have been covered by
@@ -252,7 +248,7 @@ nfs_file_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 		 */
 		start = 0;
 		end = LLONG_MAX;
-	} while (ret == -EAGAIN);
+	}
 
 	trace_nfs_fsync_exit(inode, ret);
 	return ret;
@@ -489,18 +485,39 @@ static int nfs_launder_page(struct page *page)
 static int nfs_swap_activate(struct swap_info_struct *sis, struct file *file,
 						sector_t *span)
 {
-	struct rpc_clnt *clnt = NFS_CLIENT(file->f_mapping->host);
+	unsigned long blocks;
+	long long isize;
+	struct inode *inode = file_inode(file);
+	struct rpc_clnt *clnt = NFS_CLIENT(inode);
+	struct nfs_client *cl = NFS_SERVER(inode)->nfs_client;
+
+	spin_lock(&inode->i_lock);
+	blocks = inode->i_blocks;
+	isize = inode->i_size;
+	spin_unlock(&inode->i_lock);
+	if (blocks*512 < isize) {
+		pr_warn("swap activate: swapfile has holes\n");
+		return -EINVAL;
+	}
 
 	*span = sis->pages;
+
+
+	if (cl->rpc_ops->enable_swap)
+		cl->rpc_ops->enable_swap(inode);
 
 	return rpc_clnt_swap_activate(clnt);
 }
 
 static void nfs_swap_deactivate(struct file *file)
 {
-	struct rpc_clnt *clnt = NFS_CLIENT(file->f_mapping->host);
+	struct inode *inode = file_inode(file);
+	struct rpc_clnt *clnt = NFS_CLIENT(inode);
+	struct nfs_client *cl = NFS_SERVER(inode)->nfs_client;
 
 	rpc_clnt_swap_deactivate(clnt);
+	if (cl->rpc_ops->disable_swap)
+		cl->rpc_ops->disable_swap(file_inode(file));
 }
 
 const struct address_space_operations nfs_file_aops = {
@@ -655,7 +672,7 @@ out:
 
 out_swapfile:
 	printk(KERN_INFO "NFS: attempt to write to active swap file!\n");
-	return -EBUSY;
+	return -ETXTBSY;
 }
 EXPORT_SYMBOL_GPL(nfs_file_write);
 

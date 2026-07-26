@@ -27,9 +27,6 @@ static inline bool is_quota_modification(struct inode *inode, struct iattr *ia)
 		(ia->ia_valid & ATTR_GID && !gid_eq(ia->ia_gid, inode->i_gid));
 }
 
-int kernel_quotactl(unsigned int cmd, const char __user *special,
-		    qid_t id, void __user *addr);
-
 #if defined(CONFIG_QUOTA)
 
 #define quota_error(sb, fmt, args...) \
@@ -46,14 +43,7 @@ int dquot_initialize(struct inode *inode);
 bool dquot_initialize_needed(struct inode *inode);
 void dquot_drop(struct inode *inode);
 struct dquot *dqget(struct super_block *sb, struct kqid qid);
-static inline struct dquot *dqgrab(struct dquot *dquot)
-{
-	/* Make sure someone else has active reference to dquot */
-	WARN_ON_ONCE(!atomic_read(&dquot->dq_count));
-	WARN_ON_ONCE(!test_bit(DQ_ACTIVE_B, &dquot->dq_flags));
-	atomic_inc(&dquot->dq_count);
-	return dquot;
-}
+struct dquot *dqgrab(struct dquot *dquot);
 
 static inline bool dquot_is_busy(struct dquot *dquot)
 {
@@ -97,9 +87,9 @@ int dquot_mark_dquot_dirty(struct dquot *dquot);
 
 int dquot_file_open(struct inode *inode, struct file *file);
 
-int dquot_enable(struct inode *inode, int type, int format_id,
-	unsigned int flags);
 int dquot_load_quota_sb(struct super_block *sb, int type, int format_id,
+	unsigned int flags);
+int dquot_load_quota_inode(struct inode *inode, int type, int format_id,
 	unsigned int flags);
 int dquot_quota_on(struct super_block *sb, int type, int format_id,
 	const struct path *path);

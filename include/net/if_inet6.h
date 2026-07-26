@@ -82,7 +82,7 @@ struct inet6_ifaddr {
 struct ip6_sf_socklist {
 	unsigned int		sl_max;
 	unsigned int		sl_count;
-	struct in6_addr		sl_addr[0];
+	struct in6_addr		sl_addr[];
 };
 
 #define IP6_SFLSIZE(count)	(sizeof(struct ip6_sf_socklist) + \
@@ -194,7 +194,6 @@ struct inet6_dev {
 	int			dead;
 
 	u32			desync_factor;
-	u8			rndid[8];
 	struct list_head	tempaddr_list;
 
 	struct in6_addr		token;

@@ -292,7 +292,7 @@ static u32 mvsd_finish_data(struct mvsd_host *host, struct mmc_data *data,
 		host->pio_ptr = NULL;
 		host->pio_size = 0;
 	} else {
-		dma_unmap_sg(mmc_dev(host->mmc), data->sg, host->sg_frags,
+		dma_unmap_sg(mmc_dev(host->mmc), data->sg, data->sg_len,
 			     mmc_get_dma_dir(data));
 	}
 
@@ -752,8 +752,6 @@ static int mvsd_probe(struct platform_device *pdev)
 	if (maxfreq)
 		mmc->f_max = maxfreq;
 
-	mmc->caps |= MMC_CAP_ERASE;
-
 	spin_lock_init(&host->lock);
 
 	host->base = devm_platform_ioremap_resource(pdev, 0);
@@ -826,6 +824,7 @@ static struct platform_driver mvsd_driver = {
 	.remove		= mvsd_remove,
 	.driver		= {
 		.name	= DRIVER_NAME,
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 		.of_match_table = mvsdio_dt_ids,
 	},
 };

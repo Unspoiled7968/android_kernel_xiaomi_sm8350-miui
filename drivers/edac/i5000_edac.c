@@ -1111,6 +1111,7 @@ static void calculate_dimm_size(struct i5000_pvt *pvt)
 
 	n = snprintf(p, space, "           ");
 	p += n;
+	space -= n;
 	for (branch = 0; branch < MAX_BRANCHES; branch++) {
 		n = snprintf(p, space, "       branch %d       | ", branch);
 		p += n;
@@ -1275,9 +1276,8 @@ static int i5000_init_csrows(struct mem_ctl_info *mci)
 			if (!MTR_DIMMS_PRESENT(mtr))
 				continue;
 
-			dimm = EDAC_DIMM_PTR(mci->layers, mci->dimms, mci->n_layers,
-				       channel / MAX_BRANCHES,
-				       channel % MAX_BRANCHES, slot);
+			dimm = edac_get_dimm(mci, channel / MAX_BRANCHES,
+					     channel % MAX_BRANCHES, slot);
 
 			csrow_megs = pvt->dimm_info[slot][channel].megabytes;
 			dimm->grain = 8;

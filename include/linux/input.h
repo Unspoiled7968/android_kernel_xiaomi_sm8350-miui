@@ -7,6 +7,7 @@
 
 #include <linux/time.h>
 #include <linux/list.h>
+#include <linux/android_kabi.h>
 #include <uapi/linux/input.h>
 /* Implementation details, userspace should not care about these */
 #define ABS_MT_FIRST		ABS_MT_TOUCH_MAJOR
@@ -201,6 +202,11 @@ struct input_dev {
 	bool devres_managed;
 
 	ktime_t timestamp[INPUT_CLK_MAX];
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
+	ANDROID_KABI_RESERVE(3);
+	ANDROID_KABI_RESERVE(4);
 };
 #define to_input_dev(d) container_of(d, struct input_dev, dev)
 
@@ -320,6 +326,8 @@ struct input_handler {
 
 	struct list_head	h_list;
 	struct list_head	node;
+
+	ANDROID_KABI_RESERVE(1);
 };
 
 /**
@@ -346,6 +354,8 @@ struct input_handle {
 
 	struct list_head	d_node;
 	struct list_head	h_node;
+
+	ANDROID_KABI_RESERVE(1);
 };
 
 struct input_dev __must_check *input_allocate_device(void);
@@ -383,6 +393,7 @@ int input_setup_polling(struct input_dev *dev,
 void input_set_poll_interval(struct input_dev *dev, unsigned int interval);
 void input_set_min_poll_interval(struct input_dev *dev, unsigned int interval);
 void input_set_max_poll_interval(struct input_dev *dev, unsigned int interval);
+int input_get_poll_interval(struct input_dev *dev);
 
 int __must_check input_register_handler(struct input_handler *);
 void input_unregister_handler(struct input_handler *);
@@ -549,6 +560,9 @@ struct ff_device {
 
 	int max_effects;
 	struct ff_effect *effects;
+
+	ANDROID_KABI_RESERVE(1);
+
 	struct file *effect_owners[];
 };
 

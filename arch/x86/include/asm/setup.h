@@ -4,7 +4,7 @@
 
 #include <uapi/asm/setup.h>
 
-#define COMMAND_LINE_SIZE 4096
+#define COMMAND_LINE_SIZE 2048
 
 #include <linux/linkage.h>
 #include <asm/page_types.h>
@@ -39,6 +39,8 @@ void vsmp_init(void);
 static inline void vsmp_init(void) { }
 #endif
 
+struct pt_regs;
+
 void setup_bios_corruption_check(void);
 void early_platform_quirks(void);
 
@@ -47,8 +49,9 @@ extern unsigned long saved_video_mode;
 extern void reserve_standard_io_resources(void);
 extern void i386_reserve_resources(void);
 extern unsigned long __startup_64(unsigned long physaddr, struct boot_params *bp);
-extern unsigned long __startup_secondary_64(void);
-extern int early_make_pgtable(unsigned long address);
+extern void startup_64_setup_env(unsigned long physbase);
+extern void early_setup_idt(void);
+extern void __init do_early_exception(struct pt_regs *regs, int trapnr);
 
 #ifdef CONFIG_X86_INTEL_MID
 extern void x86_intel_mid_early_setup(void);
@@ -75,7 +78,17 @@ extern char _text[];
 
 static inline bool kaslr_enabled(void)
 {
-	return !!(boot_params.hdr.loadflags & KASLR_FLAG);
+	return IS_ENABLED(CONFIG_RANDOMIZE_MEMORY) &&
+		!!(boot_params.hdr.loadflags & KASLR_FLAG);
+}
+
+/*
+ * Apply no randomization if KASLR was disabled at boot or if KASAN
+ * is enabled. KASAN shadow mappings rely on regions being PGD aligned.
+ */
+static inline bool kaslr_memory_enabled(void)
+{
+	return kaslr_enabled() && !IS_ENABLED(CONFIG_KASAN);
 }
 
 static inline unsigned long kaslr_offset(void)
@@ -102,7 +115,7 @@ void *extend_brk(size_t size, size_t align);
  * The size is in bytes.
  */
 #define RESERVE_BRK(name, size)					\
-	__section(.bss..brk) __aligned(1) __used	\
+	__section(".bss..brk") __aligned(1) __used	\
 	static char __brk_##name[size]
 
 /* Helper for reserving space for arrays of things */

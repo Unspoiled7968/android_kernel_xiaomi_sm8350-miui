@@ -593,7 +593,6 @@ static void longhaul_setup_voltagescaling(void)
 		break;
 	default:
 		return;
-		break;
 	}
 	if (min_vid_speed >= highest_speed)
 		return;
@@ -910,7 +909,7 @@ static struct cpufreq_driver longhaul_driver = {
 };
 
 static const struct x86_cpu_id longhaul_id[] = {
-	{ X86_VENDOR_CENTAUR, 6 },
+	X86_MATCH_VENDOR_FAM(CENTAUR, 6, NULL),
 	{}
 };
 MODULE_DEVICE_TABLE(x86cpu, longhaul_id);
@@ -955,6 +954,9 @@ static void __exit longhaul_exit(void)
 {
 	struct cpufreq_policy *policy = cpufreq_cpu_get(0);
 	int i;
+
+	if (unlikely(!policy))
+		return;
 
 	for (i = 0; i < numscales; i++) {
 		if (mults[i] == maxmult) {

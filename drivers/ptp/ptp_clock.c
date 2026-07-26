@@ -146,7 +146,17 @@ static int ptp_clock_adjtime(struct posix_clock *pc, struct __kernel_timex *tx)
 			err = ops->adjfine(ops, tx->freq);
 		else
 			err = ops->adjfreq(ops, ppb);
-		ptp->dialed_frequency = tx->freq;
+		if (!err)
+			ptp->dialed_frequency = tx->freq;
+	} else if (tx->modes & ADJ_OFFSET) {
+		if (ops->adjphase) {
+			s32 offset = tx->offset;
+
+			if (!(tx->modes & ADJ_NANO))
+				offset *= NSEC_PER_USEC;
+
+			err = ops->adjphase(ops, offset);
+		}
 	} else if (tx->modes == 0) {
 		tx->freq = ptp->dialed_frequency;
 		err = 0;
@@ -176,6 +186,11 @@ static void ptp_clock_release(struct device *dev)
 	mutex_destroy(&ptp->pincfg_mux);
 	ida_simple_remove(&ptp_clocks_map, ptp->index);
 	kfree(ptp);
+}
+
+static int ptp_enable(struct ptp_clock_info *ptp, struct ptp_clock_request *request, int on)
+{
+	return -EOPNOTSUPP;
 }
 
 static void ptp_aux_kworker(struct kthread_work *work)
@@ -223,6 +238,9 @@ struct ptp_clock *ptp_clock_register(struct ptp_clock_info *info,
 	mutex_init(&ptp->pincfg_mux);
 	init_waitqueue_head(&ptp->tsev_wq);
 
+	if (!ptp->info->enable)
+		ptp->info->enable = ptp_enable;
+
 	if (ptp->info->do_aux_work) {
 		kthread_init_delayed_work(&ptp->aux_work, ptp_aux_kworker);
 		ptp->kworker = kthread_create_worker(0, "ptp%d", ptp->index);
@@ -265,15 +283,20 @@ struct ptp_clock *ptp_clock_register(struct ptp_clock_info *info,
 	/* Create a posix clock and link it to the device. */
 	err = posix_clock_register(&ptp->clock, &ptp->dev);
 	if (err) {
+		if (ptp->pps_source)
+			pps_unregister_source(ptp->pps_source);
+
+		if (ptp->kworker)
+			kthread_destroy_worker(ptp->kworker);
+
+		put_device(&ptp->dev);
+
 		pr_err("failed to create posix clock\n");
-		goto no_clock;
+		return ERR_PTR(err);
 	}
 
 	return ptp;
 
-no_clock:
-	if (ptp->pps_source)
-		pps_unregister_source(ptp->pps_source);
 no_pps:
 	ptp_cleanup_pin_groups(ptp);
 no_pin_groups:
@@ -349,7 +372,6 @@ int ptp_find_pin(struct ptp_clock *ptp,
 	struct ptp_pin_desc *pin = NULL;
 	int i;
 
-	mutex_lock(&ptp->pincfg_mux);
 	for (i = 0; i < ptp->info->n_pins; i++) {
 		if (ptp->info->pin_config[i].func == func &&
 		    ptp->info->pin_config[i].chan == chan) {
@@ -357,17 +379,37 @@ int ptp_find_pin(struct ptp_clock *ptp,
 			break;
 		}
 	}
-	mutex_unlock(&ptp->pincfg_mux);
 
 	return pin ? i : -1;
 }
 EXPORT_SYMBOL(ptp_find_pin);
+
+int ptp_find_pin_unlocked(struct ptp_clock *ptp,
+			  enum ptp_pin_function func, unsigned int chan)
+{
+	int result;
+
+	mutex_lock(&ptp->pincfg_mux);
+
+	result = ptp_find_pin(ptp, func, chan);
+
+	mutex_unlock(&ptp->pincfg_mux);
+
+	return result;
+}
+EXPORT_SYMBOL(ptp_find_pin_unlocked);
 
 int ptp_schedule_worker(struct ptp_clock *ptp, unsigned long delay)
 {
 	return kthread_mod_delayed_work(ptp->kworker, &ptp->aux_work, delay);
 }
 EXPORT_SYMBOL(ptp_schedule_worker);
+
+void ptp_cancel_worker_sync(struct ptp_clock *ptp)
+{
+	kthread_cancel_delayed_work_sync(&ptp->aux_work);
+}
+EXPORT_SYMBOL(ptp_cancel_worker_sync);
 
 /* module operations */
 

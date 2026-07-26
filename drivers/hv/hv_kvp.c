@@ -27,6 +27,7 @@
 #include <linux/connector.h>
 #include <linux/workqueue.h>
 #include <linux/hyperv.h>
+#include <asm/hyperv-tlfs.h>
 
 #include "hyperv_vmbus.h"
 #include "hv_utils_transport.h"
@@ -92,7 +93,7 @@ static void kvp_send_key(struct work_struct *dummy);
 static void kvp_respond_to_host(struct hv_kvp_msg *msg, int error);
 static void kvp_timeout_func(struct work_struct *dummy);
 static void kvp_host_handshake_func(struct work_struct *dummy);
-static void kvp_register(int);
+static int kvp_register(int);
 
 static DECLARE_DELAYED_WORK(kvp_timeout_work, kvp_timeout_func);
 static DECLARE_DELAYED_WORK(kvp_host_handshake_work, kvp_host_handshake_func);
@@ -126,24 +127,26 @@ static void kvp_register_done(void)
 	hv_poll_channel(kvp_transaction.recv_channel, kvp_poll_wrapper);
 }
 
-static void
+static int
 kvp_register(int reg_value)
 {
 
 	struct hv_kvp_msg *kvp_msg;
 	char *version;
+	int ret;
 
 	kvp_msg = kzalloc(sizeof(*kvp_msg), GFP_KERNEL);
+	if (!kvp_msg)
+		return -ENOMEM;
 
-	if (kvp_msg) {
-		version = kvp_msg->body.kvp_register.version;
-		kvp_msg->kvp_hdr.operation = reg_value;
-		strcpy(version, HV_DRV_VERSION);
+	version = kvp_msg->body.kvp_register.version;
+	kvp_msg->kvp_hdr.operation = reg_value;
+	strcpy(version, HV_DRV_VERSION);
 
-		hvutil_transport_send(hvt, kvp_msg, sizeof(*kvp_msg),
-				      kvp_register_done);
-		kfree(kvp_msg);
-	}
+	ret = hvutil_transport_send(hvt, kvp_msg, sizeof(*kvp_msg),
+				    kvp_register_done);
+	kfree(kvp_msg);
+	return ret;
 }
 
 static void kvp_timeout_func(struct work_struct *dummy)
@@ -185,9 +188,8 @@ static int kvp_handle_handshake(struct hv_kvp_msg *msg)
 	 */
 	pr_debug("KVP: userspace daemon ver. %d connected\n",
 		 msg->kvp_hdr.operation);
-	kvp_register(dm_reg_value);
 
-	return 0;
+	return kvp_register(dm_reg_value);
 }
 
 
@@ -353,7 +355,7 @@ static void process_ib_ipinfo(void *in_msg, void *out_msg, int op)
 
 		out->body.kvp_ip_val.dhcp_enabled = in->kvp_ip_val.dhcp_enabled;
 
-		/* fallthrough */
+		fallthrough;
 
 	case KVP_OP_GET_IP_INFO:
 		utf16s_to_utf8s((wchar_t *)in->kvp_ip_val.adapter_id,
@@ -661,7 +663,7 @@ void hv_kvp_onchannelcallback(void *context)
 	if (kvp_transaction.state > HVUTIL_READY)
 		return;
 
-	vmbus_recvpacket(channel, recv_buffer, PAGE_SIZE * 4, &recvlen,
+	vmbus_recvpacket(channel, recv_buffer, HV_HYP_PAGE_SIZE * 4, &recvlen,
 			 &requestid);
 
 	if (recvlen > 0) {
@@ -749,6 +751,12 @@ hv_kvp_init(struct hv_util_service *srv)
 	 */
 	kvp_transaction.state = HVUTIL_DEVICE_INIT;
 
+	return 0;
+}
+
+int
+hv_kvp_init_transport(void)
+{
 	hvt = hvutil_transport_init(kvp_devname, CN_KVP_IDX, CN_KVP_VAL,
 				    kvp_on_msg, kvp_on_reset);
 	if (!hvt)
@@ -757,11 +765,50 @@ hv_kvp_init(struct hv_util_service *srv)
 	return 0;
 }
 
-void hv_kvp_deinit(void)
+static void hv_kvp_cancel_work(void)
 {
-	kvp_transaction.state = HVUTIL_DEVICE_DYING;
 	cancel_delayed_work_sync(&kvp_host_handshake_work);
 	cancel_delayed_work_sync(&kvp_timeout_work);
 	cancel_work_sync(&kvp_sendkey_work);
+}
+
+int hv_kvp_pre_suspend(void)
+{
+	struct vmbus_channel *channel = kvp_transaction.recv_channel;
+
+	tasklet_disable(&channel->callback_event);
+
+	/*
+	 * If there is a pending transtion, it's unnecessary to tell the host
+	 * that the transaction will fail, because that is implied when
+	 * util_suspend() calls vmbus_close() later.
+	 */
+	hv_kvp_cancel_work();
+
+	/*
+	 * Forece the state to READY to handle the ICMSGTYPE_NEGOTIATE message
+	 * later. The user space daemon may go out of order and its write()
+	 * may fail with EINVAL: this doesn't matter since the daemon will
+	 * reset the device by closing and re-opening it.
+	 */
+	kvp_transaction.state = HVUTIL_READY;
+	return 0;
+}
+
+int hv_kvp_pre_resume(void)
+{
+	struct vmbus_channel *channel = kvp_transaction.recv_channel;
+
+	tasklet_enable(&channel->callback_event);
+
+	return 0;
+}
+
+void hv_kvp_deinit(void)
+{
+	kvp_transaction.state = HVUTIL_DEVICE_DYING;
+
+	hv_kvp_cancel_work();
+
 	hvutil_transport_destroy(hvt);
 }

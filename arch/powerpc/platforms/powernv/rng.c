@@ -71,7 +71,7 @@ int powernv_get_random_real_mode(unsigned long *v)
 	return 1;
 }
 
-int powernv_get_random_darn(unsigned long *v)
+static int powernv_get_random_darn(unsigned long *v)
 {
 	unsigned long val;
 

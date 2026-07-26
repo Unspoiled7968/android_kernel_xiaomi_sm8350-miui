@@ -22,9 +22,8 @@
  */
 
 #include <linux/firmware.h>
+#include <linux/pci.h>
 #include <linux/seq_file.h>
-
-#include <drm/drm_pci.h>
 
 #include "atom.h"
 #include "ci_dpm.h"
@@ -66,25 +65,11 @@ static const struct ci_pt_defaults defaults_bonaire_xt =
 	{ 0x17C, 0x172, 0x180, 0x1BC, 0x1B3, 0x1BD, 0x206, 0x200, 0x203, 0x25D, 0x25A, 0x255, 0x2C3, 0x2C5, 0x2B4 }
 };
 
-static const struct ci_pt_defaults defaults_bonaire_pro =
-{
-	1, 0xF, 0xFD, 0x19, 5, 45, 0, 0x65062,
-	{ 0x8C,  0x23F, 0x244, 0xA6,  0x83,  0x85,  0x86,  0x86,  0x83,  0xDB,  0xDB,  0xDA,  0x67,  0x60,  0x5F  },
-	{ 0x187, 0x193, 0x193, 0x1C7, 0x1D1, 0x1D1, 0x210, 0x219, 0x219, 0x266, 0x26C, 0x26C, 0x2C9, 0x2CB, 0x2CB }
-};
-
 static const struct ci_pt_defaults defaults_saturn_xt =
 {
 	1, 0xF, 0xFD, 0x19, 5, 55, 0, 0x70000,
 	{ 0x8C,  0x247, 0x249, 0xA6,  0x80,  0x81,  0x8B,  0x89,  0x86,  0xC9,  0xCA,  0xC9,  0x4D,  0x4D,  0x4D  },
 	{ 0x187, 0x187, 0x187, 0x1C7, 0x1C7, 0x1C7, 0x210, 0x210, 0x210, 0x266, 0x266, 0x266, 0x2C9, 0x2C9, 0x2C9 }
-};
-
-static const struct ci_pt_defaults defaults_saturn_pro =
-{
-	1, 0xF, 0xFD, 0x19, 5, 55, 0, 0x30000,
-	{ 0x96,  0x21D, 0x23B, 0xA1,  0x85,  0x87,  0x83,  0x84,  0x81,  0xE6,  0xE6,  0xE6,  0x71,  0x6A,  0x6A  },
-	{ 0x193, 0x19E, 0x19E, 0x1D2, 0x1DC, 0x1DC, 0x21A, 0x223, 0x223, 0x26E, 0x27E, 0x274, 0x2CF, 0x2D2, 0x2D2 }
 };
 
 static const struct ci_pt_config_reg didt_config_ci[] =
@@ -2505,7 +2490,8 @@ static void ci_register_patching_mc_arb(struct radeon_device *rdev,
 
 	if (patch &&
 	    ((rdev->pdev->device == 0x67B0) ||
-	     (rdev->pdev->device == 0x67B1))) {
+	     (rdev->pdev->device == 0x67B1)) &&
+	    (rdev->pdev->revision == 0)) {
 		if ((memory_clock > 100000) && (memory_clock <= 125000)) {
 			tmp2 = (((0x31 * engine_clock) / 125000) - 1) & 0xff;
 			*dram_timimg2 &= ~0x00ff0000;
@@ -3346,7 +3332,8 @@ static int ci_populate_all_memory_levels(struct radeon_device *rdev)
 	pi->smc_state_table.MemoryLevel[0].EnabledForActivity = 1;
 
 	if ((dpm_table->mclk_table.count >= 2) &&
-	    ((rdev->pdev->device == 0x67B0) || (rdev->pdev->device == 0x67B1))) {
+	    ((rdev->pdev->device == 0x67B0) || (rdev->pdev->device == 0x67B1)) &&
+	    (rdev->pdev->revision == 0)) {
 		pi->smc_state_table.MemoryLevel[1].MinVddc =
 			pi->smc_state_table.MemoryLevel[0].MinVddc;
 		pi->smc_state_table.MemoryLevel[1].MinVddcPhases =
@@ -4543,7 +4530,8 @@ static int ci_register_patching_mc_seq(struct radeon_device *rdev,
 
 	if (patch &&
 	    ((rdev->pdev->device == 0x67B0) ||
-	     (rdev->pdev->device == 0x67B1))) {
+	     (rdev->pdev->device == 0x67B1)) &&
+	    (rdev->pdev->revision == 0)) {
 		for (i = 0; i < table->last; i++) {
 			if (table->last >= SMU7_DISCRETE_MC_REGISTER_ARRAY_SIZE)
 				return -EINVAL;
@@ -4871,7 +4859,7 @@ static void ci_request_link_speed_change_before_state_change(struct radeon_devic
 			pi->force_pcie_gen = RADEON_PCIE_GEN2;
 			if (current_link_speed == RADEON_PCIE_GEN2)
 				break;
-			/* fall through */
+			fallthrough;
 		case RADEON_PCIE_GEN2:
 			if (radeon_acpi_pcie_performance_request(rdev, PCIE_PERF_REQ_PECI_GEN2, false) == 0)
 				break;

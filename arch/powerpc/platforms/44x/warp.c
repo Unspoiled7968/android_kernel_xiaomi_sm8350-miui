@@ -43,9 +43,6 @@ static int __init warp_probe(void)
 	if (!of_machine_is_compatible("pika,warp"))
 		return 0;
 
-	/* For arch_dma_alloc */
-	ISA_DMA_THRESHOLD = ~0L;
-
 	return 1;
 }
 
@@ -263,6 +260,8 @@ static int pika_dtm_thread(void __iomem *fpga)
 		set_current_state(TASK_INTERRUPTIBLE);
 		schedule_timeout(HZ);
 	}
+
+	put_device(&client->dev);
 
 	return 0;
 }

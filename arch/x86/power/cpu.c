@@ -13,8 +13,8 @@
 #include <linux/perf_event.h>
 #include <linux/tboot.h>
 #include <linux/dmi.h>
+#include <linux/pgtable.h>
 
-#include <asm/pgtable.h>
 #include <asm/proto.h>
 #include <asm/mtrr.h>
 #include <asm/page.h>
@@ -101,11 +101,8 @@ static void __save_processor_state(struct saved_context *ctxt)
 	/*
 	 * segment registers
 	 */
-#ifdef CONFIG_X86_32_LAZY_GS
 	savesegment(gs, ctxt->gs);
-#endif
 #ifdef CONFIG_X86_64
-	savesegment(gs, ctxt->gs);
 	savesegment(fs, ctxt->fs);
 	savesegment(ds, ctxt->ds);
 	savesegment(es, ctxt->es);
@@ -195,6 +192,8 @@ static void fix_processor_context(void)
  */
 static void notrace __restore_processor_state(struct saved_context *ctxt)
 {
+	struct cpuinfo_x86 *c;
+
 	if (ctxt->misc_enable_saved)
 		wrmsrl(MSR_IA32_MISC_ENABLE, ctxt->misc_enable);
 	/*
@@ -232,7 +231,6 @@ static void notrace __restore_processor_state(struct saved_context *ctxt)
 	wrmsrl(MSR_GS_BASE, ctxt->kernelmode_gs_base);
 #else
 	loadsegment(fs, __KERNEL_PERCPU);
-	loadsegment(gs, __KERNEL_STACK_CANARY);
 #endif
 
 	/* Restore the TSS, RO GDT, LDT, and usermode-relevant MSRs. */
@@ -255,7 +253,7 @@ static void notrace __restore_processor_state(struct saved_context *ctxt)
 	 */
 	wrmsrl(MSR_FS_BASE, ctxt->fs_base);
 	wrmsrl(MSR_KERNEL_GS_BASE, ctxt->usermode_gs_base);
-#elif defined(CONFIG_X86_32_LAZY_GS)
+#else
 	loadsegment(gs, ctxt->gs);
 #endif
 
@@ -264,6 +262,10 @@ static void notrace __restore_processor_state(struct saved_context *ctxt)
 	x86_platform.restore_sched_clock_state();
 	mtrr_bp_restore();
 	perf_restore_debug_store();
+
+	c = &cpu_data(smp_processor_id());
+	if (cpu_has(c, X86_FEATURE_MSR_IA32_FEAT_CTL))
+		init_ia32_feat_ctl(c);
 
 	microcode_bsp_resume();
 
@@ -277,19 +279,6 @@ static void notrace __restore_processor_state(struct saved_context *ctxt)
 /* Needed by apm.c */
 void notrace restore_processor_state(void)
 {
-#ifdef __clang__
-	// The following code snippet is copied from __restore_processor_state.
-	// Its purpose is to prepare GS segment before the function is called.
-	// Since the function is compiled with SCS on, it will use GS at its
-	// entry.
-	// TODO: Hack to be removed later when compiler bug is fixed.
-#ifdef CONFIG_X86_64
-	wrmsrl(MSR_GS_BASE, saved_context.kernelmode_gs_base);
-#else
-	loadsegment(fs, __KERNEL_PERCPU);
-	loadsegment(gs, __KERNEL_STACK_CANARY);
-#endif
-#endif
 	__restore_processor_state(&saved_context);
 }
 #ifdef CONFIG_X86_32
@@ -329,7 +318,7 @@ int hibernate_resume_nonboot_cpu_disable(void)
 	if (ret)
 		return ret;
 	smp_ops.play_dead = resume_play_dead;
-	ret = disable_nonboot_cpus();
+	ret = freeze_secondary_cpus(0);
 	smp_ops.play_dead = play_dead;
 	return ret;
 }
@@ -499,20 +488,8 @@ static int msr_save_cpuid_features(const struct x86_cpu_id *c)
 }
 
 static const struct x86_cpu_id msr_save_cpu_table[] = {
-	{
-		.vendor = X86_VENDOR_AMD,
-		.family = 0x15,
-		.model = X86_MODEL_ANY,
-		.feature = X86_FEATURE_ANY,
-		.driver_data = (kernel_ulong_t)msr_save_cpuid_features,
-	},
-	{
-		.vendor = X86_VENDOR_AMD,
-		.family = 0x16,
-		.model = X86_MODEL_ANY,
-		.feature = X86_FEATURE_ANY,
-		.driver_data = (kernel_ulong_t)msr_save_cpuid_features,
-	},
+	X86_MATCH_VENDOR_FAM(AMD, 0x15, &msr_save_cpuid_features),
+	X86_MATCH_VENDOR_FAM(AMD, 0x16, &msr_save_cpuid_features),
 	{}
 };
 

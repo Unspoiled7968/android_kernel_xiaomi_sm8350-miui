@@ -512,7 +512,7 @@ static int cdns_dsi_mode2cfg(struct cdns_dsi *dsi,
 	struct cdns_dsi_output *output = &dsi->output;
 	unsigned int tmp;
 	bool sync_pulse = false;
-	int bpp, nlanes;
+	int bpp;
 
 	memset(dsi_cfg, 0, sizeof(*dsi_cfg));
 
@@ -520,7 +520,6 @@ static int cdns_dsi_mode2cfg(struct cdns_dsi *dsi,
 		sync_pulse = true;
 
 	bpp = mipi_dsi_pixel_format_to_bpp(output->dev->format);
-	nlanes = output->dev->lanes;
 
 	if (mode_valid_check)
 		tmp = mode->htotal -
@@ -609,15 +608,18 @@ static int cdns_dsi_check_conf(struct cdns_dsi *dsi,
 	struct phy_configure_opts_mipi_dphy *phy_cfg = &output->phy_opts.mipi_dphy;
 	unsigned long dsi_hss_hsa_hse_hbp;
 	unsigned int nlanes = output->dev->lanes;
+	int mode_clock = (mode_valid_check ? mode->clock : mode->crtc_clock);
 	int ret;
 
 	ret = cdns_dsi_mode2cfg(dsi, mode, dsi_cfg, mode_valid_check);
 	if (ret)
 		return ret;
 
-	phy_mipi_dphy_get_default_config(mode->crtc_clock * 1000,
-					 mipi_dsi_pixel_format_to_bpp(output->dev->format),
-					 nlanes, phy_cfg);
+	ret = phy_mipi_dphy_get_default_config(mode_clock * 1000,
+					       mipi_dsi_pixel_format_to_bpp(output->dev->format),
+					       nlanes, phy_cfg);
+	if (ret)
+		return ret;
 
 	ret = cdns_dsi_adjust_phy_config(dsi, dsi_cfg, phy_cfg, mode, mode_valid_check);
 	if (ret)
@@ -645,7 +647,8 @@ static int cdns_dsi_check_conf(struct cdns_dsi *dsi,
 	return 0;
 }
 
-static int cdns_dsi_bridge_attach(struct drm_bridge *bridge)
+static int cdns_dsi_bridge_attach(struct drm_bridge *bridge,
+				  enum drm_bridge_attach_flags flags)
 {
 	struct cdns_dsi_input *input = bridge_to_cdns_dsi_input(bridge);
 	struct cdns_dsi *dsi = input_to_dsi(input);
@@ -657,11 +660,13 @@ static int cdns_dsi_bridge_attach(struct drm_bridge *bridge)
 		return -ENOTSUPP;
 	}
 
-	return drm_bridge_attach(bridge->encoder, output->bridge, bridge);
+	return drm_bridge_attach(bridge->encoder, output->bridge, bridge,
+				 flags);
 }
 
 static enum drm_mode_status
 cdns_dsi_bridge_mode_valid(struct drm_bridge *bridge,
+			   const struct drm_display_info *info,
 			   const struct drm_display_mode *mode)
 {
 	struct cdns_dsi_input *input = bridge_to_cdns_dsi_input(bridge);
@@ -784,20 +789,33 @@ static void cdns_dsi_bridge_enable(struct drm_bridge *bridge)
 	struct phy_configure_opts_mipi_dphy *phy_cfg = &output->phy_opts.mipi_dphy;
 	unsigned long tx_byte_period;
 	struct cdns_dsi_cfg dsi_cfg;
-	u32 tmp, reg_wakeup, div;
-	int bpp, nlanes;
+	u32 tmp, reg_wakeup, div, status;
+	int nlanes;
+	int i;
 
 	if (WARN_ON(pm_runtime_get_sync(dsi->base.dev) < 0))
 		return;
 
 	mode = &bridge->encoder->crtc->state->adjusted_mode;
-	bpp = mipi_dsi_pixel_format_to_bpp(output->dev->format);
 	nlanes = output->dev->lanes;
 
 	WARN_ON_ONCE(cdns_dsi_check_conf(dsi, mode, &dsi_cfg, false));
 
 	cdns_dsi_hs_init(dsi);
 	cdns_dsi_init_link(dsi);
+
+	/*
+	 * Now that the DSI Link and DSI Phy are initialized,
+	 * wait for the CLK and Data Lanes to be ready.
+	 */
+	tmp = CLK_LANE_RDY;
+	for (i = 0; i < nlanes; i++)
+		tmp |= DATA_LANE_RDY(i);
+
+	if (readl_poll_timeout(dsi->regs + MCTL_MAIN_STS, status,
+			       (tmp == (status & tmp)), 100, 500000))
+		dev_err(dsi->base.dev,
+			"Timed Out: DSI-DPhy Clock and Data Lanes not ready.\n");
 
 	writel(HBP_LEN(dsi_cfg.hbp) | HSA_LEN(dsi_cfg.hsa),
 	       dsi->regs + VID_HSIZE1);
@@ -956,9 +974,10 @@ static int cdns_dsi_attach(struct mipi_dsi_host *host,
 
 	panel = of_drm_find_panel(np);
 	if (!IS_ERR(panel)) {
-		bridge = drm_panel_bridge_add(panel, DRM_MODE_CONNECTOR_DSI);
+		bridge = drm_panel_bridge_add_typed(panel,
+						    DRM_MODE_CONNECTOR_DSI);
 	} else {
-		bridge = of_drm_find_bridge(dev->dev.of_node);
+		bridge = of_drm_find_bridge(np);
 		if (!bridge)
 			bridge = ERR_PTR(-EINVAL);
 	}

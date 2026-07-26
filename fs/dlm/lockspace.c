@@ -197,8 +197,6 @@ static struct kset *dlm_kset;
 
 static int do_uevent(struct dlm_ls *ls, int in)
 {
-	int error;
-
 	if (in)
 		kobject_uevent(&ls->ls_kobj, KOBJ_ONLINE);
 	else
@@ -209,20 +207,12 @@ static int do_uevent(struct dlm_ls *ls, int in)
 	/* dlm_controld will see the uevent, do the necessary group management
 	   and then write to sysfs to wake us */
 
-	error = wait_event_interruptible(ls->ls_uevent_wait,
-			test_and_clear_bit(LSFL_UEVENT_WAIT, &ls->ls_flags));
+	wait_event(ls->ls_uevent_wait,
+		   test_and_clear_bit(LSFL_UEVENT_WAIT, &ls->ls_flags));
 
-	log_rinfo(ls, "group event done %d %d", error, ls->ls_uevent_result);
+	log_rinfo(ls, "group event done %d", ls->ls_uevent_result);
 
-	if (error)
-		goto out;
-
-	error = ls->ls_uevent_result;
- out:
-	if (error)
-		log_error(ls, "group %s failed %d %d", in ? "join" : "leave",
-			  error, ls->ls_uevent_result);
-	return error;
+	return ls->ls_uevent_result;
 }
 
 static int dlm_uevent(struct kset *kset, struct kobject *kobj,
@@ -649,7 +639,7 @@ static int new_lockspace(const char *name, const char *cluster,
 	   lockspace to start running (via sysfs) in dlm_ls_start(). */
 
 	error = do_uevent(ls, 1);
-	if (error)
+	if (error < 0)
 		goto out_recoverd;
 
 	wait_for_completion(&ls->ls_members_done);
@@ -793,7 +783,7 @@ static int release_lockspace(struct dlm_ls *ls, int force)
 
 	dlm_device_deregister(ls);
 
-	if (force < 3 && dlm_user_daemon_available())
+	if (force != 3 && dlm_user_daemon_available())
 		do_uevent(ls, 0);
 
 	dlm_recoverd_stop(ls);

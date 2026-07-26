@@ -364,7 +364,7 @@ out_nfserrno:
  */
 __be32
 nfsd_setattr(struct svc_rqst *rqstp, struct svc_fh *fhp, struct iattr *iap,
-	     int check_guard, time_t guardtime)
+	     int check_guard, time64_t guardtime)
 {
 	struct dentry	*dentry;
 	struct inode	*inode;
@@ -530,31 +530,47 @@ __be32 nfsd4_set_nfs4_label(struct svc_rqst *rqstp, struct svc_fh *fhp,
 }
 #endif
 
-__be32 nfsd4_clone_file_range(struct file *src, u64 src_pos, struct file *dst,
-		u64 dst_pos, u64 count, bool sync)
+__be32 nfsd4_clone_file_range(struct nfsd_file *nf_src, u64 src_pos,
+		struct nfsd_file *nf_dst, u64 dst_pos, u64 count, bool sync)
 {
+	struct file *src = nf_src->nf_file;
+	struct file *dst = nf_dst->nf_file;
+	errseq_t since;
 	loff_t cloned;
+	__be32 ret = 0;
 
+	since = READ_ONCE(dst->f_wb_err);
 	cloned = vfs_clone_file_range(src, src_pos, dst, dst_pos, count, 0);
-	if (cloned < 0)
-		return nfserrno(cloned);
-	if (count && cloned != count)
-		return nfserrno(-EINVAL);
+	if (cloned < 0) {
+		ret = nfserrno(cloned);
+		goto out_err;
+	}
+	if (count && cloned != count) {
+		ret = nfserrno(-EINVAL);
+		goto out_err;
+	}
 	if (sync) {
 		loff_t dst_end = count ? dst_pos + count - 1 : LLONG_MAX;
 		int status = vfs_fsync_range(dst, dst_pos, dst_end, 0);
 
 		if (!status)
+			status = filemap_check_wb_err(dst->f_mapping, since);
+		if (!status)
 			status = commit_inode_metadata(file_inode(src));
-		if (status < 0)
-			return nfserrno(status);
+		if (status < 0) {
+			nfsd_reset_boot_verifier(net_generic(nf_dst->nf_net,
+						 nfsd_net_id));
+			ret = nfserrno(status);
+		}
 	}
-	return 0;
+out_err:
+	return ret;
 }
 
 ssize_t nfsd_copy_file_range(struct file *src, u64 src_pos, struct file *dst,
 			     u64 dst_pos, u64 count)
 {
+	ssize_t ret;
 
 	/*
 	 * Limit copy to 4MB to prevent indefinitely blocking an nfsd
@@ -565,7 +581,12 @@ ssize_t nfsd_copy_file_range(struct file *src, u64 src_pos, struct file *dst,
 	 * limit like this and pipeline multiple COPY requests.
 	 */
 	count = min_t(u64, count, 1 << 22);
-	return vfs_copy_file_range(src, src_pos, dst, dst_pos, count, 0);
+	ret = vfs_copy_file_range(src, src_pos, dst, dst_pos, count, 0);
+
+	if (ret == -EOPNOTSUPP || ret == -EXDEV)
+		ret = vfs_copy_file_range(src, src_pos, dst, dst_pos, count,
+					  COPY_FILE_SPLICE);
+	return ret;
 }
 
 __be32 nfsd4_vfs_fallocate(struct svc_rqst *rqstp, struct svc_fh *fhp,
@@ -599,6 +620,12 @@ static struct accessmap	nfs3_regaccess[] = {
     {	NFS3_ACCESS_MODIFY,	NFSD_MAY_WRITE|NFSD_MAY_TRUNC	},
     {	NFS3_ACCESS_EXTEND,	NFSD_MAY_WRITE			},
 
+#ifdef CONFIG_NFSD_V4
+    {	NFS4_ACCESS_XAREAD,	NFSD_MAY_READ			},
+    {	NFS4_ACCESS_XAWRITE,	NFSD_MAY_WRITE			},
+    {	NFS4_ACCESS_XALIST,	NFSD_MAY_READ			},
+#endif
+
     {	0,			0				}
 };
 
@@ -608,6 +635,12 @@ static struct accessmap	nfs3_diraccess[] = {
     {	NFS3_ACCESS_MODIFY,	NFSD_MAY_EXEC|NFSD_MAY_WRITE|NFSD_MAY_TRUNC},
     {	NFS3_ACCESS_EXTEND,	NFSD_MAY_EXEC|NFSD_MAY_WRITE	},
     {	NFS3_ACCESS_DELETE,	NFSD_MAY_REMOVE			},
+
+#ifdef CONFIG_NFSD_V4
+    {	NFS4_ACCESS_XAREAD,	NFSD_MAY_READ			},
+    {	NFS4_ACCESS_XAWRITE,	NFSD_MAY_WRITE			},
+    {	NFS4_ACCESS_XALIST,	NFSD_MAY_READ			},
+#endif
 
     {	0,			0				}
 };
@@ -904,7 +937,7 @@ __be32 nfsd_readv(struct svc_rqst *rqstp, struct svc_fh *fhp,
 	ssize_t host_err;
 
 	trace_nfsd_read_vector(rqstp, fhp, offset, *count);
-	iov_iter_kvec(&iter, READ, vec, vlen, *count);
+	iov_iter_kvec(&iter, ITER_DEST, vec, vlen, *count);
 	host_err = vfs_iter_read(file, &iter, &ppos, 0);
 	return nfsd_finish_read(rqstp, fhp, file, offset, count, eof, host_err);
 }
@@ -947,12 +980,15 @@ static int wait_for_concurrent_writes(struct file *file)
 }
 
 __be32
-nfsd_vfs_write(struct svc_rqst *rqstp, struct svc_fh *fhp, struct file *file,
+nfsd_vfs_write(struct svc_rqst *rqstp, struct svc_fh *fhp, struct nfsd_file *nf,
 				loff_t offset, struct kvec *vec, int vlen,
-				unsigned long *cnt, int stable)
+				unsigned long *cnt, int stable,
+				__be32 *verf)
 {
+	struct file		*file = nf->nf_file;
 	struct svc_export	*exp;
 	struct iov_iter		iter;
+	errseq_t		since;
 	__be32			nfserr;
 	int			host_err;
 	int			use_wgather;
@@ -964,12 +1000,13 @@ nfsd_vfs_write(struct svc_rqst *rqstp, struct svc_fh *fhp, struct file *file,
 
 	if (test_bit(RQ_LOCAL, &rqstp->rq_flags))
 		/*
-		 * We want less throttling in balance_dirty_pages()
-		 * and shrink_inactive_list() so that nfs to
+		 * We want throttling in balance_dirty_pages()
+		 * and shrink_inactive_list() to only consider
+		 * the backingdev we are writing to, so that nfs to
 		 * localhost doesn't cause nfsd to lock up due to all
 		 * the client's dirty pages or its congested queue.
 		 */
-		current->flags |= PF_LESS_THROTTLE;
+		current->flags |= PF_LOCAL_THROTTLE;
 
 	exp = fhp->fh_export;
 	use_wgather = (rqstp->rq_vers == 2) && EX_WGATHER(exp);
@@ -980,13 +1017,35 @@ nfsd_vfs_write(struct svc_rqst *rqstp, struct svc_fh *fhp, struct file *file,
 	if (stable && !use_wgather)
 		flags |= RWF_SYNC;
 
-	iov_iter_kvec(&iter, WRITE, vec, vlen, *cnt);
-	host_err = vfs_iter_write(file, &iter, &pos, flags);
-	if (host_err < 0)
+	iov_iter_kvec(&iter, ITER_SOURCE, vec, vlen, *cnt);
+	since = READ_ONCE(file->f_wb_err);
+	if (flags & RWF_SYNC) {
+		if (verf)
+			nfsd_copy_boot_verifier(verf,
+					net_generic(SVC_NET(rqstp),
+					nfsd_net_id));
+		host_err = vfs_iter_write(file, &iter, &pos, flags);
+		if (host_err < 0)
+			nfsd_reset_boot_verifier(net_generic(SVC_NET(rqstp),
+						 nfsd_net_id));
+	} else {
+		if (verf)
+			nfsd_copy_boot_verifier(verf,
+					net_generic(SVC_NET(rqstp),
+					nfsd_net_id));
+		host_err = vfs_iter_write(file, &iter, &pos, flags);
+	}
+	if (host_err < 0) {
+		nfsd_reset_boot_verifier(net_generic(SVC_NET(rqstp),
+					 nfsd_net_id));
 		goto out_nfserr;
+	}
 	*cnt = host_err;
 	nfsdstats.io_write += *cnt;
 	fsnotify_modify(file);
+	host_err = filemap_check_wb_err(file->f_mapping, since);
+	if (host_err < 0)
+		goto out_nfserr;
 
 	if (stable && use_wgather) {
 		host_err = wait_for_concurrent_writes(file);
@@ -1004,7 +1063,7 @@ out_nfserr:
 		nfserr = nfserrno(host_err);
 	}
 	if (test_bit(RQ_LOCAL, &rqstp->rq_flags))
-		current_restore_flags(pflags, PF_LESS_THROTTLE);
+		current_restore_flags(pflags, PF_LOCAL_THROTTLE);
 	return nfserr;
 }
 
@@ -1046,7 +1105,8 @@ __be32 nfsd_read(struct svc_rqst *rqstp, struct svc_fh *fhp,
  */
 __be32
 nfsd_write(struct svc_rqst *rqstp, struct svc_fh *fhp, loff_t offset,
-	   struct kvec *vec, int vlen, unsigned long *cnt, int stable)
+	   struct kvec *vec, int vlen, unsigned long *cnt, int stable,
+	   __be32 *verf)
 {
 	struct nfsd_file *nf;
 	__be32 err;
@@ -1057,8 +1117,8 @@ nfsd_write(struct svc_rqst *rqstp, struct svc_fh *fhp, loff_t offset,
 	if (err)
 		goto out;
 
-	err = nfsd_vfs_write(rqstp, fhp, nf->nf_file, offset, vec,
-			vlen, cnt, stable);
+	err = nfsd_vfs_write(rqstp, fhp, nf, offset, vec,
+			vlen, cnt, stable, verf);
 	nfsd_file_put(nf);
 out:
 	trace_nfsd_write_done(rqstp, fhp, offset, *cnt);
@@ -1077,7 +1137,7 @@ out:
  */
 __be32
 nfsd_commit(struct svc_rqst *rqstp, struct svc_fh *fhp,
-               loff_t offset, unsigned long count)
+               loff_t offset, unsigned long count, __be32 *verf)
 {
 	struct nfsd_file	*nf;
 	loff_t			end = LLONG_MAX;
@@ -1096,20 +1156,29 @@ nfsd_commit(struct svc_rqst *rqstp, struct svc_fh *fhp,
 	if (err)
 		goto out;
 	if (EX_ISSYNC(fhp->fh_export)) {
-		int err2 = vfs_fsync_range(nf->nf_file, offset, end, 0);
+		errseq_t since = READ_ONCE(nf->nf_file->f_wb_err);
+		int err2;
 
+		err2 = vfs_fsync_range(nf->nf_file, offset, end, 0);
 		switch (err2) {
 		case 0:
+			nfsd_copy_boot_verifier(verf, net_generic(nf->nf_net,
+						nfsd_net_id));
+			err2 = filemap_check_wb_err(nf->nf_file->f_mapping,
+						    since);
+			err = nfserrno(err2);
 			break;
 		case -EINVAL:
 			err = nfserr_notsupp;
 			break;
 		default:
-			err = nfserrno(err2);
 			nfsd_reset_boot_verifier(net_generic(nf->nf_net,
 						 nfsd_net_id));
+			err = nfserrno(err2);
 		}
-	}
+	} else
+		nfsd_copy_boot_verifier(verf, net_generic(nf->nf_net,
+					nfsd_net_id));
 
 	nfsd_file_put(nf);
 out:
@@ -1133,7 +1202,7 @@ nfsd_create_setattr(struct svc_rqst *rqstp, struct svc_fh *resfhp,
 	if (!uid_eq(current_fsuid(), GLOBAL_ROOT_UID))
 		iap->ia_valid &= ~(ATTR_UID|ATTR_GID);
 	if (iap->ia_valid)
-		return nfsd_setattr(rqstp, resfhp, iap, 0, (time_t)0);
+		return nfsd_setattr(rqstp, resfhp, iap, 0, (time64_t)0);
 	/* Callers expect file metadata to be committed here */
 	return nfserrno(commit_metadata(resfhp));
 }
@@ -1399,19 +1468,19 @@ do_nfsd_create(struct svc_rqst *rqstp, struct svc_fh *fhp,
 			    && d_inode(dchild)->i_atime.tv_sec == v_atime
 			    && d_inode(dchild)->i_size  == 0 ) {
 				if (created)
-					*created = 1;
+					*created = true;
 				break;
 			}
-			/* fall through */
+			fallthrough;
 		case NFS4_CREATE_EXCLUSIVE4_1:
 			if (   d_inode(dchild)->i_mtime.tv_sec == v_mtime
 			    && d_inode(dchild)->i_atime.tv_sec == v_atime
 			    && d_inode(dchild)->i_size  == 0 ) {
 				if (created)
-					*created = 1;
+					*created = true;
 				goto set_attr;
 			}
-			/* fall through */
+			fallthrough;
 		case NFS3_CREATE_GUARDED:
 			err = nfserr_exist;
 		}
@@ -1428,7 +1497,7 @@ do_nfsd_create(struct svc_rqst *rqstp, struct svc_fh *fhp,
 		goto out_nfserr;
 	}
 	if (created)
-		*created = 1;
+		*created = true;
 
 	nfsd_check_ignore_resizing(iap);
 
@@ -1831,7 +1900,17 @@ nfsd_unlink(struct svc_rqst *rqstp, struct svc_fh *fhp, int type,
 out_drop_write:
 	fh_drop_write(fhp);
 out_nfserr:
-	err = nfserrno(host_err);
+	if (host_err == -EBUSY) {
+		/* name is mounted-on. There is no perfect
+		 * error status.
+		 */
+		if (nfsd_v4client(rqstp))
+			err = nfserr_file_open;
+		else
+			err = nfserr_acces;
+	} else {
+		err = nfserrno(host_err);
+	}
 out:
 	return err;
 }
@@ -2012,6 +2091,235 @@ static int exp_rdonly(struct svc_rqst *rqstp, struct svc_export *exp)
 {
 	return nfsexp_flags(rqstp, exp) & NFSEXP_READONLY;
 }
+
+#ifdef CONFIG_NFSD_V4
+/*
+ * Helper function to translate error numbers. In the case of xattr operations,
+ * some error codes need to be translated outside of the standard translations.
+ *
+ * ENODATA needs to be translated to nfserr_noxattr.
+ * E2BIG to nfserr_xattr2big.
+ *
+ * Additionally, vfs_listxattr can return -ERANGE. This means that the
+ * file has too many extended attributes to retrieve inside an
+ * XATTR_LIST_MAX sized buffer. This is a bug in the xattr implementation:
+ * filesystems will allow the adding of extended attributes until they hit
+ * their own internal limit. This limit may be larger than XATTR_LIST_MAX.
+ * So, at that point, the attributes are present and valid, but can't
+ * be retrieved using listxattr, since the upper level xattr code enforces
+ * the XATTR_LIST_MAX limit.
+ *
+ * This bug means that we need to deal with listxattr returning -ERANGE. The
+ * best mapping is to return TOOSMALL.
+ */
+static __be32
+nfsd_xattr_errno(int err)
+{
+	switch (err) {
+	case -ENODATA:
+		return nfserr_noxattr;
+	case -E2BIG:
+		return nfserr_xattr2big;
+	case -ERANGE:
+		return nfserr_toosmall;
+	}
+	return nfserrno(err);
+}
+
+/*
+ * Retrieve the specified user extended attribute. To avoid always
+ * having to allocate the maximum size (since we are not getting
+ * a maximum size from the RPC), do a probe + alloc. Hold a reader
+ * lock on i_rwsem to prevent the extended attribute from changing
+ * size while we're doing this.
+ */
+__be32
+nfsd_getxattr(struct svc_rqst *rqstp, struct svc_fh *fhp, char *name,
+	      void **bufp, int *lenp)
+{
+	ssize_t len;
+	__be32 err;
+	char *buf;
+	struct inode *inode;
+	struct dentry *dentry;
+
+	err = fh_verify(rqstp, fhp, 0, NFSD_MAY_READ);
+	if (err)
+		return err;
+
+	err = nfs_ok;
+	dentry = fhp->fh_dentry;
+	inode = d_inode(dentry);
+
+	inode_lock_shared(inode);
+
+	len = vfs_getxattr(dentry, name, NULL, 0);
+
+	/*
+	 * Zero-length attribute, just return.
+	 */
+	if (len == 0) {
+		*bufp = NULL;
+		*lenp = 0;
+		goto out;
+	}
+
+	if (len < 0) {
+		err = nfsd_xattr_errno(len);
+		goto out;
+	}
+
+	if (len > *lenp) {
+		err = nfserr_toosmall;
+		goto out;
+	}
+
+	buf = kvmalloc(len, GFP_KERNEL | GFP_NOFS);
+	if (buf == NULL) {
+		err = nfserr_jukebox;
+		goto out;
+	}
+
+	len = vfs_getxattr(dentry, name, buf, len);
+	if (len <= 0) {
+		kvfree(buf);
+		buf = NULL;
+		err = nfsd_xattr_errno(len);
+	}
+
+	*lenp = len;
+	*bufp = buf;
+
+out:
+	inode_unlock_shared(inode);
+
+	return err;
+}
+
+/*
+ * Retrieve the xattr names. Since we can't know how many are
+ * user extended attributes, we must get all attributes here,
+ * and have the XDR encode filter out the "user." ones.
+ *
+ * While this could always just allocate an XATTR_LIST_MAX
+ * buffer, that's a waste, so do a probe + allocate. To
+ * avoid any changes between the probe and allocate, wrap
+ * this in inode_lock.
+ */
+__be32
+nfsd_listxattr(struct svc_rqst *rqstp, struct svc_fh *fhp, char **bufp,
+	       int *lenp)
+{
+	ssize_t len;
+	__be32 err;
+	char *buf;
+	struct inode *inode;
+	struct dentry *dentry;
+
+	err = fh_verify(rqstp, fhp, 0, NFSD_MAY_READ);
+	if (err)
+		return err;
+
+	dentry = fhp->fh_dentry;
+	inode = d_inode(dentry);
+	*lenp = 0;
+
+	inode_lock_shared(inode);
+
+	len = vfs_listxattr(dentry, NULL, 0);
+	if (len <= 0) {
+		err = nfsd_xattr_errno(len);
+		goto out;
+	}
+
+	if (len > XATTR_LIST_MAX) {
+		err = nfserr_xattr2big;
+		goto out;
+	}
+
+	/*
+	 * We're holding i_rwsem - use GFP_NOFS.
+	 */
+	buf = kvmalloc(len, GFP_KERNEL | GFP_NOFS);
+	if (buf == NULL) {
+		err = nfserr_jukebox;
+		goto out;
+	}
+
+	len = vfs_listxattr(dentry, buf, len);
+	if (len <= 0) {
+		kvfree(buf);
+		err = nfsd_xattr_errno(len);
+		goto out;
+	}
+
+	*lenp = len;
+	*bufp = buf;
+
+	err = nfs_ok;
+out:
+	inode_unlock_shared(inode);
+
+	return err;
+}
+
+/*
+ * Removexattr and setxattr need to call fh_lock to both lock the inode
+ * and set the change attribute. Since the top-level vfs_removexattr
+ * and vfs_setxattr calls already do their own inode_lock calls, call
+ * the _locked variant. Pass in a NULL pointer for delegated_inode,
+ * and let the client deal with NFS4ERR_DELAY (same as with e.g.
+ * setattr and remove).
+ */
+__be32
+nfsd_removexattr(struct svc_rqst *rqstp, struct svc_fh *fhp, char *name)
+{
+	__be32 err;
+	int ret;
+
+	err = fh_verify(rqstp, fhp, 0, NFSD_MAY_WRITE);
+	if (err)
+		return err;
+
+	ret = fh_want_write(fhp);
+	if (ret)
+		return nfserrno(ret);
+
+	fh_lock(fhp);
+
+	ret = __vfs_removexattr_locked(fhp->fh_dentry, name, NULL);
+
+	fh_unlock(fhp);
+	fh_drop_write(fhp);
+
+	return nfsd_xattr_errno(ret);
+}
+
+__be32
+nfsd_setxattr(struct svc_rqst *rqstp, struct svc_fh *fhp, char *name,
+	      void *buf, u32 len, u32 flags)
+{
+	__be32 err;
+	int ret;
+
+	err = fh_verify(rqstp, fhp, 0, NFSD_MAY_WRITE);
+	if (err)
+		return err;
+
+	ret = fh_want_write(fhp);
+	if (ret)
+		return nfserrno(ret);
+	fh_lock(fhp);
+
+	ret = __vfs_setxattr_locked(fhp->fh_dentry, name, buf, len, flags,
+				    NULL);
+
+	fh_unlock(fhp);
+	fh_drop_write(fhp);
+
+	return nfsd_xattr_errno(ret);
+}
+#endif
 
 /*
  * Check for a user's access permissions to this inode.

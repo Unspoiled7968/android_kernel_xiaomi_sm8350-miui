@@ -50,6 +50,8 @@ static const struct isst_valid_cmd_ranges isst_valid_cmds[] = {
 	{0x7F, 0x00, 0x0B},
 	{0x7F, 0x10, 0x12},
 	{0x7F, 0x20, 0x23},
+	{0x94, 0x03, 0x03},
+	{0x95, 0x03, 0x03},
 };
 
 static const struct isst_cmd_set_req_type isst_cmd_set_reqs[] = {
@@ -59,6 +61,7 @@ static const struct isst_cmd_set_req_type isst_cmd_set_reqs[] = {
 	{0xD0, 0x03, 0x08},
 	{0x7F, 0x02, 0x00},
 	{0x7F, 0x08, 0x00},
+	{0x95, 0x03, 0x03},
 };
 
 struct isst_cmd {
@@ -74,7 +77,7 @@ static DECLARE_HASHTABLE(isst_hash, 8);
 static DEFINE_MUTEX(isst_hash_lock);
 
 static int isst_store_new_cmd(int cmd, u32 cpu, int mbox_cmd_type, u32 param,
-			      u32 data)
+			      u64 data)
 {
 	struct isst_cmd *sst_cmd;
 

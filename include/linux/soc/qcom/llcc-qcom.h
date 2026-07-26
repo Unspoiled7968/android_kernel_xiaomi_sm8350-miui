@@ -84,6 +84,30 @@ struct llcc_slice_config {
 };
 
 /**
+ * llcc_edac_reg_data - llcc edac registers data for each error type
+ * @name: Name of the error
+ * @synd_reg: Syndrome register address
+ * @count_status_reg: Status register address to read the error count
+ * @ways_status_reg: Status register address to read the error ways
+ * @reg_cnt: Number of registers
+ * @count_mask: Mask value to get the error count
+ * @ways_mask: Mask value to get the error ways
+ * @count_shift: Shift value to get the error count
+ * @ways_shift: Shift value to get the error ways
+ */
+struct llcc_edac_reg_data {
+	char *name;
+	u64 synd_reg;
+	u64 count_status_reg;
+	u64 ways_status_reg;
+	u32 reg_cnt;
+	u32 count_mask;
+	u32 ways_mask;
+	u8  count_shift;
+	u8  ways_shift;
+};
+
+/**
  * llcc_drv_data - Data associated with the llcc driver
  * @regmap: regmap associated with the llcc device
  * @bcast_regmap: regmap associated with llcc broadcast offset
@@ -108,30 +132,6 @@ struct llcc_drv_data {
 	u32 *offsets;
 	int ecc_irq;
 	bool cap_based_alloc_and_pwr_collapse;
-};
-
-/**
- * llcc_edac_reg_data - llcc edac registers data for each error type
- * @name: Name of the error
- * @synd_reg: Syndrome register address
- * @count_status_reg: Status register address to read the error count
- * @ways_status_reg: Status register address to read the error ways
- * @reg_cnt: Number of registers
- * @count_mask: Mask value to get the error count
- * @ways_mask: Mask value to get the error ways
- * @count_shift: Shift value to get the error count
- * @ways_shift: Shift value to get the error ways
- */
-struct llcc_edac_reg_data {
-	char *name;
-	u64 synd_reg;
-	u64 count_status_reg;
-	u64 ways_status_reg;
-	u32 reg_cnt;
-	u32 count_mask;
-	u32 ways_mask;
-	u8  count_shift;
-	u8  ways_shift;
 };
 
 #if IS_ENABLED(CONFIG_QCOM_LLCC)
@@ -171,20 +171,6 @@ int llcc_slice_activate(struct llcc_slice_desc *desc);
  */
 int llcc_slice_deactivate(struct llcc_slice_desc *desc);
 
-/**
- * qcom_llcc_probe - program the sct table
- * @pdev: platform device pointer
- * @table: soc sct table
- * @sz: Size of the config table
- */
-int qcom_llcc_probe(struct platform_device *pdev,
-		      const struct llcc_slice_config *table, u32 sz);
-
-/**
- * qcom_llcc_remove - remove the sct table
- * @pdev: Platform device pointer
- */
-int qcom_llcc_remove(struct platform_device *pdev);
 #else
 static inline struct llcc_slice_desc *llcc_slice_getd(u32 uid)
 {
@@ -213,16 +199,6 @@ static inline int llcc_slice_activate(struct llcc_slice_desc *desc)
 static inline int llcc_slice_deactivate(struct llcc_slice_desc *desc)
 {
 	return -EINVAL;
-}
-static inline int qcom_llcc_probe(struct platform_device *pdev,
-		      const struct llcc_slice_config *table, u32 sz)
-{
-	return -ENODEV;
-}
-
-static inline int qcom_llcc_remove(struct platform_device *pdev)
-{
-	return -ENODEV;
 }
 #endif
 

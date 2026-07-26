@@ -548,7 +548,7 @@ static void rockchip_usb2phy_otg_sm_work(struct work_struct *work)
 		rport->state = OTG_STATE_B_IDLE;
 		if (!vbus_attach)
 			rockchip_usb2phy_power_off(rport->phy);
-		/* fall through */
+		fallthrough;
 	case OTG_STATE_B_IDLE:
 		if (extcon_get_state(rphy->edev, EXTCON_USB_HOST) > 0) {
 			dev_dbg(&rport->phy->dev, "usb otg host connect\n");
@@ -689,17 +689,20 @@ static void rockchip_chg_detect_work(struct work_struct *work)
 		container_of(work, struct rockchip_usb2phy_port, chg_work.work);
 	struct rockchip_usb2phy *rphy = dev_get_drvdata(rport->phy->dev.parent);
 	struct regmap *base = get_reg_base(rphy);
-	bool is_dcd, tmout, vout;
+	bool is_dcd, tmout, vout, vbus_attach;
 	unsigned long delay;
+
+	vbus_attach = property_enabled(rphy->grf, &rport->port_cfg->utmi_bvalid);
 
 	dev_dbg(&rport->phy->dev, "chg detection work state = %d\n",
 		rphy->chg_state);
 	switch (rphy->chg_state) {
 	case USB_CHG_STATE_UNDEFINED:
-		if (!rport->suspended)
+		if (!rport->suspended && !vbus_attach)
 			rockchip_usb2phy_power_off(rport->phy);
 		/* put the controller in non-driving mode */
-		property_enable(base, &rphy->phy_cfg->chg_det.opmode, false);
+		if (!vbus_attach)
+			property_enable(base, &rphy->phy_cfg->chg_det.opmode, false);
 		/* Start DCD processing stage 1 */
 		rockchip_chg_enable_dcd(rphy, true);
 		rphy->chg_state = USB_CHG_STATE_WAIT_FOR_DCD;
@@ -756,16 +759,17 @@ static void rockchip_chg_detect_work(struct work_struct *work)
 			rphy->chg_type = POWER_SUPPLY_TYPE_USB_DCP;
 		else
 			rphy->chg_type = POWER_SUPPLY_TYPE_USB_CDP;
-		/* fall through */
+		fallthrough;
 	case USB_CHG_STATE_SECONDARY_DONE:
 		rphy->chg_state = USB_CHG_STATE_DETECTED;
 		delay = 0;
-		/* fall through */
+		fallthrough;
 	case USB_CHG_STATE_DETECTED:
 		/* put the controller in normal mode */
-		property_enable(base, &rphy->phy_cfg->chg_det.opmode, true);
+		if (!vbus_attach)
+			property_enable(base, &rphy->phy_cfg->chg_det.opmode, true);
 		rockchip_usb2phy_otg_sm_work(&rport->otg_sm_work.work);
-		dev_info(&rport->phy->dev, "charger = %s\n",
+		dev_dbg(&rport->phy->dev, "charger = %s\n",
 			 chg_to_string(rphy->chg_type));
 		return;
 	default:
@@ -837,7 +841,7 @@ static void rockchip_usb2phy_sm_work(struct work_struct *work)
 			dev_dbg(&rport->phy->dev, "FS/LS online\n");
 			break;
 		}
-		/* fall through */
+		fallthrough;
 	case PHY_STATE_CONNECT:
 		if (rport->suspended) {
 			dev_dbg(&rport->phy->dev, "Connected\n");
@@ -1425,6 +1429,7 @@ static const struct rockchip_usb2phy_cfg rv1108_phy_cfgs[] = {
 };
 
 static const struct of_device_id rockchip_usb2phy_dt_match[] = {
+	{ .compatible = "rockchip,px30-usb2phy", .data = &rk3328_phy_cfgs },
 	{ .compatible = "rockchip,rk3228-usb2phy", .data = &rk3228_phy_cfgs },
 	{ .compatible = "rockchip,rk3328-usb2phy", .data = &rk3328_phy_cfgs },
 	{ .compatible = "rockchip,rk3366-usb2phy", .data = &rk3366_phy_cfgs },

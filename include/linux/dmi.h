@@ -60,6 +60,7 @@ enum dmi_entry_type {
 	DMI_ENTRY_OOB_REMOTE_ACCESS,
 	DMI_ENTRY_BIS_ENTRY,
 	DMI_ENTRY_SYSTEM_BOOT,
+	DMI_ENTRY_64_MEM_ERROR,
 	DMI_ENTRY_MGMT_DEV,
 	DMI_ENTRY_MGMT_DEV_COMPONENT,
 	DMI_ENTRY_MGMT_DEV_THRES,
@@ -69,6 +70,10 @@ enum dmi_entry_type {
 	DMI_ENTRY_ADDITIONAL,
 	DMI_ENTRY_ONBOARD_DEV_EXT,
 	DMI_ENTRY_MGMT_CONTROLLER_HOST,
+	DMI_ENTRY_TPM_DEVICE,
+	DMI_ENTRY_PROCESSOR_ADDITIONAL,
+	DMI_ENTRY_FIRMWARE_INVENTORY,
+	DMI_ENTRY_STRING_PROPERTY,
 	DMI_ENTRY_INACTIVE = 126,
 	DMI_ENTRY_END_OF_TABLE = 127,
 };
@@ -113,6 +118,8 @@ extern int dmi_walk(void (*decode)(const struct dmi_header *, void *),
 extern bool dmi_match(enum dmi_field f, const char *str);
 extern void dmi_memdev_name(u16 handle, const char **bank, const char **device);
 extern u64 dmi_memdev_size(u16 handle);
+extern u8 dmi_memdev_type(u16 handle);
+extern u16 dmi_memdev_handle(int slot);
 
 #else
 
@@ -142,6 +149,8 @@ static inline bool dmi_match(enum dmi_field f, const char *str)
 static inline void dmi_memdev_name(u16 handle, const char **bank,
 		const char **device) { }
 static inline u64 dmi_memdev_size(u16 handle) { return ~0ul; }
+static inline u8 dmi_memdev_type(u16 handle) { return 0x0; }
+static inline u16 dmi_memdev_handle(int slot) { return 0xffff; }
 static inline const struct dmi_system_id *
 	dmi_first_match(const struct dmi_system_id *list) { return NULL; }
 

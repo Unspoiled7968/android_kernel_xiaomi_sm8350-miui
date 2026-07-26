@@ -125,7 +125,7 @@ static netdev_tx_t     sun3_82586_send_packet(struct sk_buff *,
 					      struct net_device *);
 static struct  net_device_stats *sun3_82586_get_stats(struct net_device *dev);
 static void    set_multicast_list(struct net_device *dev);
-static void    sun3_82586_timeout(struct net_device *dev);
+static void    sun3_82586_timeout(struct net_device *dev, unsigned int txqueue);
 #if 0
 static void    sun3_82586_dump(struct net_device *,void *);
 #endif
@@ -965,7 +965,7 @@ static void startrecv586(struct net_device *dev)
 	WAIT_4_SCB_CMD_RUC();	/* wait for accept cmd. (no timeout!!) */
 }
 
-static void sun3_82586_timeout(struct net_device *dev)
+static void sun3_82586_timeout(struct net_device *dev, unsigned int txqueue)
 {
 	struct priv *p = netdev_priv(dev);
 #ifndef NO_NOPCOMMANDS
@@ -1015,6 +1015,7 @@ sun3_82586_send_packet(struct sk_buff *skb, struct net_device *dev)
 	if(skb->len > XMIT_BUFF_SIZE)
 	{
 		printk("%s: Sorry, max. framelength is %d bytes. The length of your frame is %d bytes.\n",dev->name,XMIT_BUFF_SIZE,skb->len);
+		dev_kfree_skb(skb);
 		return NETDEV_TX_OK;
 	}
 

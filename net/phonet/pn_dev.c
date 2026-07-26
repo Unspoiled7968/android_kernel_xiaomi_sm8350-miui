@@ -35,8 +35,6 @@ static unsigned int phonet_net_id __read_mostly;
 
 static struct phonet_net *phonet_pernet(struct net *net)
 {
-	BUG_ON(!net);
-
 	return net_generic(net, phonet_net_id);
 }
 
@@ -100,11 +98,14 @@ static void phonet_device_destroy(struct net_device *dev)
 	mutex_unlock(&pndevs->lock);
 
 	if (pnd) {
+		struct net *net = dev_net(dev);
+		u32 ifindex = dev->ifindex;
 		u8 addr;
 
 		for_each_set_bit(addr, pnd->addrs, 64)
-			phonet_address_notify(RTM_DELADDR, dev, addr);
-		kfree(pnd);
+			phonet_address_notify(net, RTM_DELADDR, ifindex, addr);
+
+		kfree_rcu(pnd, rcu);
 	}
 }
 
@@ -124,8 +125,7 @@ struct net_device *phonet_device_get(struct net *net)
 			break;
 		dev = NULL;
 	}
-	if (dev)
-		dev_hold(dev);
+	dev_hold(dev);
 	rcu_read_unlock();
 	return dev;
 }
@@ -247,8 +247,9 @@ static int phonet_device_autoconf(struct net_device *dev)
 	ret = phonet_address_add(dev, req.ifr_phonet_autoconf.device);
 	if (ret)
 		return ret;
-	phonet_address_notify(RTM_NEWADDR, dev,
-				req.ifr_phonet_autoconf.device);
+
+	phonet_address_notify(dev_net(dev), RTM_NEWADDR, dev->ifindex,
+			      req.ifr_phonet_autoconf.device);
 	return 0;
 }
 
@@ -413,8 +414,7 @@ struct net_device *phonet_route_output(struct net *net, u8 daddr)
 	daddr >>= 2;
 	rcu_read_lock();
 	dev = rcu_dereference(routes->table[daddr]);
-	if (dev)
-		dev_hold(dev);
+	dev_hold(dev);
 	rcu_read_unlock();
 
 	if (!dev)

@@ -266,10 +266,12 @@ static void roclk_disable(struct clk_hw *hw)
 	writel(REFO_ON | REFO_OE, PIC32_CLR(refo->ctrl_reg));
 }
 
-static void roclk_init(struct clk_hw *hw)
+static int roclk_init(struct clk_hw *hw)
 {
 	/* initialize clock in disabled state */
 	roclk_disable(hw);
+
+	return 0;
 }
 
 static u8 roclk_get_parent(struct clk_hw *hw)
@@ -279,14 +281,13 @@ static u8 roclk_get_parent(struct clk_hw *hw)
 
 	v = (readl(refo->ctrl_reg) >> REFO_SEL_SHIFT) & REFO_SEL_MASK;
 
-	if (!refo->parent_map)
-		return v;
+	if (refo->parent_map) {
+		for (i = 0; i < clk_hw_get_num_parents(hw); i++)
+			if (refo->parent_map[i] == v)
+				return i;
+	}
 
-	for (i = 0; i < clk_hw_get_num_parents(hw); i++)
-		if (refo->parent_map[i] == v)
-			return i;
-
-	return -EINVAL;
+	return v;
 }
 
 static unsigned long roclk_calc_rate(unsigned long parent_rate,
@@ -821,13 +822,13 @@ static u8 sclk_get_parent(struct clk_hw *hw)
 
 	v = (readl(sclk->mux_reg) >> OSC_CUR_SHIFT) & OSC_CUR_MASK;
 
-	if (!sclk->parent_map)
-		return v;
+	if (sclk->parent_map) {
+		for (i = 0; i < clk_hw_get_num_parents(hw); i++)
+			if (sclk->parent_map[i] == v)
+				return i;
+	}
 
-	for (i = 0; i < clk_hw_get_num_parents(hw); i++)
-		if (sclk->parent_map[i] == v)
-			return i;
-	return -EINVAL;
+	return v;
 }
 
 static int sclk_set_parent(struct clk_hw *hw, u8 index)
@@ -880,7 +881,7 @@ static int sclk_set_parent(struct clk_hw *hw, u8 index)
 	return err;
 }
 
-static void sclk_init(struct clk_hw *hw)
+static int sclk_init(struct clk_hw *hw)
 {
 	struct pic32_sys_clk *sclk = clkhw_to_sys_clk(hw);
 	unsigned long flags;
@@ -899,6 +900,8 @@ static void sclk_init(struct clk_hw *hw)
 		writel(v, sclk->slew_reg);
 		spin_unlock_irqrestore(&sclk->core->reg_lock, flags);
 	}
+
+	return 0;
 }
 
 /* sclk with post-divider */

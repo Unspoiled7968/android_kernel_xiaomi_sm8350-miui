@@ -677,7 +677,7 @@ SYSCALL_DEFINE2(osf_proplist_syscall, enum pl_code, code,
 	default:
 		error = -EOPNOTSUPP;
 		break;
-	};
+	}
 	return error;
 }
 
@@ -971,30 +971,6 @@ put_tv_to_tv32(struct timeval32 __user *o, struct __kernel_old_timeval *i)
 			    sizeof(struct timeval32));
 }
 
-static inline long
-get_it32(struct itimerval *o, struct itimerval32 __user *i)
-{
-	struct itimerval32 itv;
-	if (copy_from_user(&itv, i, sizeof(struct itimerval32)))
-		return -EFAULT;
-	o->it_interval.tv_sec = itv.it_interval.tv_sec;
-	o->it_interval.tv_usec = itv.it_interval.tv_usec;
-	o->it_value.tv_sec = itv.it_value.tv_sec;
-	o->it_value.tv_usec = itv.it_value.tv_usec;
-	return 0;
-}
-
-static inline long
-put_it32(struct itimerval32 __user *o, struct itimerval *i)
-{
-	return copy_to_user(o, &(struct itimerval32){
-				.it_interval.tv_sec = o->it_interval.tv_sec,
-				.it_interval.tv_usec = o->it_interval.tv_usec,
-				.it_value.tv_sec = o->it_value.tv_sec,
-				.it_value.tv_usec = o->it_value.tv_usec},
-			    sizeof(struct itimerval32));
-}
-
 static inline void
 jiffies_to_timeval32(unsigned long jiffies, struct timeval32 *value)
 {
@@ -1038,47 +1014,6 @@ SYSCALL_DEFINE2(osf_settimeofday, struct timeval32 __user *, tv,
 }
 
 asmlinkage long sys_ni_posix_timers(void);
-
-SYSCALL_DEFINE2(osf_getitimer, int, which, struct itimerval32 __user *, it)
-{
-	struct itimerval kit;
-	int error;
-
-	if (!IS_ENABLED(CONFIG_POSIX_TIMERS))
-		return sys_ni_posix_timers();
-
-	error = do_getitimer(which, &kit);
-	if (!error && put_it32(it, &kit))
-		error = -EFAULT;
-
-	return error;
-}
-
-SYSCALL_DEFINE3(osf_setitimer, int, which, struct itimerval32 __user *, in,
-		struct itimerval32 __user *, out)
-{
-	struct itimerval kin, kout;
-	int error;
-
-	if (!IS_ENABLED(CONFIG_POSIX_TIMERS))
-		return sys_ni_posix_timers();
-
-	if (in) {
-		if (get_it32(&kin, in))
-			return -EFAULT;
-	} else
-		memset(&kin, 0, sizeof(kin));
-
-	error = do_setitimer(which, &kin, out ? &kout : NULL);
-	if (error || !out)
-		return error;
-
-	if (put_it32(out, &kout))
-		return -EFAULT;
-
-	return 0;
-
-}
 
 SYSCALL_DEFINE2(osf_utimes, const char __user *, filename,
 		struct timeval32 __user *, tvs)
@@ -1277,8 +1212,7 @@ SYSCALL_DEFINE1(old_adjtimex, struct timex32 __user *, txc_p)
 	return ret;
 }
 
-/* Get an address range which is currently unmapped.  Similar to the
-   generic version except that we know how to honor ADDR_LIMIT_32BIT.  */
+/* Get an address range which is currently unmapped. */
 
 static unsigned long
 arch_get_unmapped_area_1(unsigned long addr, unsigned long len,
@@ -1300,13 +1234,7 @@ arch_get_unmapped_area(struct file *filp, unsigned long addr,
 		       unsigned long len, unsigned long pgoff,
 		       unsigned long flags)
 {
-	unsigned long limit;
-
-	/* "32 bit" actually means 31 bit, since pointers sign extend.  */
-	if (current->personality & ADDR_LIMIT_32BIT)
-		limit = 0x80000000;
-	else
-		limit = TASK_SIZE;
+	unsigned long limit = TASK_SIZE;
 
 	if (len > limit)
 		return -ENOMEM;

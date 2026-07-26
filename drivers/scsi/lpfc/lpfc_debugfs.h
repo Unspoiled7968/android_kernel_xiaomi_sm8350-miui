@@ -44,10 +44,12 @@
 /* hbqinfo output buffer size */
 #define LPFC_HBQINFO_SIZE 8192
 
+/* hdwqinfo output buffer size */
+#define LPFC_HDWQINFO_SIZE 8192
+
 /* nvmestat output buffer size */
 #define LPFC_NVMESTAT_SIZE 8192
-#define LPFC_NVMEKTIME_SIZE 8192
-#define LPFC_CPUCHECK_SIZE 8192
+#define LPFC_IOKTIME_SIZE 8192
 #define LPFC_NVMEIO_TRC_SIZE 8192
 
 /* scsistat output buffer size */

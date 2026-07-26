@@ -17,6 +17,7 @@
 #include <linux/leds.h>
 #include <linux/spinlock.h>
 #include <linux/notifier.h>
+#include <linux/android_kabi.h>
 
 /*
  * All voltages, currents, charges, energies, time and temperatures in uV,
@@ -48,6 +49,13 @@ enum {
 	POWER_SUPPLY_CHARGE_TYPE_STANDARD,	/* normal speed */
 	POWER_SUPPLY_CHARGE_TYPE_ADAPTIVE,	/* dynamically adjusted speed */
 	POWER_SUPPLY_CHARGE_TYPE_CUSTOM,	/* use CHARGE_CONTROL_* props */
+	POWER_SUPPLY_CHARGE_TYPE_LONGLIFE,	/* slow speed, longer life */
+
+	/*
+	 * force to 50 to minimize the chances of userspace binary
+	 * incompatibility on newer upstream kernels
+	 */
+	POWER_SUPPLY_CHARGE_TYPE_TAPER = 50,	/* charging in CV phase */
 };
 
 enum {
@@ -261,15 +269,17 @@ struct power_supply_config {
 
 	char **supplied_to;
 	size_t num_supplicants;
+
+	ANDROID_KABI_RESERVE(1);
 };
 
 /* Description of power supply */
 struct power_supply_desc {
 	const char *name;
 	enum power_supply_type type;
-	enum power_supply_usb_type *usb_types;
+	const enum power_supply_usb_type *usb_types;
 	size_t num_usb_types;
-	enum power_supply_property *properties;
+	const enum power_supply_property *properties;
 	size_t num_properties;
 
 	/*
@@ -302,6 +312,8 @@ struct power_supply_desc {
 	bool no_thermal;
 	/* For APM emulation, think legacy userspace. */
 	int use_for_apm;
+
+	ANDROID_KABI_RESERVE(1);
 };
 
 struct power_supply {
@@ -343,6 +355,8 @@ struct power_supply {
 	struct led_trigger *charging_blink_full_solid_trig;
 	char *charging_blink_full_solid_trig_name;
 #endif
+
+	ANDROID_KABI_RESERVE(1);
 };
 
 /*
@@ -390,16 +404,28 @@ struct power_supply_battery_info {
 	int charge_full_design_uah;	    /* microAmp-hours */
 	int voltage_min_design_uv;	    /* microVolts */
 	int voltage_max_design_uv;	    /* microVolts */
+	int tricklecharge_current_ua;	    /* microAmps */
 	int precharge_current_ua;	    /* microAmps */
+	int precharge_voltage_max_uv;	    /* microVolts */
 	int charge_term_current_ua;	    /* microAmps */
+	int charge_restart_voltage_uv;	    /* microVolts */
+	int overvoltage_limit_uv;	    /* microVolts */
 	int constant_charge_current_max_ua; /* microAmps */
 	int constant_charge_voltage_max_uv; /* microVolts */
 	int factory_internal_resistance_uohm;   /* microOhms */
 	int ocv_temp[POWER_SUPPLY_OCV_TEMP_MAX];/* celsius */
+	int temp_ambient_alert_min;             /* celsius */
+	int temp_ambient_alert_max;             /* celsius */
+	int temp_alert_min;                     /* celsius */
+	int temp_alert_max;                     /* celsius */
+	int temp_min;                           /* celsius */
+	int temp_max;                           /* celsius */
 	struct power_supply_battery_ocv_table *ocv_table[POWER_SUPPLY_OCV_TEMP_MAX];
 	int ocv_table_size[POWER_SUPPLY_OCV_TEMP_MAX];
 	struct power_supply_resistance_temp_table *resist_table;
 	int resist_table_size;
+
+	ANDROID_KABI_RESERVE(1);
 };
 
 extern struct atomic_notifier_head power_supply_notifier;
@@ -410,12 +436,22 @@ extern void power_supply_put(struct power_supply *psy);
 #ifdef CONFIG_OF
 extern struct power_supply *power_supply_get_by_phandle(struct device_node *np,
 							const char *property);
+extern int power_supply_get_by_phandle_array(struct device_node *np,
+					     const char *property,
+					     struct power_supply **psy,
+					     ssize_t size);
 extern struct power_supply *devm_power_supply_get_by_phandle(
 				    struct device *dev, const char *property);
 #else /* !CONFIG_OF */
 static inline struct power_supply *
 power_supply_get_by_phandle(struct device_node *np, const char *property)
 { return NULL; }
+static inline int
+power_supply_get_by_phandle_array(struct device_node *np,
+				  const char *property,
+				  struct power_supply **psy,
+				  int size)
+{ return 0; }
 static inline struct power_supply *
 devm_power_supply_get_by_phandle(struct device *dev, const char *property)
 { return NULL; }
@@ -451,9 +487,16 @@ static inline int power_supply_is_system_supplied(void) { return -ENOSYS; }
 extern int power_supply_get_property(struct power_supply *psy,
 			    enum power_supply_property psp,
 			    union power_supply_propval *val);
+#if IS_ENABLED(CONFIG_POWER_SUPPLY)
 extern int power_supply_set_property(struct power_supply *psy,
 			    enum power_supply_property psp,
 			    const union power_supply_propval *val);
+#else
+static inline int power_supply_set_property(struct power_supply *psy,
+			    enum power_supply_property psp,
+			    const union power_supply_propval *val)
+{ return 0; }
+#endif
 extern int power_supply_property_is_writeable(struct power_supply *psy,
 					enum power_supply_property psp);
 extern void power_supply_external_power_changed(struct power_supply *psy);

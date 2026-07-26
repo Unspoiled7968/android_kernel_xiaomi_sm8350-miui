@@ -49,23 +49,6 @@
 		#size-cells = <2>;
 		ranges;
 
-		fastboot_cma: fastboot-cma-mem {
-			reg = <0x0 0x16c00000 0x0 0x4000000>;
-			compatible = "shared-dma-pool";
-			hisi,cma-sec;
-			reusable;
-		};
-
-		uefi-reboot-mode {
-			reg = <0x0 0x32100000 0x0 0x00001000>;
-			no-map;
-		};
-
-		bl31 {
-			reg = <0x0 0x20200000 0x0 0x200000>;
-			no-map;
-		};
-
 		ramoops@32000000 {
 			compatible = "ramoops";
 			reg = <0x0 0x32000000 0x0 0x00100000>;
@@ -231,8 +214,6 @@
 		typec-vbus-gpios = <&gpio25 2 GPIO_ACTIVE_HIGH>;
 		otg-switch-gpios = <&gpio25 6 GPIO_ACTIVE_HIGH>;
 		hub-vdd33-en-gpios = <&gpio5 6 GPIO_ACTIVE_HIGH>;
-		pinctrl-names = "default";
-		pinctrl-0 = <&usbhub5734_pmx_func>;
 		usb-role-switch;
 
 		port {
@@ -277,7 +258,6 @@
 			sound-dai = <&adv7533>;
 		};
 	};
-
 };
 
 /*
@@ -611,7 +591,7 @@
 	rt1711h: rt1711h@4e {
 		compatible = "richtek,rt1711h";
 		reg = <0x4e>;
-		status = "ok";
+		status = "okay";
 		interrupt-parent = <&gpio27>;
 		interrupts = <3 IRQ_TYPE_LEVEL_LOW>;
 		pinctrl-names = "default";
@@ -651,7 +631,7 @@
 	};
 
 	adv7533: adv7533@39 {
-		status = "ok";
+		status = "okay";
 		compatible = "adi,adv7533";
 		reg = <0x39>;
 		v1p2-supply = <&ldo3>;
@@ -663,12 +643,13 @@
 		adi,dsi-lanes = <4>;
 		adi,disable-timing-generator;
 		#sound-dai-cells = <0>;
+
 		ports {
 			#address-cells = <1>;
 			#size-cells = <0>;
 			port@0 {
 				reg = <0>;
-				adv7533_in: endpoint@0 {
+				adv7533_in: endpoint {
 					remote-endpoint = <&dsi_out0>;
 				};
 			};
@@ -749,7 +730,7 @@
 		     &sdio_cfg_func>;
 	/* WL_EN */
 	vmmc-supply = <&wlan_en>;
-	status = "ok";
+	status = "okay";
 
 	wlcore: wlcore@2 {
 		compatible = "ti,wl1837";
@@ -757,5 +738,34 @@
 		/* WL_IRQ, GPIO_179_WL_WAKEUP_AP */
 		interrupt-parent = <&gpio22>;
 		interrupts = <3 IRQ_TYPE_EDGE_RISING>;
+	};
+};
+
+&dwc3 { /* USB */
+	dr_mode = "otg";
+	maximum-speed = "super-speed";
+	phy_type = "utmi";
+	snps,dis-del-phy-power-chg-quirk;
+	snps,lfps_filter_quirk;
+	snps,dis_u2_susphy_quirk;
+	snps,dis_u3_susphy_quirk;
+	snps,tx_de_emphasis_quirk;
+	snps,tx_de_emphasis = <1>;
+	snps,dis_enblslpm_quirk;
+	snps,gctl-reset-quirk;
+	usb-role-switch;
+	role-switch-default-mode = "host";
+	port {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		dwc3_role_switch: endpoint@0 {
+			reg = <0>;
+			remote-endpoint = <&hikey_usb_ep0>;
+		};
+
+		dwc3_ss: endpoint@1 {
+			reg = <1>;
+			remote-endpoint = <&usb_con_ss>;
+		};
 	};
 };

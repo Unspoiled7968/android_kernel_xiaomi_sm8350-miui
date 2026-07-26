@@ -601,11 +601,10 @@ static int atmel_hlcdc_plane_atomic_check(struct drm_plane *p,
 	struct drm_framebuffer *fb = state->base.fb;
 	const struct drm_display_mode *mode;
 	struct drm_crtc_state *crtc_state;
-	unsigned int tmp;
 	int ret;
 	int i;
 
-	if (!state->base.crtc || !fb)
+	if (!state->base.crtc || WARN_ON(!fb))
 		return 0;
 
 	crtc_state = drm_atomic_get_existing_crtc_state(s->state, s->crtc);
@@ -694,9 +693,7 @@ static int atmel_hlcdc_plane_atomic_check(struct drm_plane *p,
 	 * Swap width and size in case of 90 or 270 degrees rotation
 	 */
 	if (drm_rotation_90_or_270(state->base.rotation)) {
-		tmp = state->src_w;
-		state->src_w = state->src_h;
-		state->src_h = tmp;
+		swap(state->src_w, state->src_h);
 	}
 
 	if (!desc->layout.size &&
@@ -913,8 +910,7 @@ atmel_hlcdc_plane_atomic_duplicate_state(struct drm_plane *p)
 		return NULL;
 	}
 
-	if (copy->base.fb)
-		drm_framebuffer_get(copy->base.fb);
+	__drm_atomic_helper_plane_duplicate_state(p, &copy->base);
 
 	return &copy->base;
 }
@@ -932,8 +928,7 @@ static void atmel_hlcdc_plane_atomic_destroy_state(struct drm_plane *p,
 			      state->dscrs[i]->self);
 	}
 
-	if (s->fb)
-		drm_framebuffer_put(s->fb);
+	__drm_atomic_helper_plane_destroy_state(s);
 
 	kfree(state);
 }

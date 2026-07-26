@@ -10,16 +10,18 @@
 #include <linux/tracepoint.h>
 #include <trace/hooks/vendor_hooks.h>
 
-#if defined(CONFIG_TRACEPOINTS) && defined(CONFIG_ANDROID_VENDOR_HOOKS)
+#ifdef __GENKSYMS__
 struct task_struct;
+#else
+/* struct task_struct */
+#include <linux/sched.h>
+#endif /* __GENKSYMS__ */
 
 DECLARE_HOOK(android_vh_is_fpsimd_save,
 	TP_PROTO(struct task_struct *prev, struct task_struct *next),
 	TP_ARGS(prev, next))
-#else
 
-#define trace_android_vh_is_fpsimd_save(prev, next)
-#endif
+/* macro versions of hooks are no longer required */
 
 #endif /* _TRACE_HOOK_FPSIMD_H */
 /* This part must be outside protection */

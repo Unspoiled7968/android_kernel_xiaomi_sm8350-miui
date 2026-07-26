@@ -9,13 +9,16 @@
 
 #include <linux/init.h>
 #include <linux/linkage.h>
+#include <linux/pgtable.h>
 #include <asm/assembler.h>
 #include <asm/asm-offsets.h>
+#include <asm/asm_pointer_auth.h>
 #include <asm/hwcap.h>
-#include <asm/pgtable.h>
 #include <asm/pgtable-hwdef.h>
 #include <asm/cpufeature.h>
 #include <asm/alternative.h>
+#include <asm/smp.h>
+#include <asm/sysreg.h>
 
 #ifdef CONFIG_ARM64_64K_PAGES
 #define TCR_TG_FLAGS	TCR_TG0_64K | TCR_TG1_64K
@@ -37,25 +40,49 @@
 #define TCR_CACHE_FLAGS	TCR_IRGN_WBWA | TCR_ORGN_WBWA
 
 #ifdef CONFIG_KASAN_SW_TAGS
-#define TCR_KASAN_FLAGS TCR_TBI1
+#define TCR_KASAN_SW_FLAGS TCR_TBI1 | TCR_TBID1
 #else
-#define TCR_KASAN_FLAGS 0
+#define TCR_KASAN_SW_FLAGS 0
 #endif
 
-#define MAIR(attr, mt)	((attr) << ((mt) * 8))
+#ifdef CONFIG_KASAN_HW_TAGS
+#define TCR_MTE_FLAGS SYS_TCR_EL1_TCMA1 | TCR_TBI1 | TCR_TBID1
+#elif defined(CONFIG_ARM64_MTE)
+/*
+ * The mte_zero_clear_page_tags() implementation uses DC GZVA, which relies on
+ * TBI being enabled at EL1.
+ */
+#define TCR_MTE_FLAGS TCR_TBI1 | TCR_TBID1
+#else
+#define TCR_MTE_FLAGS 0
+#endif
+
+/*
+ * Default MAIR_EL1. MT_NORMAL_TAGGED is initially mapped as Normal memory and
+ * changed during mte_cpu_setup to Normal Tagged if the system supports MTE.
+ */
+#define MAIR_EL1_SET							\
+	(MAIR_ATTRIDX(MAIR_ATTR_DEVICE_nGnRnE, MT_DEVICE_nGnRnE) |	\
+	 MAIR_ATTRIDX(MAIR_ATTR_DEVICE_nGnRE, MT_DEVICE_nGnRE) |	\
+	 MAIR_ATTRIDX(MAIR_ATTR_DEVICE_GRE, MT_DEVICE_GRE) |		\
+	 MAIR_ATTRIDX(MAIR_ATTR_NORMAL_NC, MT_NORMAL_NC) |		\
+	 MAIR_ATTRIDX(MAIR_ATTR_NORMAL, MT_NORMAL) |			\
+	 MAIR_ATTRIDX(MAIR_ATTR_NORMAL_WT, MT_NORMAL_WT) |		\
+	 MAIR_ATTRIDX(MAIR_ATTR_NORMAL, MT_NORMAL_TAGGED) |		\
+	 MAIR_ATTRIDX(MAIR_ATTR_NORMAL_iNC_oWB, MT_NORMAL_iNC_oWB))
 
 /*
  *	cpu_cache_off()
  *
  *	Turn the CPU D-cache off.
  */
-ENTRY(cpu_cache_off)
+SYM_FUNC_START(cpu_cache_off)
 	mrs	x0, sctlr_el1
 	bic	x0, x0, #1 << 2			// clear SCTLR.C
 	msr	sctlr_el1, x0
 	isb
 	ret
-ENDPROC(cpu_cache_off)
+SYM_FUNC_END(cpu_cache_off)
 
 /*
  *	cpu_reset(loc)
@@ -67,15 +94,15 @@ ENDPROC(cpu_cache_off)
  *	- loc   - location to jump to for soft reset
  */
 	.align	5
-ENTRY(cpu_reset)
+SYM_FUNC_START(cpu_reset)
 	mrs	x1, sctlr_el1
 	bic	x1, x1, #1
 	msr	sctlr_el1, x1			// disable the MMU
 	isb
 	ret	x0
-ENDPROC(cpu_reset)
+SYM_FUNC_END(cpu_reset)
 
-ENTRY(cpu_soft_restart)
+SYM_FUNC_START(cpu_soft_restart)
 	/* Save address of cpu_reset() and reset address */
 	mov	x19, x0
 	mov	x20, x1
@@ -88,7 +115,7 @@ ENTRY(cpu_soft_restart)
 
 	mov	x0, x20
 	ret	x19
-ENDPROC(cpu_soft_restart)
+SYM_FUNC_END(cpu_soft_restart)
 
 #ifdef CONFIG_CPU_PM
 /**
@@ -98,7 +125,7 @@ ENDPROC(cpu_soft_restart)
  *
  * This must be kept in sync with struct cpu_suspend_ctx in <asm/suspend.h>.
  */
-ENTRY(cpu_do_suspend)
+SYM_FUNC_START(cpu_do_suspend)
 	mrs	x2, tpidr_el0
 	mrs	x3, tpidrro_el0
 	mrs	x4, contextidr_el1
@@ -127,7 +154,7 @@ alternative_endif
 	 */
 	str	x18, [x0, #96]
 	ret
-ENDPROC(cpu_do_suspend)
+SYM_FUNC_END(cpu_do_suspend)
 
 /**
  * cpu_do_resume - restore CPU register context
@@ -135,7 +162,7 @@ ENDPROC(cpu_do_suspend)
  * x0: Address of context pointer
  */
 	.pushsection ".idmap.text", "awx"
-ENTRY(cpu_do_resume)
+SYM_FUNC_START(cpu_do_resume)
 	ldp	x2, x3, [x0]
 	ldp	x4, x5, [x0, #16]
 	ldp	x6, x8, [x0, #32]
@@ -190,39 +217,12 @@ alternative_if ARM64_HAS_RAS_EXTN
 	msr_s	SYS_DISR_EL1, xzr
 alternative_else_nop_endif
 
+	ptrauth_keys_install_kernel_nosync x14, x1, x2, x3
 	isb
 	ret
-ENDPROC(cpu_do_resume)
+SYM_FUNC_END(cpu_do_resume)
 	.popsection
 #endif
-
-/*
- *	cpu_do_switch_mm(pgd_phys, tsk)
- *
- *	Set the translation table base pointer to be pgd_phys.
- *
- *	- pgd_phys - physical address of new TTB
- */
-ENTRY(cpu_do_switch_mm)
-	mrs	x2, ttbr1_el1
-	mmid	x1, x1				// get mm->context.id
-	phys_to_ttbr x3, x0
-
-alternative_if ARM64_HAS_CNP
-	cbz     x1, 1f                          // skip CNP for reserved ASID
-	orr     x3, x3, #TTBR_CNP_BIT
-1:
-alternative_else_nop_endif
-#ifdef CONFIG_ARM64_SW_TTBR0_PAN
-	bfi	x3, x1, #48, #16		// set the ASID field in TTBR0
-#endif
-	bfi	x2, x1, #48, #16		// set the ASID
-	msr	ttbr1_el1, x2			// in TTBR1 (since TCR.A1 is set)
-	isb
-	msr	ttbr0_el1, x3			// now update TTBR0
-	isb
-	b	post_ttbr_update_workaround	// Back to C code...
-ENDPROC(cpu_do_switch_mm)
 
 	.pushsection ".idmap.text", "awx"
 
@@ -243,7 +243,7 @@ ENDPROC(cpu_do_switch_mm)
  * This is the low-level counterpart to cpu_replace_ttbr1, and should not be
  * called by anything else. It can only be executed from a TTBR0 mapping.
  */
-ENTRY(idmap_cpu_replace_ttbr1)
+SYM_FUNC_START(idmap_cpu_replace_ttbr1)
 	save_and_disable_daif flags=x2
 
 	__idmap_cpu_set_reserved_ttbr1 x1, x3
@@ -255,7 +255,7 @@ ENTRY(idmap_cpu_replace_ttbr1)
 	restore_daif x2
 
 	ret
-ENDPROC(idmap_cpu_replace_ttbr1)
+SYM_FUNC_END(idmap_cpu_replace_ttbr1)
 	.popsection
 
 #ifdef CONFIG_UNMAP_KERNEL_AT_EL0
@@ -283,7 +283,7 @@ ENDPROC(idmap_cpu_replace_ttbr1)
  */
 __idmap_kpti_flag:
 	.long	1
-ENTRY(idmap_kpti_install_ng_mappings)
+SYM_FUNC_START(idmap_kpti_install_ng_mappings)
 	cpu		.req	w0
 	num_cpus	.req	w1
 	swapper_pa	.req	x2
@@ -344,17 +344,7 @@ skip_pgd:
 	/* We're done: fire up the MMU again */
 	mrs	x17, sctlr_el1
 	orr	x17, x17, #SCTLR_ELx_M
-	msr	sctlr_el1, x17
-	isb
-
-	/*
-	 * Invalidate the local I-cache so that any instructions fetched
-	 * speculatively from the PoC are discarded, since they may have
-	 * been dynamically patched at the PoU.
-	 */
-	ic	iallu
-	dsb	nsh
-	isb
+	set_sctlr_el1	x17
 
 	/* Set the flag to zero to indicate that we're all done */
 	str	wzr, [flag_ptr]
@@ -455,60 +445,45 @@ __idmap_kpti_secondary:
 
 	.unreq	swapper_ttb
 	.unreq	flag_ptr
-ENDPROC(idmap_kpti_install_ng_mappings)
+SYM_FUNC_END(idmap_kpti_install_ng_mappings)
 	.popsection
 #endif
 
 /*
  *	__cpu_setup
  *
- *	Initialise the processor for turning the MMU on.  Return in x0 the
- *	value of the SCTLR_EL1 register.
+ *	Initialise the processor for turning the MMU on.
+ *
+ * Output:
+ *	Return in x0 the value of the SCTLR_EL1 register.
  */
 	.pushsection ".idmap.text", "awx"
-ENTRY(__cpu_setup)
+SYM_FUNC_START(__cpu_setup)
 	tlbi	vmalle1				// Invalidate local TLB
 	dsb	nsh
 
-	mov	x0, #3 << 20
-	msr	cpacr_el1, x0			// Enable FP/ASIMD
-	mov	x0, #1 << 12			// Reset mdscr_el1 and disable
-	msr	mdscr_el1, x0			// access to the DCC from EL0
+	mov	x1, #3 << 20
+	msr	cpacr_el1, x1			// Enable FP/ASIMD
+	mov	x1, #1 << 12			// Reset mdscr_el1 and disable
+	msr	mdscr_el1, x1			// access to the DCC from EL0
 	isb					// Unmask debug exceptions now,
 	enable_dbg				// since this is per-cpu
-	reset_pmuserenr_el0 x0			// Disable PMU access from EL0
-	reset_amuserenr_el0 x0			// Disable AMU access from EL0
+	reset_pmuserenr_el0 x1			// Disable PMU access from EL0
+	reset_amuserenr_el0 x1			// Disable AMU access from EL0
 
 	/*
-	 * Memory region attributes for LPAE:
-	 *
-	 *   n = AttrIndx[2:0]
-	 *			n	MAIR
-	 *   DEVICE_nGnRnE	000	00000000
-	 *   DEVICE_nGnRE	001	00000100
-	 *   DEVICE_GRE		010	00001100
-	 *   NORMAL_NC		011	01000100
-	 *   NORMAL		100	11111111
-	 *   NORMAL_WT		101	10111011
+	 * Memory region attributes
 	 */
-	ldr	x5, =MAIR(0x00, MT_DEVICE_nGnRnE) | \
-		     MAIR(0x04, MT_DEVICE_nGnRE) | \
-		     MAIR(0x0c, MT_DEVICE_GRE) | \
-		     MAIR(0x44, MT_NORMAL_NC) | \
-		     MAIR(0xff, MT_NORMAL) | \
-		     MAIR(0xbb, MT_NORMAL_WT)
+	mov_q	x5, MAIR_EL1_SET
 	msr	mair_el1, x5
 	/*
-	 * Prepare SCTLR
+	 * Set/prepare TCR and TTBR. TCR_EL1.T1SZ gets further
+	 * adjusted if the kernel is compiled with 52bit VA support.
 	 */
-	mov_q	x0, SCTLR_EL1_SET
-	/*
-	 * Set/prepare TCR and TTBR. We use 512GB (39-bit) address range for
-	 * both user and kernel.
-	 */
-	ldr	x10, =TCR_TxSZ(VA_BITS) | TCR_CACHE_FLAGS | TCR_SMP_FLAGS | \
+	mov_q	x10, TCR_TxSZ(VA_BITS) | TCR_CACHE_FLAGS | TCR_SMP_FLAGS | \
 			TCR_TG_FLAGS | TCR_KASLR_FLAGS | TCR_ASID16 | \
-			TCR_TBI0 | TCR_A1 | TCR_KASAN_FLAGS
+			TCR_TBI0 | TCR_A1 | TCR_KASAN_SW_FLAGS | TCR_MTE_FLAGS
+
 	tcr_clear_errata_bits x10, x9, x5
 
 #ifdef CONFIG_ARM64_VA_BITS_52
@@ -538,5 +513,9 @@ ENTRY(__cpu_setup)
 1:
 #endif	/* CONFIG_ARM64_HW_AFDBM */
 	msr	tcr_el1, x10
+	/*
+	 * Prepare SCTLR
+	 */
+	mov_q	x0, INIT_SCTLR_EL1_MMU_ON
 	ret					// return to head.S
-ENDPROC(__cpu_setup)
+SYM_FUNC_END(__cpu_setup)

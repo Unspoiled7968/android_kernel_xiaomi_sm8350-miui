@@ -14,9 +14,12 @@
 #include <linux/irq.h>
 #include <linux/irqdomain.h>
 #include <linux/kernel.h>
+#include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/init.h>
+#include <linux/phy/phy.h>
 #include <linux/platform_device.h>
+#include <linux/msi.h>
 #include <linux/of_address.h>
 #include <linux/of_gpio.h>
 #include <linux/of_pci.h>
@@ -90,6 +93,9 @@
 #define     PCIE_CORE_CTRL2_STRICT_ORDER_ENABLE	BIT(5)
 #define     PCIE_CORE_CTRL2_OB_WIN_ENABLE	BIT(6)
 #define     PCIE_CORE_CTRL2_MSI_ENABLE		BIT(10)
+#define PCIE_CORE_REF_CLK_REG			(CONTROL_BASE_ADDR + 0x14)
+#define     PCIE_CORE_REF_CLK_TX_ENABLE		BIT(1)
+#define     PCIE_CORE_REF_CLK_RX_ENABLE		BIT(2)
 #define PCIE_MSG_LOG_REG			(CONTROL_BASE_ADDR + 0x30)
 #define PCIE_ISR0_REG				(CONTROL_BASE_ADDR + 0x40)
 #define PCIE_MSG_PM_PME_MASK			BIT(7)
@@ -117,8 +123,8 @@
 #define OB_WIN_BLOCK_SIZE			0x20
 #define OB_WIN_COUNT				8
 #define OB_WIN_REG_ADDR(win, offset)		(OB_WIN_BASE_ADDR + \
-						  OB_WIN_BLOCK_SIZE * (win) + \
-						  (offset))
+						 OB_WIN_BLOCK_SIZE * (win) + \
+						 (offset))
 #define OB_WIN_MATCH_LS(win)			OB_WIN_REG_ADDR(win, 0x00)
 #define     OB_WIN_ENABLE			BIT(0)
 #define OB_WIN_MATCH_MS(win)			OB_WIN_REG_ADDR(win, 0x04)
@@ -266,7 +272,6 @@ enum {
 struct advk_pcie {
 	struct platform_device *pdev;
 	void __iomem *base;
-	struct list_head resources;
 	struct {
 		phys_addr_t match;
 		phys_addr_t remap;
@@ -285,10 +290,10 @@ struct advk_pcie {
 	DECLARE_BITMAP(msi_used, MSI_IRQ_NUM);
 	struct mutex msi_used_lock;
 	u16 msi_msg;
-	int root_bus_nr;
 	int link_gen;
 	struct pci_bridge_emul bridge;
 	struct gpio_desc *reset_gpio;
+	struct phy *phy;
 };
 
 static inline void advk_writel(struct advk_pcie *pcie, u32 val, u64 reg)
@@ -481,6 +486,17 @@ static void advk_pcie_setup_hw(struct advk_pcie *pcie)
 {
 	u32 reg;
 	int i;
+
+	/*
+	 * Configure PCIe Reference clock. Direction is from the PCIe
+	 * controller to the endpoint card, so enable transmitting of
+	 * Reference clock differential signal off-chip and disable
+	 * receiving off-chip differential signal.
+	 */
+	reg = advk_readl(pcie, PCIE_CORE_REF_CLK_REG);
+	reg |= PCIE_CORE_REF_CLK_TX_ENABLE;
+	reg &= ~PCIE_CORE_REF_CLK_RX_ENABLE;
+	advk_writel(pcie, reg, PCIE_CORE_REF_CLK_REG);
 
 	/* Set to Direct mode */
 	reg = advk_readl(pcie, CTRL_CONFIG_REG);
@@ -963,14 +979,14 @@ static int advk_sw_pci_bridge_init(struct advk_pcie *pcie)
 static bool advk_pcie_valid_device(struct advk_pcie *pcie, struct pci_bus *bus,
 				  int devfn)
 {
-	if ((bus->number == pcie->root_bus_nr) && PCI_SLOT(devfn) != 0)
+	if (pci_is_root_bus(bus) && PCI_SLOT(devfn) != 0)
 		return false;
 
 	/*
 	 * If the link goes down after we check for link-up, nothing bad
 	 * happens but the config access times out.
 	 */
-	if (bus->number != pcie->root_bus_nr && !advk_pcie_link_up(pcie))
+	if (!pci_is_root_bus(bus) && !advk_pcie_link_up(pcie))
 		return false;
 
 	return true;
@@ -1019,7 +1035,7 @@ static int advk_pcie_rd_conf(struct pci_bus *bus, u32 devfn,
 		return PCIBIOS_DEVICE_NOT_FOUND;
 	}
 
-	if (bus->number == pcie->root_bus_nr)
+	if (pci_is_root_bus(bus))
 		return pci_bridge_emul_conf_read(&pcie->bridge, where,
 						 size, val);
 
@@ -1038,7 +1054,7 @@ static int advk_pcie_rd_conf(struct pci_bus *bus, u32 devfn,
 	/* Program the control register */
 	reg = advk_readl(pcie, PIO_CTRL);
 	reg &= ~PIO_CTRL_TYPE_MASK;
-	if (bus->primary ==  pcie->root_bus_nr)
+	if (pci_is_root_bus(bus->parent))
 		reg |= PCIE_CONFIG_RD_TYPE0;
 	else
 		reg |= PCIE_CONFIG_RD_TYPE1;
@@ -1106,7 +1122,7 @@ static int advk_pcie_wr_conf(struct pci_bus *bus, u32 devfn,
 	if (!advk_pcie_valid_device(pcie, bus, devfn))
 		return PCIBIOS_DEVICE_NOT_FOUND;
 
-	if (bus->number == pcie->root_bus_nr)
+	if (pci_is_root_bus(bus))
 		return pci_bridge_emul_conf_write(&pcie->bridge, where,
 						  size, val);
 
@@ -1119,7 +1135,7 @@ static int advk_pcie_wr_conf(struct pci_bus *bus, u32 devfn,
 	/* Program the control register */
 	reg = advk_readl(pcie, PIO_CTRL);
 	reg &= ~PIO_CTRL_TYPE_MASK;
-	if (bus->primary == pcie->root_bus_nr)
+	if (pci_is_root_bus(bus->parent))
 		reg |= PCIE_CONFIG_WR_TYPE0;
 	else
 		reg |= PCIE_CONFIG_WR_TYPE1;
@@ -1439,63 +1455,68 @@ static irqreturn_t advk_pcie_irq_handler(int irq, void *arg)
 	return IRQ_HANDLED;
 }
 
-static int advk_pcie_parse_request_of_pci_ranges(struct advk_pcie *pcie)
+static void __maybe_unused advk_pcie_disable_phy(struct advk_pcie *pcie)
 {
-	int err, res_valid = 0;
-	struct device *dev = &pcie->pdev->dev;
-	struct resource_entry *win, *tmp;
-	resource_size_t iobase;
+	phy_power_off(pcie->phy);
+	phy_exit(pcie->phy);
+}
 
-	INIT_LIST_HEAD(&pcie->resources);
+static int advk_pcie_enable_phy(struct advk_pcie *pcie)
+{
+	int ret;
 
-	err = devm_of_pci_get_host_bridge_resources(dev, 0, 0xff,
-						    &pcie->resources, &iobase);
-	if (err)
-		return err;
+	if (!pcie->phy)
+		return 0;
 
-	err = devm_request_pci_bus_resources(dev, &pcie->resources);
-	if (err)
-		goto out_release_res;
+	ret = phy_init(pcie->phy);
+	if (ret)
+		return ret;
 
-	resource_list_for_each_entry_safe(win, tmp, &pcie->resources) {
-		struct resource *res = win->res;
-
-		switch (resource_type(res)) {
-		case IORESOURCE_IO:
-			err = devm_pci_remap_iospace(dev, res, iobase);
-			if (err) {
-				dev_warn(dev, "error %d: failed to map resource %pR\n",
-					 err, res);
-				resource_list_destroy_entry(win);
-			}
-			break;
-		case IORESOURCE_MEM:
-			res_valid |= !(res->flags & IORESOURCE_PREFETCH);
-			break;
-		case IORESOURCE_BUS:
-			pcie->root_bus_nr = res->start;
-			break;
-		}
+	ret = phy_set_mode(pcie->phy, PHY_MODE_PCIE);
+	if (ret) {
+		phy_exit(pcie->phy);
+		return ret;
 	}
 
-	if (!res_valid) {
-		dev_err(dev, "non-prefetchable memory resource required\n");
-		err = -EINVAL;
-		goto out_release_res;
+	ret = phy_power_on(pcie->phy);
+	if (ret == -EOPNOTSUPP) {
+		dev_warn(&pcie->pdev->dev, "PHY unsupported by firmware\n");
+	} else if (ret) {
+		phy_exit(pcie->phy);
+		return ret;
 	}
 
 	return 0;
+}
 
-out_release_res:
-	pci_free_resource_list(&pcie->resources);
-	return err;
+static int advk_pcie_setup_phy(struct advk_pcie *pcie)
+{
+	struct device *dev = &pcie->pdev->dev;
+	struct device_node *node = dev->of_node;
+	int ret = 0;
+
+	pcie->phy = devm_of_phy_get(dev, node, NULL);
+	if (IS_ERR(pcie->phy) && (PTR_ERR(pcie->phy) == -EPROBE_DEFER))
+		return PTR_ERR(pcie->phy);
+
+	/* Old bindings miss the PHY handle */
+	if (IS_ERR(pcie->phy)) {
+		dev_warn(dev, "PHY unavailable (%ld)\n", PTR_ERR(pcie->phy));
+		pcie->phy = NULL;
+		return 0;
+	}
+
+	ret = advk_pcie_enable_phy(pcie);
+	if (ret)
+		dev_err(dev, "Failed to initialize PHY (%d)\n", ret);
+
+	return ret;
 }
 
 static int advk_pcie_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct advk_pcie *pcie;
-	struct resource *res;
 	struct pci_host_bridge *bridge;
 	struct resource_entry *entry;
 	int ret, irq;
@@ -1506,28 +1527,9 @@ static int advk_pcie_probe(struct platform_device *pdev)
 
 	pcie = pci_host_bridge_priv(bridge);
 	pcie->pdev = pdev;
+	platform_set_drvdata(pdev, pcie);
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	pcie->base = devm_ioremap_resource(dev, res);
-	if (IS_ERR(pcie->base))
-		return PTR_ERR(pcie->base);
-
-	irq = platform_get_irq(pdev, 0);
-	ret = devm_request_irq(dev, irq, advk_pcie_irq_handler,
-			       IRQF_SHARED | IRQF_NO_THREAD, "advk-pcie",
-			       pcie);
-	if (ret) {
-		dev_err(dev, "Failed to register interrupt\n");
-		return ret;
-	}
-
-	ret = advk_pcie_parse_request_of_pci_ranges(pcie);
-	if (ret) {
-		dev_err(dev, "Failed to parse resources\n");
-		return ret;
-	}
-
-	resource_list_for_each_entry(entry, &pcie->resources) {
+	resource_list_for_each_entry(entry, &bridge->windows) {
 		resource_size_t start = entry->res->start;
 		resource_size_t size = resource_size(entry->res);
 		unsigned long type = resource_type(entry->res);
@@ -1601,6 +1603,22 @@ static int advk_pcie_probe(struct platform_device *pdev)
 		}
 	}
 
+	pcie->base = devm_platform_ioremap_resource(pdev, 0);
+	if (IS_ERR(pcie->base))
+		return PTR_ERR(pcie->base);
+
+	irq = platform_get_irq(pdev, 0);
+	if (irq < 0)
+		return irq;
+
+	ret = devm_request_irq(dev, irq, advk_pcie_irq_handler,
+			       IRQF_SHARED | IRQF_NO_THREAD, "advk-pcie",
+			       pcie);
+	if (ret) {
+		dev_err(dev, "Failed to register interrupt\n");
+		return ret;
+	}
+
 	pcie->reset_gpio = devm_gpiod_get_from_of_node(dev, dev->of_node,
 						       "reset-gpios", 0,
 						       GPIOD_OUT_LOW,
@@ -1623,6 +1641,10 @@ static int advk_pcie_probe(struct platform_device *pdev)
 	else
 		pcie->link_gen = ret;
 
+	ret = advk_pcie_setup_phy(pcie);
+	if (ret)
+		return ret;
+
 	advk_pcie_setup_hw(pcie);
 
 	ret = advk_sw_pci_bridge_init(pcie);
@@ -1644,13 +1666,8 @@ static int advk_pcie_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	list_splice_init(&pcie->resources, &bridge->windows);
-	bridge->dev.parent = dev;
 	bridge->sysdata = pcie;
-	bridge->busnr = 0;
 	bridge->ops = &advk_pcie_ops;
-	bridge->map_irq = of_irq_parse_and_map_pci;
-	bridge->swizzle_irq = pci_common_swizzle;
 
 	ret = pci_host_probe(bridge);
 	if (ret < 0) {
@@ -1662,18 +1679,42 @@ static int advk_pcie_probe(struct platform_device *pdev)
 	return 0;
 }
 
+static int advk_pcie_remove(struct platform_device *pdev)
+{
+	struct advk_pcie *pcie = platform_get_drvdata(pdev);
+	struct pci_host_bridge *bridge = pci_host_bridge_from_priv(pcie);
+	int i;
+
+	pci_lock_rescan_remove();
+	pci_stop_root_bus(bridge->bus);
+	pci_remove_root_bus(bridge->bus);
+	pci_unlock_rescan_remove();
+
+	advk_pcie_remove_msi_irq_domain(pcie);
+	advk_pcie_remove_irq_domain(pcie);
+
+	/* Disable outbound address windows mapping */
+	for (i = 0; i < OB_WIN_COUNT; i++)
+		advk_pcie_disable_ob_win(pcie, i);
+
+	return 0;
+}
+
 static const struct of_device_id advk_pcie_of_match_table[] = {
 	{ .compatible = "marvell,armada-3700-pcie", },
 	{},
 };
+MODULE_DEVICE_TABLE(of, advk_pcie_of_match_table);
 
 static struct platform_driver advk_pcie_driver = {
 	.driver = {
 		.name = "advk-pcie",
 		.of_match_table = advk_pcie_of_match_table,
-		/* Driver unloading/unbinding currently not supported */
-		.suppress_bind_attrs = true,
 	},
 	.probe = advk_pcie_probe,
+	.remove = advk_pcie_remove,
 };
-builtin_platform_driver(advk_pcie_driver);
+module_platform_driver(advk_pcie_driver);
+
+MODULE_DESCRIPTION("Aardvark PCIe controller");
+MODULE_LICENSE("GPL v2");

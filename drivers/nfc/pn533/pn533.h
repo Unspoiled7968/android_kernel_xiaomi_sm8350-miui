@@ -44,6 +44,11 @@
 
 /* Preamble (1), SoPC (2), ACK Code (2), Postamble (1) */
 #define PN533_STD_FRAME_ACK_SIZE 6
+/*
+ * Preamble (1), SoPC (2), Packet Length (1), Packet Length Checksum (1),
+ * Specific Application Level Error Code (1) , Postamble (1)
+ */
+#define PN533_STD_ERROR_FRAME_SIZE 8
 #define PN533_STD_FRAME_CHECKSUM(f) (f->data[f->datalen])
 #define PN533_STD_FRAME_POSTAMBLE(f) (f->data[f->datalen + 1])
 /* Half start code (3), LEN (4) should be 0xffff for extended frame */
@@ -86,6 +91,9 @@
 #define PN533_CMD_MI_MASK 0x40
 #define PN533_CMD_RET_SUCCESS 0x00
 
+#define PN533_FRAME_DATALEN_ACK 0x00
+#define PN533_FRAME_DATALEN_ERROR 0x01
+#define PN533_FRAME_DATALEN_EXTENDED 0xFF
 
 enum  pn533_protocol_type {
 	PN533_PROTO_REQ_ACK_RESP = 0,
@@ -216,23 +224,26 @@ struct pn533_phy_ops {
 	 * bring up it's interface to the chip and have it suspended for power
 	 * saving reasons otherwise.
 	 */
-	void (*dev_up)(struct pn533 *priv);
-	void (*dev_down)(struct pn533 *priv);
+	int (*dev_up)(struct pn533 *priv);
+	int (*dev_down)(struct pn533 *priv);
 };
 
 
-struct pn533 *pn533_register_device(u32 device_type,
-				u32 protocols,
+struct pn533 *pn53x_common_init(u32 device_type,
 				enum pn533_protocol_type protocol_type,
 				void *phy,
 				struct pn533_phy_ops *phy_ops,
 				struct pn533_frame_ops *fops,
-				struct device *dev,
-				struct device *parent);
+				struct device *dev);
 
 int pn533_finalize_setup(struct pn533 *dev);
-void pn533_unregister_device(struct pn533 *priv);
+void pn53x_common_clean(struct pn533 *priv);
 void pn533_recv_frame(struct pn533 *dev, struct sk_buff *skb, int status);
+int pn532_i2c_nfc_alloc(struct pn533 *priv, u32 protocols,
+			struct device *parent);
+int pn53x_register_nfc(struct pn533 *priv, u32 protocols,
+			struct device *parent);
+void pn53x_unregister_nfc(struct pn533 *priv);
 
 bool pn533_rx_frame_is_cmd_response(struct pn533 *dev, void *frame);
 bool pn533_rx_frame_is_ack(void *_frame);

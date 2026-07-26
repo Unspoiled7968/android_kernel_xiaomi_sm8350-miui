@@ -3,15 +3,15 @@
 // Freescale i.MX7ULP LPSPI driver
 //
 // Copyright 2016 Freescale Semiconductor, Inc.
-// Copyright 2018 NXP Semiconductors
+// Copyright 2018, 2023, 2025 NXP
 
+#include <linux/bitfield.h>
 #include <linux/clk.h>
 #include <linux/completion.h>
 #include <linux/delay.h>
 #include <linux/dmaengine.h>
 #include <linux/dma-mapping.h>
 #include <linux/err.h>
-#include <linux/gpio.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/irq.h>
@@ -19,11 +19,9 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
-#include <linux/of_gpio.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/platform_device.h>
 #include <linux/platform_data/dma-imx.h>
-#include <linux/platform_data/spi-imx.h>
 #include <linux/pm_runtime.h>
 #include <linux/slab.h>
 #include <linux/spi/spi.h>
@@ -74,7 +72,7 @@
 #define DER_TDDE	BIT(0)
 #define CFGR1_PCSCFG	BIT(27)
 #define CFGR1_PINCFG	(BIT(24)|BIT(25))
-#define CFGR1_PCSPOL	BIT(8)
+#define CFGR1_PCSPOL_MASK	GENMASK(11, 8)
 #define CFGR1_NOSTALL	BIT(3)
 #define CFGR1_MASTER	BIT(0)
 #define FSR_TXCOUNT	(0xFF)
@@ -101,6 +99,7 @@ struct fsl_lpspi_data {
 	struct clk *clk_ipg;
 	struct clk *clk_per;
 	bool is_slave;
+	bool is_only_cs1;
 	bool is_first_byte;
 
 	void *rx_buf;
@@ -122,8 +121,6 @@ struct fsl_lpspi_data {
 	bool usedma;
 	struct completion dma_rx_completion;
 	struct completion dma_tx_completion;
-
-	int chipselect[0];
 };
 
 static const struct of_device_id fsl_lpspi_dt_ids[] = {
@@ -186,14 +183,13 @@ static bool fsl_lpspi_can_dma(struct spi_controller *controller,
 
 	bytes_per_word = fsl_lpspi_bytes_per_word(transfer->bits_per_word);
 
-	switch (bytes_per_word)
-	{
-		case 1:
-		case 2:
-		case 4:
-			break;
-		default:
-			return false;
+	switch (bytes_per_word) {
+	case 1:
+	case 2:
+	case 4:
+		break;
+	default:
+		return false;
 	}
 
 	return true;
@@ -221,20 +217,6 @@ static int lpspi_unprepare_xfer_hardware(struct spi_controller *controller)
 
 	pm_runtime_mark_last_busy(fsl_lpspi->dev);
 	pm_runtime_put_autosuspend(fsl_lpspi->dev);
-
-	return 0;
-}
-
-static int fsl_lpspi_prepare_message(struct spi_controller *controller,
-				     struct spi_message *msg)
-{
-	struct fsl_lpspi_data *fsl_lpspi =
-					spi_controller_get_devdata(controller);
-	struct spi_device *spi = msg->spi;
-	int gpio = fsl_lpspi->chipselect[spi->chip_select];
-
-	if (gpio_is_valid(gpio))
-		gpio_direction_output(gpio, spi->mode & SPI_CS_HIGH ? 0 : 1);
 
 	return 0;
 }
@@ -277,10 +259,9 @@ static void fsl_lpspi_set_cmd(struct fsl_lpspi_data *fsl_lpspi)
 
 	temp |= fsl_lpspi->config.bpw - 1;
 	temp |= (fsl_lpspi->config.mode & 0x3) << 30;
+	temp |= (fsl_lpspi->config.chip_select & 0x3) << 24;
 	if (!fsl_lpspi->is_slave) {
 		temp |= fsl_lpspi->config.prescale << 27;
-		temp |= (fsl_lpspi->config.chip_select & 0x3) << 24;
-
 		/*
 		 * Set TCR_CONT will keep SS asserted after current transfer.
 		 * For the first transfer, clear TCR_CONTC to assert SS.
@@ -415,7 +396,9 @@ static int fsl_lpspi_config(struct fsl_lpspi_data *fsl_lpspi)
 	else
 		temp = CFGR1_PINCFG;
 	if (fsl_lpspi->config.mode & SPI_CS_HIGH)
-		temp |= CFGR1_PCSPOL;
+		temp |= FIELD_PREP(CFGR1_PCSPOL_MASK,
+				   BIT(fsl_lpspi->config.chip_select));
+
 	writel(temp, fsl_lpspi->base + IMX7ULP_CFGR1);
 
 	temp = readl(fsl_lpspi->base + IMX7ULP_CR);
@@ -443,7 +426,10 @@ static int fsl_lpspi_setup_transfer(struct spi_controller *controller,
 	fsl_lpspi->config.mode = spi->mode;
 	fsl_lpspi->config.bpw = t->bits_per_word;
 	fsl_lpspi->config.speed_hz = t->speed_hz;
-	fsl_lpspi->config.chip_select = spi->chip_select;
+	if (fsl_lpspi->is_only_cs1)
+		fsl_lpspi->config.chip_select = 1;
+	else
+		fsl_lpspi->config.chip_select = spi->chip_select;
 
 	if (!fsl_lpspi->config.speed_hz)
 		fsl_lpspi->config.speed_hz = spi->max_speed_hz;
@@ -468,9 +454,9 @@ static int fsl_lpspi_setup_transfer(struct spi_controller *controller,
 		fsl_lpspi->watermark = fsl_lpspi->txfifosize;
 
 	if (fsl_lpspi_can_dma(controller, spi, t))
-		fsl_lpspi->usedma = 1;
+		fsl_lpspi->usedma = true;
 	else
-		fsl_lpspi->usedma = 0;
+		fsl_lpspi->usedma = false;
 
 	return fsl_lpspi_config(fsl_lpspi);
 }
@@ -674,7 +660,7 @@ static int fsl_lpspi_dma_init(struct device *dev,
 	int ret;
 
 	/* Prepare for TX DMA: */
-	controller->dma_tx = dma_request_slave_channel_reason(dev, "tx");
+	controller->dma_tx = dma_request_chan(dev, "tx");
 	if (IS_ERR(controller->dma_tx)) {
 		ret = PTR_ERR(controller->dma_tx);
 		dev_dbg(dev, "can't get the TX DMA channel, error %d!\n", ret);
@@ -683,7 +669,7 @@ static int fsl_lpspi_dma_init(struct device *dev,
 	}
 
 	/* Prepare for RX DMA: */
-	controller->dma_rx = dma_request_slave_channel_reason(dev, "rx");
+	controller->dma_rx = dma_request_chan(dev, "rx");
 	if (IS_ERR(controller->dma_rx)) {
 		ret = PTR_ERR(controller->dma_rx);
 		dev_dbg(dev, "can't get the RX DMA channel, error %d\n", ret);
@@ -719,12 +705,10 @@ static int fsl_lpspi_pio_transfer(struct spi_controller *controller,
 	fsl_lpspi_write_tx_fifo(fsl_lpspi);
 
 	ret = fsl_lpspi_wait_for_completion(controller);
-	if (ret)
-		return ret;
 
 	fsl_lpspi_reset(fsl_lpspi);
 
-	return 0;
+	return ret;
 }
 
 static int fsl_lpspi_transfer_one(struct spi_controller *controller,
@@ -772,13 +756,13 @@ static irqreturn_t fsl_lpspi_isr(int irq, void *dev_id)
 	if (temp_SR & SR_MBF ||
 	    readl(fsl_lpspi->base + IMX7ULP_FSR) & FSR_TXCOUNT) {
 		writel(SR_FCF, fsl_lpspi->base + IMX7ULP_SR);
-		fsl_lpspi_intctrl(fsl_lpspi, IER_FCIE);
+		fsl_lpspi_intctrl(fsl_lpspi, IER_FCIE | (temp_IER & IER_TDIE));
 		return IRQ_HANDLED;
 	}
 
 	if (temp_SR & SR_FCF && (temp_IER & IER_FCIE)) {
 		writel(SR_FCF, fsl_lpspi->base + IMX7ULP_SR);
-			complete(&fsl_lpspi->xfer_done);
+		complete(&fsl_lpspi->xfer_done);
 		return IRQ_HANDLED;
 	}
 
@@ -834,13 +818,10 @@ static int fsl_lpspi_init_rpm(struct fsl_lpspi_data *fsl_lpspi)
 
 static int fsl_lpspi_probe(struct platform_device *pdev)
 {
-	struct device_node *np = pdev->dev.of_node;
 	struct fsl_lpspi_data *fsl_lpspi;
 	struct spi_controller *controller;
-	struct spi_imx_master *lpspi_platform_info =
-		dev_get_platdata(&pdev->dev);
 	struct resource *res;
-	int i, ret, irq;
+	int ret, irq;
 	u32 temp;
 	bool is_slave;
 
@@ -860,6 +841,8 @@ static int fsl_lpspi_probe(struct platform_device *pdev)
 	fsl_lpspi = spi_controller_get_devdata(controller);
 	fsl_lpspi->dev = &pdev->dev;
 	fsl_lpspi->is_slave = is_slave;
+	fsl_lpspi->is_only_cs1 = of_property_read_bool((&pdev->dev)->of_node,
+						"fsl,spi-only-use-cs1-sel");
 
 	controller->bits_per_word_mask = SPI_BPW_RANGE_MASK(8, 32);
 	controller->transfer_one = fsl_lpspi_transfer_one;
@@ -870,35 +853,8 @@ static int fsl_lpspi_probe(struct platform_device *pdev)
 	controller->dev.of_node = pdev->dev.of_node;
 	controller->bus_num = pdev->id;
 	controller->slave_abort = fsl_lpspi_slave_abort;
-
-	ret = devm_spi_register_controller(&pdev->dev, controller);
-	if (ret < 0) {
-		dev_err(&pdev->dev, "spi_register_controller error.\n");
-		goto out_controller_put;
-	}
-
-	if (!fsl_lpspi->is_slave) {
-		for (i = 0; i < controller->num_chipselect; i++) {
-			int cs_gpio = of_get_named_gpio(np, "cs-gpios", i);
-
-			if (!gpio_is_valid(cs_gpio) && lpspi_platform_info)
-				cs_gpio = lpspi_platform_info->chipselect[i];
-
-			fsl_lpspi->chipselect[i] = cs_gpio;
-			if (!gpio_is_valid(cs_gpio))
-				continue;
-
-			ret = devm_gpio_request(&pdev->dev,
-						fsl_lpspi->chipselect[i],
-						DRIVER_NAME);
-			if (ret) {
-				dev_err(&pdev->dev, "can't get cs gpios\n");
-				goto out_controller_put;
-			}
-		}
-		controller->cs_gpios = fsl_lpspi->chipselect;
-		controller->prepare_message = fsl_lpspi_prepare_message;
-	}
+	if (!fsl_lpspi->is_slave)
+		controller->use_gpio_descriptors = true;
 
 	init_completion(&fsl_lpspi->xfer_done);
 
@@ -916,7 +872,7 @@ static int fsl_lpspi_probe(struct platform_device *pdev)
 		goto out_controller_put;
 	}
 
-	ret = devm_request_irq(&pdev->dev, irq, fsl_lpspi_isr, 0,
+	ret = devm_request_irq(&pdev->dev, irq, fsl_lpspi_isr, IRQF_NO_AUTOEN,
 			       dev_name(&pdev->dev), fsl_lpspi);
 	if (ret) {
 		dev_err(&pdev->dev, "can't get irq%d: %d\n", irq, ret);
@@ -943,7 +899,7 @@ static int fsl_lpspi_probe(struct platform_device *pdev)
 	ret = pm_runtime_get_sync(fsl_lpspi->dev);
 	if (ret < 0) {
 		dev_err(fsl_lpspi->dev, "failed to enable clock\n");
-		goto out_controller_put;
+		goto out_pm_get;
 	}
 
 	temp = readl(fsl_lpspi->base + IMX7ULP_PARAM);
@@ -952,13 +908,29 @@ static int fsl_lpspi_probe(struct platform_device *pdev)
 
 	ret = fsl_lpspi_dma_init(&pdev->dev, fsl_lpspi, controller);
 	if (ret == -EPROBE_DEFER)
-		goto out_controller_put;
+		goto out_pm_get;
+	if (ret < 0) {
+		dev_warn(&pdev->dev, "dma setup error %d, use pio\n", ret);
+		enable_irq(irq);
+	}
 
-	if (ret < 0)
-		dev_err(&pdev->dev, "dma setup error %d, use pio\n", ret);
+	ret = spi_register_controller(controller);
+	if (ret < 0) {
+		dev_err_probe(&pdev->dev, ret, "spi_register_controller error\n");
+		goto free_dma;
+	}
+
+	pm_runtime_mark_last_busy(fsl_lpspi->dev);
+	pm_runtime_put_autosuspend(fsl_lpspi->dev);
 
 	return 0;
 
+free_dma:
+	fsl_lpspi_dma_exit(controller);
+out_pm_get:
+	pm_runtime_dont_use_autosuspend(fsl_lpspi->dev);
+	pm_runtime_put_sync(fsl_lpspi->dev);
+	pm_runtime_disable(fsl_lpspi->dev);
 out_controller_put:
 	spi_controller_put(controller);
 
@@ -971,12 +943,15 @@ static int fsl_lpspi_remove(struct platform_device *pdev)
 	struct fsl_lpspi_data *fsl_lpspi =
 				spi_controller_get_devdata(controller);
 
+	spi_unregister_controller(controller);
+	fsl_lpspi_dma_exit(controller);
+
+	pm_runtime_dont_use_autosuspend(fsl_lpspi->dev);
 	pm_runtime_disable(fsl_lpspi->dev);
 	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
-static int fsl_lpspi_suspend(struct device *dev)
+static int __maybe_unused fsl_lpspi_suspend(struct device *dev)
 {
 	int ret;
 
@@ -985,7 +960,7 @@ static int fsl_lpspi_suspend(struct device *dev)
 	return ret;
 }
 
-static int fsl_lpspi_resume(struct device *dev)
+static int __maybe_unused fsl_lpspi_resume(struct device *dev)
 {
 	int ret;
 
@@ -999,7 +974,6 @@ static int fsl_lpspi_resume(struct device *dev)
 
 	return 0;
 }
-#endif /* CONFIG_PM_SLEEP */
 
 static const struct dev_pm_ops fsl_lpspi_pm_ops = {
 	SET_RUNTIME_PM_OPS(fsl_lpspi_runtime_suspend,

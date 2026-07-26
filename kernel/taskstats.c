@@ -495,12 +495,12 @@ static void sysstats_build(struct sys_memstats *stats)
 	stats->buffer = K(i.bufferram);
 	stats->swapcache = K(total_swapcache_pages());
 	stats->slab_reclaimable =
-		K(global_node_page_state(NR_SLAB_RECLAIMABLE));
+		K(global_node_page_state_pages(NR_SLAB_RECLAIMABLE_B));
 	stats->slab_unreclaimable =
-		K(global_node_page_state(NR_SLAB_UNRECLAIMABLE));
+		K(global_node_page_state_pages(NR_SLAB_UNRECLAIMABLE_B));
 	stats->free_cma = K(global_zone_page_state(NR_FREE_CMA_PAGES));
 	stats->file_mapped = K(global_node_page_state(NR_FILE_MAPPED));
-	stats->kernelstack = global_zone_page_state(NR_KERNEL_STACK_KB);
+	stats->kernelstack = global_node_page_state(NR_KERNEL_STACK_KB);
 	stats->pagetable = K(global_zone_page_state(NR_PAGETABLE));
 	stats->shmem = K(i.sharedram);
 	sysstats_fill_zoneinfo(stats);
@@ -1007,6 +1007,7 @@ void taskstats_exit(struct task_struct *tsk, int group_dead)
 		goto err;
 
 	memcpy(stats, tsk->signal->stats, sizeof(*stats));
+	stats->version = TASKSTATS_VERSION;
 
 send:
 	send_cpu_listeners(rep_skb, listeners);

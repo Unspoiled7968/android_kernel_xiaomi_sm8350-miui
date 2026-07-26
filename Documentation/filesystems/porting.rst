@@ -863,6 +863,13 @@ no matter what.  Everything is handled by the caller.
 
 **mandatory**
 
+clone_private_mount() returns a longterm mount now, so the proper destructor of
+its result is kern_unmount() or kern_unmount_array().
+
+---
+
+**mandatory**
+
 If ->rename() update of .. on cross-directory move needs an exclusion with
 directory modifications, do *not* lock the subdirectory in question in your
 ->rename() - it's done by the caller now [that item should've been added in

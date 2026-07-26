@@ -52,9 +52,9 @@ struct genericFormat *udf_add_extendedattr(struct inode *inode, uint32_t size,
 	uint16_t crclen;
 	struct udf_inode_info *iinfo = UDF_I(inode);
 
-	ea = iinfo->i_ext.i_data;
+	ea = iinfo->i_data;
 	if (iinfo->i_lenEAttr) {
-		ad = iinfo->i_ext.i_data + iinfo->i_lenEAttr;
+		ad = iinfo->i_data + iinfo->i_lenEAttr;
 	} else {
 		ad = ea;
 		size += sizeof(struct extendedAttrHeaderDesc);
@@ -153,7 +153,7 @@ struct genericFormat *udf_get_extendedattr(struct inode *inode, uint32_t type,
 	uint32_t offset;
 	struct udf_inode_info *iinfo = UDF_I(inode);
 
-	ea = iinfo->i_ext.i_data;
+	ea = iinfo->i_data;
 
 	if (iinfo->i_lenEAttr) {
 		struct extendedAttrHeaderDesc *eahd;
@@ -250,8 +250,12 @@ struct buffer_head *udf_read_tagged(struct super_block *sb, uint32_t block,
 	}
 
 	/* Verify the descriptor CRC */
-	if (le16_to_cpu(tag_p->descCRCLength) + sizeof(struct tag) > sb->s_blocksize ||
-	    le16_to_cpu(tag_p->descCRC) == crc_itu_t(0,
+	if (le16_to_cpu(tag_p->descCRCLength) + sizeof(struct tag) > sb->s_blocksize) {
+		udf_err(sb, "block %u: CRC length %u exceeds block size\n",
+			block, le16_to_cpu(tag_p->descCRCLength));
+		goto error_out;
+	}
+	if (le16_to_cpu(tag_p->descCRC) == crc_itu_t(0,
 					bh->b_data + sizeof(struct tag),
 					le16_to_cpu(tag_p->descCRCLength)))
 		return bh;

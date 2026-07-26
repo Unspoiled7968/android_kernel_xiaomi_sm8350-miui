@@ -100,7 +100,7 @@ device_initcall(ipc_init);
 static const struct rhashtable_params ipc_kht_params = {
 	.head_offset		= offsetof(struct kern_ipc_perm, khtnode),
 	.key_offset		= offsetof(struct kern_ipc_perm, key),
-	.key_len		= FIELD_SIZEOF(struct kern_ipc_perm, key),
+	.key_len		= sizeof_field(struct kern_ipc_perm, key),
 	.automatic_shrinking	= true,
 };
 
@@ -252,7 +252,7 @@ static inline int ipc_idr_alloc(struct ipc_ids *ids, struct kern_ipc_perm *new)
 	} else {
 		new->seq = ipcid_to_seqx(next_id);
 		idx = idr_alloc(&ids->ipcs_idr, new, ipcid_to_idx(next_id),
-				0, GFP_NOWAIT);
+				ipc_mni, GFP_NOWAIT);
 	}
 	if (idx >= 0)
 		new->id = (new->seq << ipcmni_seq_shift()) + idx;
@@ -877,6 +877,7 @@ static int sysvipc_proc_release(struct inode *inode, struct file *file)
 }
 
 static const struct proc_ops sysvipc_proc_ops = {
+	.proc_flags	= PROC_ENTRY_PERMANENT,
 	.proc_open	= sysvipc_proc_open,
 	.proc_read	= seq_read,
 	.proc_lseek	= seq_lseek,

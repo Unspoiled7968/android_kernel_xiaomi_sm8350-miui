@@ -25,17 +25,7 @@
  */
 union fpregs_state init_fpstate __read_mostly;
 
-/*
- * Track whether the kernel is using the FPU state
- * currently.
- *
- * This flag is used:
- *
- *   - by IRQ context code to potentially use the FPU
- *     if it's unused.
- *
- *   - to debug kernel_fpu_begin()/end() correctness
- */
+/* Track in-kernel FPU usage */
 static DEFINE_PER_CPU(bool, in_kernel_fpu);
 
 /*
@@ -43,44 +33,78 @@ static DEFINE_PER_CPU(bool, in_kernel_fpu);
  */
 DEFINE_PER_CPU(struct fpu *, fpu_fpregs_owner_ctx);
 
-static bool kernel_fpu_disabled(void)
-{
-	return this_cpu_read(in_kernel_fpu);
-}
-
-static bool interrupted_kernel_fpu_idle(void)
-{
-	return !kernel_fpu_disabled();
-}
-
-/*
- * Were we in user mode (or vm86 mode) when we were
- * interrupted?
- *
- * Doing kernel_fpu_begin/end() is ok if we are running
- * in an interrupt context from user mode - we'll just
- * save the FPU state as required.
- */
-static bool interrupted_user_mode(void)
-{
-	struct pt_regs *regs = get_irq_regs();
-	return regs && user_mode(regs);
-}
-
 /*
  * Can we use the FPU in kernel mode with the
  * whole "kernel_fpu_begin/end()" sequence?
- *
- * It's always ok in process context (ie "not interrupt")
- * but it is sometimes ok even from an irq.
  */
 bool irq_fpu_usable(void)
 {
-	return !in_interrupt() ||
-		interrupted_user_mode() ||
-		interrupted_kernel_fpu_idle();
+	if (WARN_ON_ONCE(in_nmi()))
+		return false;
+
+	/* In kernel FPU usage already active? */
+	if (this_cpu_read(in_kernel_fpu))
+		return false;
+
+	/*
+	 * When not in NMI or hard interrupt context, FPU can be used in:
+	 *
+	 * - Task context except from within fpregs_lock()'ed critical
+	 *   regions.
+	 *
+	 * - Soft interrupt processing context which cannot happen
+	 *   while in a fpregs_lock()'ed critical region.
+	 */
+	if (!in_irq())
+		return true;
+
+	/*
+	 * In hard interrupt context it's safe when soft interrupts
+	 * are enabled, which means the interrupt did not hit in
+	 * a fpregs_lock()'ed critical region.
+	 */
+	return !softirq_count();
 }
 EXPORT_SYMBOL(irq_fpu_usable);
+
+/*
+ * These must be called with preempt disabled. Returns
+ * 'true' if the FPU state is still intact and we can
+ * keep registers active.
+ *
+ * The legacy FNSAVE instruction cleared all FPU state
+ * unconditionally, so registers are essentially destroyed.
+ * Modern FPU state can be kept in registers, if there are
+ * no pending FP exceptions.
+ */
+int copy_fpregs_to_fpstate(struct fpu *fpu)
+{
+	if (likely(use_xsave())) {
+		copy_xregs_to_kernel(&fpu->state.xsave);
+
+		/*
+		 * AVX512 state is tracked here because its use is
+		 * known to slow the max clock speed of the core.
+		 */
+		if (fpu->state.xsave.header.xfeatures & XFEATURE_MASK_AVX512)
+			fpu->avx512_timestamp = jiffies;
+		return 1;
+	}
+
+	if (likely(use_fxsr())) {
+		copy_fxregs_to_kernel(fpu);
+		return 1;
+	}
+
+	/*
+	 * Legacy FPU register saving, FNSAVE always clears FPU registers,
+	 * so we have to mark them inactive:
+	 */
+	asm volatile("fnsave %[fp]; fwait" : [fp] "=m" (fpu->state.fsave));
+
+	return 0;
+}
+EXPORT_SYMBOL(copy_fpregs_to_fpstate);
 
 void kernel_fpu_begin_mask(unsigned int kfpu_mask)
 {
@@ -298,15 +322,13 @@ void fpu__drop(struct fpu *fpu)
 }
 
 /*
- * Clear FPU registers by setting them up from
- * the init fpstate:
+ * Clear FPU registers by setting them up from the init fpstate.
+ * Caller must do fpregs_[un]lock() around it.
  */
-static inline void copy_init_fpstate_to_fpregs(void)
+static inline void copy_init_fpstate_to_fpregs(u64 features_mask)
 {
-	fpregs_lock();
-
 	if (use_xsave())
-		copy_kernel_to_xregs(&init_fpstate.xsave, -1);
+		copy_kernel_to_xregs(&init_fpstate.xsave, features_mask);
 	else if (static_cpu_has(X86_FEATURE_FXSR))
 		copy_kernel_to_fxregs(&init_fpstate.fxsave);
 	else
@@ -314,9 +336,6 @@ static inline void copy_init_fpstate_to_fpregs(void)
 
 	if (boot_cpu_has(X86_FEATURE_OSPKE))
 		copy_init_pkru_to_fpregs();
-
-	fpregs_mark_activate();
-	fpregs_unlock();
 }
 
 /*
@@ -325,18 +344,40 @@ static inline void copy_init_fpstate_to_fpregs(void)
  * Called by sys_execve(), by the signal handler code and by various
  * error paths.
  */
-void fpu__clear(struct fpu *fpu)
+static void fpu__clear(struct fpu *fpu, bool user_only)
 {
-	WARN_ON_FPU(fpu != &current->thread.fpu); /* Almost certainly an anomaly */
+	WARN_ON_FPU(fpu != &current->thread.fpu);
 
-	fpu__drop(fpu);
+	if (!static_cpu_has(X86_FEATURE_FPU)) {
+		fpu__drop(fpu);
+		fpu__initialize(fpu);
+		return;
+	}
 
-	/*
-	 * Make sure fpstate is cleared and initialized.
-	 */
-	fpu__initialize(fpu);
-	if (static_cpu_has(X86_FEATURE_FPU))
-		copy_init_fpstate_to_fpregs();
+	fpregs_lock();
+
+	if (user_only) {
+		if (!fpregs_state_valid(fpu, smp_processor_id()) &&
+		    xfeatures_mask_supervisor())
+			copy_kernel_to_xregs(&fpu->state.xsave,
+					     xfeatures_mask_supervisor());
+		copy_init_fpstate_to_fpregs(xfeatures_mask_user());
+	} else {
+		copy_init_fpstate_to_fpregs(xfeatures_mask_all);
+	}
+
+	fpregs_mark_activate();
+	fpregs_unlock();
+}
+
+void fpu__clear_user_states(struct fpu *fpu)
+{
+	fpu__clear(fpu, true);
+}
+
+void fpu__clear_all(struct fpu *fpu)
+{
+	fpu__clear(fpu, false);
 }
 
 /*

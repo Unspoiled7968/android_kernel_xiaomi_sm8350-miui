@@ -72,16 +72,18 @@ void audit_net_cb(struct audit_buffer *ab, void *va)
 {
 	struct common_audit_data *sa = va;
 
-	audit_log_format(ab, " family=");
 	if (address_family_names[sa->u.net->family])
-		audit_log_string(ab, address_family_names[sa->u.net->family]);
+		audit_log_format(ab, " family=\"%s\"",
+				 address_family_names[sa->u.net->family]);
 	else
-		audit_log_format(ab, "\"unknown(%d)\"", sa->u.net->family);
-	audit_log_format(ab, " sock_type=");
+		audit_log_format(ab, " family=\"unknown(%d)\"",
+				 sa->u.net->family);
 	if (sock_type_names[aad(sa)->net.type])
-		audit_log_string(ab, sock_type_names[aad(sa)->net.type]);
+		audit_log_format(ab, " sock_type=\"%s\"",
+				 sock_type_names[aad(sa)->net.type]);
 	else
-		audit_log_format(ab, "\"unknown(%d)\"", aad(sa)->net.type);
+		audit_log_format(ab, " sock_type=\"unknown(%d)\"",
+				 aad(sa)->net.type);
 	audit_log_format(ab, " protocol=%d", aad(sa)->net.protocol);
 
 	if (aad(sa)->request & NET_PERMS_MASK) {
@@ -180,8 +182,10 @@ int aa_sock_file_perm(struct aa_label *label, const char *op, u32 request,
 		      struct socket *sock)
 {
 	AA_BUG(!label);
-	AA_BUG(!sock);
-	AA_BUG(!sock->sk);
+
+	/* sock && sock->sk can be NULL for sockets being set up or torn down */
+	if (!sock || !sock->sk)
+		return 0;
 
 	return aa_label_sk_perm(label, op, request, sock->sk);
 }

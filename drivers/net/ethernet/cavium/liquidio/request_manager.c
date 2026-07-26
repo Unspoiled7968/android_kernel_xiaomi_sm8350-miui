@@ -95,20 +95,16 @@ int octeon_init_instr_queue(struct octeon_device *oct,
 	/* Initialize a list to holds requests that have been posted to Octeon
 	 * but has yet to be fetched by octeon
 	 */
-	iq->request_list = vmalloc_node((sizeof(*iq->request_list) * num_descs),
-					       numa_node);
+	iq->request_list = vzalloc_node(array_size(num_descs, sizeof(*iq->request_list)),
+					numa_node);
 	if (!iq->request_list)
-		iq->request_list =
-			vmalloc(array_size(num_descs,
-					   sizeof(*iq->request_list)));
+		iq->request_list = vzalloc(array_size(num_descs, sizeof(*iq->request_list)));
 	if (!iq->request_list) {
 		lio_dma_free(oct, q_size, iq->base_addr, iq->base_addr_dma);
 		dev_err(&oct->pci_dev->dev, "Alloc failed for IQ[%d] nr free list\n",
 			iq_no);
 		return 1;
 	}
-
-	memset(iq->request_list, 0, sizeof(*iq->request_list) * num_descs);
 
 	dev_dbg(&oct->pci_dev->dev, "IQ[%d]: base: %p basedma: %pad count: %d\n",
 		iq_no, iq->base_addr, &iq->base_addr_dma, iq->max_count);
@@ -139,7 +135,7 @@ int octeon_init_instr_queue(struct octeon_device *oct,
 	oct->io_qmask.iq |= BIT_ULL(iq_no);
 
 	/* Set the 32B/64B mode for each input queue */
-	oct->io_qmask.iq64B |= ((conf->instr_type == 64) << iq_no);
+	oct->io_qmask.iq64B |= ((u64)(conf->instr_type == 64) << iq_no);
 	iq->iqcmd_64B = (conf->instr_type == 64);
 
 	oct->fn_list.setup_iq_regs(oct, iq_no);

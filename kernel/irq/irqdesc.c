@@ -31,7 +31,7 @@ static int __init irq_affinity_setup(char *str)
 	cpulist_parse(str, irq_default_affinity);
 	/*
 	 * Set at least the boot cpu. We don't want to end up with
-	 * bugreports caused by random comandline masks
+	 * bugreports caused by random commandline masks
 	 */
 	cpumask_set_cpu(smp_processor_id(), irq_default_affinity);
 	return 1;
@@ -644,9 +644,15 @@ void irq_init_desc(unsigned int irq)
 int generic_handle_irq(unsigned int irq)
 {
 	struct irq_desc *desc = irq_to_desc(irq);
+	struct irq_data *data;
 
 	if (!desc)
 		return -EINVAL;
+
+	data = irq_desc_get_irq_data(desc);
+	if (WARN_ON_ONCE(!in_irq() && handle_enforce_irqctx(data)))
+		return -EPERM;
+
 	generic_handle_irq_desc(desc);
 	return 0;
 }
@@ -667,27 +673,37 @@ int __handle_domain_irq(struct irq_domain *domain, unsigned int hwirq,
 {
 	struct pt_regs *old_regs = set_irq_regs(regs);
 	unsigned int irq = hwirq;
+	struct irq_desc *desc;
 	int ret = 0;
 
-	irq_enter();
-
 #ifdef CONFIG_IRQ_DOMAIN
-	if (lookup)
+	if (lookup) {
+		__irq_enter_raw();
 		irq = irq_find_mapping(domain, hwirq);
+		__irq_exit_raw();
+	}
 #endif
 
 	/*
 	 * Some hardware gives randomly wrong interrupts.  Rather
 	 * than crashing, do something sensible.
 	 */
-	if (unlikely(!irq || irq >= nr_irqs)) {
+	if (unlikely(!irq || irq >= nr_irqs || !(desc = irq_to_desc(irq)))) {
 		ack_bad_irq(irq);
 		ret = -EINVAL;
-	} else {
-		generic_handle_irq(irq);
+		goto out;
 	}
 
-	irq_exit();
+	if (IS_ENABLED(CONFIG_ARCH_WANTS_IRQ_RAW) &&
+	    unlikely(irq_settings_is_raw(desc))) {
+		generic_handle_irq_desc(desc);
+	} else {
+		irq_enter();
+		generic_handle_irq_desc(desc);
+		irq_exit();
+	}
+
+out:
 	set_irq_regs(old_regs);
 	return ret;
 }
@@ -756,7 +772,7 @@ void irq_free_descs(unsigned int from, unsigned int cnt)
 EXPORT_SYMBOL_GPL(irq_free_descs);
 
 /**
- * irq_alloc_descs - allocate and initialize a range of irq descriptors
+ * __irq_alloc_descs - allocate and initialize a range of irq descriptors
  * @irq:	Allocate for specific irq number if irq >= 0
  * @from:	Start the search from this irq number
  * @cnt:	Number of consecutive irqs to allocate.
@@ -897,6 +913,7 @@ __irq_get_desc_lock(unsigned int irq, unsigned long *flags, bool bus,
 }
 
 void __irq_put_desc_unlock(struct irq_desc *desc, unsigned long flags, bool bus)
+	__releases(&desc->lock)
 {
 	raw_spin_unlock_irqrestore(&desc->lock, flags);
 	if (bus)
@@ -968,6 +985,7 @@ unsigned int kstat_irqs_cpu(unsigned int irq, int cpu)
 	return desc && desc->kstat_irqs ?
 			*per_cpu_ptr(desc->kstat_irqs, cpu) : 0;
 }
+EXPORT_SYMBOL_GPL(kstat_irqs_cpu);
 
 static bool irq_is_nmi(struct irq_desc *desc)
 {
@@ -1018,3 +1036,4 @@ unsigned int kstat_irqs_usr(unsigned int irq)
 	rcu_read_unlock();
 	return sum;
 }
+EXPORT_SYMBOL_GPL(kstat_irqs_usr);

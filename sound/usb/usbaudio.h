@@ -12,6 +12,8 @@
 #define USB_ID_VENDOR(id) ((id) >> 16)
 #define USB_ID_PRODUCT(id) ((u16)(id))
 
+#include <linux/android_kabi.h>
+
 /*
  *
  */
@@ -19,12 +21,15 @@
 struct media_device;
 struct media_intf_devnode;
 
+#define MAX_CARD_INTERFACES	16
+
 struct snd_usb_audio {
 	int index;
 	struct usb_device *dev;
 	struct snd_card *card;
-	struct usb_interface *pm_intf;
+	struct usb_interface *intf[MAX_CARD_INTERFACES];
 	u32 usb_id;
+	uint16_t quirk_type;
 	struct mutex mutex;
 	unsigned int system_suspend;
 	atomic_t active;
@@ -34,6 +39,7 @@ struct snd_usb_audio {
 	unsigned int txfr_quirk:1; /* Subframe boundaries on transfers */
 	unsigned int tx_length_quirk:1; /* Put length specifier in transfers */
 	unsigned int setup_fmt_after_resume_quirk:1; /* setup the format to interface after resume */
+	unsigned int need_delayed_register:1; /* warn for delayed registration */
 	int num_interfaces;
 	int num_suspended_intf;
 	int sample_rate_read_error;
@@ -60,6 +66,11 @@ struct snd_usb_audio {
 	struct mutex dev_lock;  /* to protect any race with disconnect */
 	int card_num;	/* cache pcm card number to use upon disconnect */
 	void (*disconnect_cb)(struct snd_usb_audio *chip);
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
+	ANDROID_KABI_RESERVE(3);
+	ANDROID_KABI_RESERVE(4);
 };
 
 #define USB_AUDIO_IFACE_UNUSED	((void *)-1L)
@@ -104,6 +115,7 @@ enum quirk_type {
 	QUIRK_AUDIO_ALIGN_TRANSFER,
 	QUIRK_AUDIO_STANDARD_MIXER,
 	QUIRK_SETUP_FMT_AFTER_RESUME,
+	QUIRK_SETUP_DISABLE_AUTOSUSPEND,
 
 	QUIRK_TYPE_COUNT
 };
@@ -111,7 +123,6 @@ enum quirk_type {
 struct snd_usb_audio_quirk {
 	const char *vendor_name;
 	const char *product_name;
-	const char *profile_name;	/* override the card->longname */
 	int16_t ifnum;
 	uint16_t type;
 	bool shares_media_device;
@@ -126,6 +137,7 @@ int snd_usb_lock_shutdown(struct snd_usb_audio *chip);
 void snd_usb_unlock_shutdown(struct snd_usb_audio *chip);
 
 extern bool snd_usb_use_vmalloc;
+extern bool snd_usb_skip_validation;
 
 struct audioformat;
 
@@ -171,6 +183,9 @@ struct snd_usb_audio_vendor_ops {
 				 struct audioformat *found,
 				 int *cur_attr, int *attr);
 	int (*usb_add_ctls)(struct snd_usb_audio *chip);
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
 };
 
 #endif /* __USBAUDIO_H */

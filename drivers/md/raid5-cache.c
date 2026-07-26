@@ -195,9 +195,7 @@ struct r5l_log {
 static inline sector_t r5c_tree_index(struct r5conf *conf,
 				      sector_t sect)
 {
-	sector_t offset;
-
-	offset = sector_div(sect, conf->chunk_sectors);
+	sector_div(sect, conf->chunk_sectors);
 	return sect;
 }
 
@@ -298,8 +296,8 @@ r5c_return_dev_pending_writes(struct r5conf *conf, struct r5dev *dev)
 	wbi = dev->written;
 	dev->written = NULL;
 	while (wbi && wbi->bi_iter.bi_sector <
-	       dev->sector + STRIPE_SECTORS) {
-		wbi2 = r5_next_bio(wbi, dev->sector);
+	       dev->sector + RAID5_STRIPE_SECTORS(conf)) {
+		wbi2 = r5_next_bio(conf, wbi, dev->sector);
 		md_write_end(conf->mddev);
 		bio_endio(wbi);
 		wbi = wbi2;
@@ -316,7 +314,7 @@ void r5c_handle_cached_data_endio(struct r5conf *conf,
 			set_bit(R5_UPTODATE, &sh->dev[i].flags);
 			r5c_return_dev_pending_writes(conf, &sh->dev[i]);
 			md_bitmap_endwrite(conf->mddev->bitmap, sh->sector,
-					   STRIPE_SECTORS,
+					   RAID5_STRIPE_SECTORS(conf),
 					   !test_bit(STRIPE_DEGRADED, &sh->state),
 					   0);
 		}
@@ -364,7 +362,7 @@ void r5c_check_cached_full_stripe(struct r5conf *conf)
 	 */
 	if (atomic_read(&conf->r5c_cached_full_stripes) >=
 	    min(R5C_FULL_STRIPE_FLUSH_BATCH(conf),
-		conf->chunk_sectors >> STRIPE_SHIFT))
+		conf->chunk_sectors >> RAID5_STRIPE_SHIFT(conf)))
 		r5l_wake_reclaim(conf->log, 0);
 }
 
@@ -2019,15 +2017,27 @@ r5l_recovery_verify_data_checksum_for_mb(struct r5l_log *log,
 		return -ENOMEM;
 
 	while (mb_offset < le32_to_cpu(mb->meta_size)) {
+		sector_t payload_len;
+
 		payload = (void *)mb + mb_offset;
 		payload_flush = (void *)mb + mb_offset;
 
 		if (le16_to_cpu(payload->header.type) == R5LOG_PAYLOAD_DATA) {
+			payload_len = sizeof(struct r5l_payload_data_parity) +
+				(sector_t)sizeof(__le32) *
+				(le32_to_cpu(payload->size) >> (PAGE_SHIFT - 9));
+			if (mb_offset + payload_len > le32_to_cpu(mb->meta_size))
+				goto mismatch;
 			if (r5l_recovery_verify_data_checksum(
 				    log, ctx, page, log_offset,
 				    payload->checksum[0]) < 0)
 				goto mismatch;
 		} else if (le16_to_cpu(payload->header.type) == R5LOG_PAYLOAD_PARITY) {
+			payload_len = sizeof(struct r5l_payload_data_parity) +
+				(sector_t)sizeof(__le32) *
+				(le32_to_cpu(payload->size) >> (PAGE_SHIFT - 9));
+			if (mb_offset + payload_len > le32_to_cpu(mb->meta_size))
+				goto mismatch;
 			if (r5l_recovery_verify_data_checksum(
 				    log, ctx, page, log_offset,
 				    payload->checksum[0]) < 0)
@@ -2040,22 +2050,18 @@ r5l_recovery_verify_data_checksum_for_mb(struct r5l_log *log,
 				    payload->checksum[1]) < 0)
 				goto mismatch;
 		} else if (le16_to_cpu(payload->header.type) == R5LOG_PAYLOAD_FLUSH) {
-			/* nothing to do for R5LOG_PAYLOAD_FLUSH here */
+			payload_len = sizeof(struct r5l_payload_flush) +
+				(sector_t)le32_to_cpu(payload_flush->size);
+			if (mb_offset + payload_len > le32_to_cpu(mb->meta_size))
+				goto mismatch;
 		} else /* not R5LOG_PAYLOAD_DATA/PARITY/FLUSH */
 			goto mismatch;
 
-		if (le16_to_cpu(payload->header.type) == R5LOG_PAYLOAD_FLUSH) {
-			mb_offset += sizeof(struct r5l_payload_flush) +
-				le32_to_cpu(payload_flush->size);
-		} else {
-			/* DATA or PARITY payload */
+		if (le16_to_cpu(payload->header.type) != R5LOG_PAYLOAD_FLUSH) {
 			log_offset = r5l_ring_add(log, log_offset,
 						  le32_to_cpu(payload->size));
-			mb_offset += sizeof(struct r5l_payload_data_parity) +
-				sizeof(__le32) *
-				(le32_to_cpu(payload->size) >> (PAGE_SHIFT - 9));
 		}
-
+		mb_offset += payload_len;
 	}
 
 	put_page(page);
@@ -2106,6 +2112,7 @@ r5c_recovery_analyze_meta_block(struct r5l_log *log,
 	log_offset = r5l_ring_add(log, ctx->pos, BLOCK_SECTORS);
 
 	while (mb_offset < le32_to_cpu(mb->meta_size)) {
+		sector_t payload_len;
 		int dd;
 
 		payload = (void *)mb + mb_offset;
@@ -2113,6 +2120,12 @@ r5c_recovery_analyze_meta_block(struct r5l_log *log,
 
 		if (le16_to_cpu(payload->header.type) == R5LOG_PAYLOAD_FLUSH) {
 			int i, count;
+
+			payload_len = sizeof(struct r5l_payload_flush) +
+				(sector_t)le32_to_cpu(payload_flush->size);
+			if (mb_offset + payload_len >
+			    le32_to_cpu(mb->meta_size))
+				return -EINVAL;
 
 			count = le32_to_cpu(payload_flush->size) / sizeof(__le64);
 			for (i = 0; i < count; ++i) {
@@ -2127,12 +2140,17 @@ r5c_recovery_analyze_meta_block(struct r5l_log *log,
 				}
 			}
 
-			mb_offset += sizeof(struct r5l_payload_flush) +
-				le32_to_cpu(payload_flush->size);
+			mb_offset += payload_len;
 			continue;
 		}
 
 		/* DATA or PARITY payload */
+		payload_len = sizeof(struct r5l_payload_data_parity) +
+			(sector_t)sizeof(__le32) *
+			(le32_to_cpu(payload->size) >> (PAGE_SHIFT - 9));
+		if (mb_offset + payload_len > le32_to_cpu(mb->meta_size))
+			return -EINVAL;
+
 		stripe_sect = (le16_to_cpu(payload->header.type) == R5LOG_PAYLOAD_DATA) ?
 			raid5_compute_sector(
 				conf, le64_to_cpu(payload->location), 0, &dd,
@@ -2197,9 +2215,7 @@ r5c_recovery_analyze_meta_block(struct r5l_log *log,
 		log_offset = r5l_ring_add(log, log_offset,
 					  le32_to_cpu(payload->size));
 
-		mb_offset += sizeof(struct r5l_payload_data_parity) +
-			sizeof(__le32) *
-			(le32_to_cpu(payload->size) >> (PAGE_SHIFT - 9));
+		mb_offset += payload_len;
 	}
 
 	return 0;
@@ -2430,10 +2446,15 @@ static void r5c_recovery_flush_data_only_stripes(struct r5l_log *log,
 	struct mddev *mddev = log->rdev->mddev;
 	struct r5conf *conf = mddev->private;
 	struct stripe_head *sh, *next;
+	bool cleared_pending = false;
 
 	if (ctx->data_only_stripes == 0)
 		return;
 
+	if (test_bit(MD_SB_CHANGE_PENDING, &mddev->sb_flags)) {
+		cleared_pending = true;
+		clear_bit(MD_SB_CHANGE_PENDING, &mddev->sb_flags);
+	}
 	log->r5c_journal_mode = R5C_JOURNAL_MODE_WRITE_BACK;
 
 	list_for_each_entry_safe(sh, next, &ctx->cached_list, lru) {
@@ -2448,6 +2469,8 @@ static void r5c_recovery_flush_data_only_stripes(struct r5l_log *log,
 		   atomic_read(&conf->active_stripes) == 0);
 
 	log->r5c_journal_mode = R5C_JOURNAL_MODE_WRITE_THROUGH;
+	if (cleared_pending)
+		set_bit(MD_SB_CHANGE_PENDING, &mddev->sb_flags);
 }
 
 static int r5l_recovery_log(struct r5l_log *log)
@@ -2532,13 +2555,10 @@ static ssize_t r5c_journal_mode_show(struct mddev *mddev, char *page)
 	struct r5conf *conf;
 	int ret;
 
-	ret = mddev_lock(mddev);
-	if (ret)
-		return ret;
-
+	spin_lock(&mddev->lock);
 	conf = mddev->private;
 	if (!conf || !conf->log) {
-		mddev_unlock(mddev);
+		spin_unlock(&mddev->lock);
 		return 0;
 	}
 
@@ -2558,7 +2578,7 @@ static ssize_t r5c_journal_mode_show(struct mddev *mddev, char *page)
 	default:
 		ret = 0;
 	}
-	mddev_unlock(mddev);
+	spin_unlock(&mddev->lock);
 	return ret;
 }
 

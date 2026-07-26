@@ -32,6 +32,7 @@
 #include <linux/uaccess.h>
 #include <linux/platform_device.h>
 #include <linux/io.h>
+#include <linux/iopoll.h>
 #include <linux/clk.h>
 
 #include <asm/byteorder.h>
@@ -880,18 +881,15 @@ static int handshake(struct fotg210_hcd *fotg210, void __iomem *ptr,
 		u32 mask, u32 done, int usec)
 {
 	u32 result;
+	int ret;
 
-	do {
-		result = fotg210_readl(fotg210, ptr);
-		if (result == ~(u32)0)		/* card removed */
-			return -ENODEV;
-		result &= mask;
-		if (result == done)
-			return 0;
-		udelay(1);
-		usec--;
-	} while (usec > 0);
-	return -ETIMEDOUT;
+	ret = readl_poll_timeout_atomic(ptr, result,
+					((result & mask) == done ||
+					 result == U32_MAX), 1, usec);
+	if (result == U32_MAX)		/* card removed */
+		return -ENODEV;
+
+	return ret;
 }
 
 /* Force HC to halt state from unknown (EHCI spec section 2.3).
@@ -2801,7 +2799,7 @@ static struct fotg210_qh *qh_make(struct fotg210_hcd *fotg210, struct urb *urb,
 	switch (urb->dev->speed) {
 	case USB_SPEED_LOW:
 		info1 |= QH_LOW_SPEED;
-		/* FALL THROUGH */
+		fallthrough;
 
 	case USB_SPEED_FULL:
 		/* EPS 0 means "full" */
@@ -4628,7 +4626,7 @@ static inline int scan_frame_queue(struct fotg210_hcd *fotg210, unsigned frame,
 		default:
 			fotg210_dbg(fotg210, "corrupt type %d frame %d shadow %p\n",
 					type, frame, q.ptr);
-			/* FALL THROUGH */
+			fallthrough;
 		case Q_TYPE_QH:
 		case Q_TYPE_FSTN:
 			/* End of the iTDs and siTDs */
@@ -5004,7 +5002,6 @@ static int fotg210_run(struct usb_hcd *hcd)
 {
 	struct fotg210_hcd *fotg210 = hcd_to_fotg210(hcd);
 	u32 temp;
-	u32 hcc_params;
 
 	hcd->uses_new_polling = 1;
 
@@ -5027,7 +5024,7 @@ static int fotg210_run(struct usb_hcd *hcd)
 	 * Scsi_Host.highmem_io, and so forth.  It's readonly to all
 	 * host side drivers though.
 	 */
-	hcc_params = fotg210_readl(fotg210, &fotg210->caps->hcc_params);
+	fotg210_readl(fotg210, &fotg210->caps->hcc_params);
 
 	/*
 	 * Philips, Intel, and maybe others need CMD_RUN before the
@@ -5406,7 +5403,7 @@ rescan:
 		 */
 		if (tmp)
 			start_unlink_async(fotg210, qh);
-		/* FALL THROUGH */
+		fallthrough;
 	case QH_STATE_UNLINK:		/* wait for hw to finish? */
 	case QH_STATE_UNLINK_WAIT:
 idle_timeout:
@@ -5420,7 +5417,7 @@ idle_timeout:
 			qh_destroy(fotg210, qh);
 			break;
 		}
-		/* fall through */
+		fallthrough;
 	default:
 		/* caller was supposed to have unlinked any requests;
 		 * that's not our job.  just leak this memory.
@@ -5552,7 +5549,7 @@ static void fotg210_init(struct fotg210_hcd *fotg210)
 	iowrite32(value, &fotg210->regs->otgcsr);
 }
 
-/**
+/*
  * fotg210_hcd_probe - initialize faraday FOTG210 HCDs
  *
  * Allocates basic resources for this USB host controller, and
@@ -5640,8 +5637,10 @@ static int fotg210_hcd_probe(struct platform_device *pdev)
 	return retval;
 
 failed_dis_clk:
-	if (!IS_ERR(fotg210->pclk))
+	if (!IS_ERR(fotg210->pclk)) {
 		clk_disable_unprepare(fotg210->pclk);
+		clk_put(fotg210->pclk);
+	}
 failed_put_hcd:
 	usb_put_hcd(hcd);
 fail_create_hcd:
@@ -5649,7 +5648,7 @@ fail_create_hcd:
 	return retval;
 }
 
-/**
+/*
  * fotg210_hcd_remove - shutdown processing for EHCI HCDs
  * @dev: USB Host Controller being removed
  *
@@ -5659,8 +5658,10 @@ static int fotg210_hcd_remove(struct platform_device *pdev)
 	struct usb_hcd *hcd = platform_get_drvdata(pdev);
 	struct fotg210_hcd *fotg210 = hcd_to_fotg210(hcd);
 
-	if (!IS_ERR(fotg210->pclk))
+	if (!IS_ERR(fotg210->pclk)) {
 		clk_disable_unprepare(fotg210->pclk);
+		clk_put(fotg210->pclk);
+	}
 
 	usb_remove_hcd(hcd);
 	usb_put_hcd(hcd);

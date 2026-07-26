@@ -170,6 +170,7 @@
 };
 
 &ir {
+	linux,rc-map-name = "rc-hisi-poplar";
 	status = "okay";
 };
 
@@ -178,7 +179,7 @@
 };
 
 &pcie {
-	reset-gpios = <&gpio4 4 GPIO_ACTIVE_HIGH>;
+	reset-gpios = <&gpio4 4 GPIO_ACTIVE_LOW>;
 	vpcie-supply = <&reg_pcie>;
 	status = "okay";
 };

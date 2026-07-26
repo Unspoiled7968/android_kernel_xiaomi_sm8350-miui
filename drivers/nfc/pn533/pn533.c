@@ -2333,7 +2333,7 @@ static int pn533_transceive(struct nfc_dev *nfc_dev,
 
 			break;
 		}
-		/* fall through */
+		fallthrough;
 	default:
 		/* jumbo frame ? */
 		if (skb->len > PN533_CMD_DATAEXCH_DATA_MAXLEN) {
@@ -2460,7 +2460,7 @@ static void pn533_wq_mi_recv(struct work_struct *work)
 
 			break;
 		}
-		/* fall through */
+		fallthrough;
 	default:
 		skb_put_u8(skb, 1); /*TG*/
 
@@ -2655,13 +2655,17 @@ static int pn532_sam_configuration(struct nfc_dev *nfc_dev)
 static int pn533_dev_up(struct nfc_dev *nfc_dev)
 {
 	struct pn533 *dev = nfc_get_drvdata(nfc_dev);
+	int rc;
 
-	if (dev->phy_ops->dev_up)
-		dev->phy_ops->dev_up(dev);
+	if (dev->phy_ops->dev_up) {
+		rc = dev->phy_ops->dev_up(dev);
+		if (rc)
+			return rc;
+	}
 
 	if ((dev->device_type == PN533_DEVICE_PN532) ||
 		(dev->device_type == PN533_DEVICE_PN532_AUTOPOLL)) {
-		int rc = pn532_sam_configuration(nfc_dev);
+		rc = pn532_sam_configuration(nfc_dev);
 
 		if (rc)
 			return rc;
@@ -2677,7 +2681,7 @@ static int pn533_dev_down(struct nfc_dev *nfc_dev)
 
 	ret = pn533_rf_field(nfc_dev, 0);
 	if (dev->phy_ops->dev_down && !ret)
-		dev->phy_ops->dev_down(dev);
+		ret = dev->phy_ops->dev_down(dev);
 
 	return ret;
 }
@@ -2791,14 +2795,12 @@ int pn533_finalize_setup(struct pn533 *dev)
 }
 EXPORT_SYMBOL_GPL(pn533_finalize_setup);
 
-struct pn533 *pn533_register_device(u32 device_type,
-				u32 protocols,
+struct pn533 *pn53x_common_init(u32 device_type,
 				enum pn533_protocol_type protocol_type,
 				void *phy,
 				struct pn533_phy_ops *phy_ops,
 				struct pn533_frame_ops *fops,
-				struct device *dev,
-				struct device *parent)
+				struct device *dev)
 {
 	struct pn533 *priv;
 	int rc = -ENOMEM;
@@ -2839,49 +2841,25 @@ struct pn533 *pn533_register_device(u32 device_type,
 	skb_queue_head_init(&priv->fragment_skb);
 
 	INIT_LIST_HEAD(&priv->cmd_queue);
-
-	priv->nfc_dev = nfc_allocate_device(&pn533_nfc_ops, protocols,
-					   priv->ops->tx_header_len +
-					   PN533_CMD_DATAEXCH_HEAD_LEN,
-					   priv->ops->tx_tail_len);
-	if (!priv->nfc_dev) {
-		rc = -ENOMEM;
-		goto destroy_wq;
-	}
-
-	nfc_set_parent_dev(priv->nfc_dev, parent);
-	nfc_set_drvdata(priv->nfc_dev, priv);
-
-	rc = nfc_register_device(priv->nfc_dev);
-	if (rc)
-		goto free_nfc_dev;
-
 	return priv;
 
-free_nfc_dev:
-	nfc_free_device(priv->nfc_dev);
-
-destroy_wq:
-	destroy_workqueue(priv->wq);
 error:
 	kfree(priv);
 	return ERR_PTR(rc);
 }
-EXPORT_SYMBOL_GPL(pn533_register_device);
+EXPORT_SYMBOL_GPL(pn53x_common_init);
 
-void pn533_unregister_device(struct pn533 *priv)
+void pn53x_common_clean(struct pn533 *priv)
 {
 	struct pn533_cmd *cmd, *n;
 
-	nfc_unregister_device(priv->nfc_dev);
-	nfc_free_device(priv->nfc_dev);
+	/* delete the timer before cleanup the worker */
+	del_timer_sync(&priv->listen_timer);
 
 	flush_delayed_work(&priv->poll_work);
 	destroy_workqueue(priv->wq);
 
 	skb_queue_purge(&priv->resp_q);
-
-	del_timer(&priv->listen_timer);
 
 	list_for_each_entry_safe(cmd, n, &priv->cmd_queue, queue) {
 		list_del(&cmd->queue);
@@ -2890,8 +2868,47 @@ void pn533_unregister_device(struct pn533 *priv)
 
 	kfree(priv);
 }
-EXPORT_SYMBOL_GPL(pn533_unregister_device);
+EXPORT_SYMBOL_GPL(pn53x_common_clean);
 
+int pn532_i2c_nfc_alloc(struct pn533 *priv, u32 protocols,
+			struct device *parent)
+{
+	priv->nfc_dev = nfc_allocate_device(&pn533_nfc_ops, protocols,
+					   priv->ops->tx_header_len +
+					   PN533_CMD_DATAEXCH_HEAD_LEN,
+					   priv->ops->tx_tail_len);
+	if (!priv->nfc_dev)
+		return -ENOMEM;
+
+	nfc_set_parent_dev(priv->nfc_dev, parent);
+	nfc_set_drvdata(priv->nfc_dev, priv);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(pn532_i2c_nfc_alloc);
+
+int pn53x_register_nfc(struct pn533 *priv, u32 protocols,
+			struct device *parent)
+{
+	int rc;
+
+	rc = pn532_i2c_nfc_alloc(priv, protocols, parent);
+	if (rc)
+		return rc;
+
+	rc = nfc_register_device(priv->nfc_dev);
+	if (rc)
+		nfc_free_device(priv->nfc_dev);
+
+	return rc;
+}
+EXPORT_SYMBOL_GPL(pn53x_register_nfc);
+
+void pn53x_unregister_nfc(struct pn533 *priv)
+{
+	nfc_unregister_device(priv->nfc_dev);
+	nfc_free_device(priv->nfc_dev);
+}
+EXPORT_SYMBOL_GPL(pn53x_unregister_nfc);
 
 MODULE_AUTHOR("Lauro Ramos Venancio <lauro.venancio@openbossa.org>");
 MODULE_AUTHOR("Aloisio Almeida Jr <aloisio.almeida@openbossa.org>");

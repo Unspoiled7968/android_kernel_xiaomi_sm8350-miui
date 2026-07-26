@@ -201,8 +201,10 @@ static struct inode *ocfs2_get_init_inode(struct inode *dir, umode_t mode)
 	mode = mode_strip_sgid(dir, mode);
 	inode_init_owner(inode, dir, mode);
 	status = dquot_initialize(inode);
-	if (status)
+	if (status) {
+		iput(inode);
 		return ERR_PTR(status);
+	}
 
 	return inode;
 }
@@ -242,6 +244,7 @@ static int ocfs2_mknod(struct inode *dir,
 	int want_meta = 0;
 	int xattr_credits = 0;
 	struct ocfs2_security_xattr_info si = {
+		.name = NULL,
 		.enable = 1,
 	};
 	int did_quota_inode = 0;
@@ -409,7 +412,7 @@ static int ocfs2_mknod(struct inode *dir,
 
 	if (status < 0) {
 		mlog_errno(status);
-		goto leave;
+		goto roll_back;
 	}
 
 	if (si.enable) {
@@ -417,7 +420,7 @@ static int ocfs2_mknod(struct inode *dir,
 						 meta_ac, data_ac);
 		if (status < 0) {
 			mlog_errno(status);
-			goto leave;
+			goto roll_back;
 		}
 	}
 
@@ -430,7 +433,7 @@ static int ocfs2_mknod(struct inode *dir,
 					  OCFS2_I(dir)->ip_blkno);
 	if (status) {
 		mlog_errno(status);
-		goto leave;
+		goto roll_back;
 	}
 
 	dl = dentry->d_fsdata;
@@ -440,12 +443,19 @@ static int ocfs2_mknod(struct inode *dir,
 				 &lookup);
 	if (status < 0) {
 		mlog_errno(status);
-		goto leave;
+		goto roll_back;
 	}
 
 	insert_inode_hash(inode);
 	d_instantiate(dentry, inode);
 	status = 0;
+
+roll_back:
+	if (status < 0 && S_ISDIR(mode)) {
+		ocfs2_add_links_count(dirfe, -1);
+		drop_nlink(dir);
+	}
+
 leave:
 	if (status < 0 && did_quota_inode)
 		dquot_free_inode(inode);
@@ -475,7 +485,7 @@ leave:
 		ocfs2_free_alloc_context(meta_ac);
 
 	/*
-	 * We should call iput after the i_mutex of the bitmap been
+	 * We should call iput after the i_rwsem of the bitmap been
 	 * unlocked in ocfs2_free_alloc_context, or the
 	 * ocfs2_delete_inode will mutex_lock again.
 	 */
@@ -592,8 +602,7 @@ static int __ocfs2_mknod_locked(struct inode *dir,
 			mlog_errno(status);
 	}
 
-	oi->i_sync_tid = handle->h_transaction->t_tid;
-	oi->i_datasync_tid = handle->h_transaction->t_tid;
+	ocfs2_update_inode_fsync_trans(handle, inode, 1);
 
 leave:
 	if (status < 0) {
@@ -1799,6 +1808,7 @@ static int ocfs2_symlink(struct inode *dir,
 	int want_clusters = 0;
 	int xattr_credits = 0;
 	struct ocfs2_security_xattr_info si = {
+		.name = NULL,
 		.enable = 1,
 	};
 	int did_quota = 0, did_quota_inode = 0;

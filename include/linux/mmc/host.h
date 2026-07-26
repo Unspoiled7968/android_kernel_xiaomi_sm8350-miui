@@ -19,6 +19,10 @@
 #include <linux/mmc/pm.h>
 #include <linux/dma-direction.h>
 #include <linux/ipc_logging.h>
+#include <linux/keyslot-manager.h>
+#include <linux/android_kabi.h>
+
+#include <linux/android_vendor.h>
 
 struct mmc_ios {
 	unsigned int	clock;			/* clock rate */
@@ -192,6 +196,7 @@ struct mmc_host_ops {
 	int	(*select_drive_strength)(struct mmc_card *card,
 					 unsigned int max_dtr, int host_drv,
 					 int card_drv, int *drv_type);
+	/* Reset the eMMC card via RST_n */
 	void	(*hw_reset)(struct mmc_host *host);
 	void	(*card_event)(struct mmc_host *host);
 
@@ -204,6 +209,9 @@ struct mmc_host_ops {
 #if defined(CONFIG_SDC_QTI)
 	int     (*notify_load)(struct mmc_host *host, enum mmc_load);
 #endif
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
 };
 
 struct mmc_cqe_ops {
@@ -257,6 +265,9 @@ struct mmc_cqe_ops {
 	void	(*cqe_crypto_update_queue)(struct mmc_host *host,
 					struct request_queue *queue);
 #endif
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
 };
 
 struct mmc_async_req {
@@ -283,6 +294,7 @@ struct mmc_async_req {
 struct mmc_slot {
 	int cd_irq;
 	bool cd_wake_enabled;
+	ANDROID_OEM_DATA_ARRAY(1, 2);
 	void *handler_priv;
 };
 
@@ -387,12 +399,7 @@ struct mmc_host {
 	u32			ocr_avail_sdio;	/* SDIO-specific OCR */
 	u32			ocr_avail_sd;	/* SD-specific OCR */
 	u32			ocr_avail_mmc;	/* MMC-specific OCR */
-
-#ifdef CONFIG_PM_SLEEP
-	/* DO NOT USE, is not used, for abi preservation only */
-	struct notifier_block	pm_notify;
-#endif
-
+	struct wakeup_source	*ws;		/* Enable consume of uevents */
 	u32			max_current_330;
 	u32			max_current_300;
 	u32			max_current_180;
@@ -427,10 +434,11 @@ struct mmc_host {
 #define MMC_CAP_AGGRESSIVE_PM	(1 << 7)	/* Suspend (e)MMC/SD at idle  */
 #define MMC_CAP_NONREMOVABLE	(1 << 8)	/* Nonremovable e.g. eMMC */
 #define MMC_CAP_WAIT_WHILE_BUSY	(1 << 9)	/* Waits while card is busy */
-#define MMC_CAP_ERASE		(1 << 10)	/* Allow erase/trim commands */
 #define MMC_CAP_3_3V_DDR	(1 << 11)	/* Host supports eMMC DDR 3.3V */
 #define MMC_CAP_1_8V_DDR	(1 << 12)	/* Host supports eMMC DDR 1.8V */
 #define MMC_CAP_1_2V_DDR	(1 << 13)	/* Host supports eMMC DDR 1.2V */
+#define MMC_CAP_DDR		(MMC_CAP_3_3V_DDR | MMC_CAP_1_8V_DDR | \
+				 MMC_CAP_1_2V_DDR)
 #define MMC_CAP_POWER_OFF_CARD	(1 << 14)	/* Can power off after boot */
 #define MMC_CAP_BUS_WIDTH_TEST	(1 << 15)	/* CMD14/CMD19 bus width ok */
 #define MMC_CAP_UHS_SDR12	(1 << 16)	/* Host supports UHS SDR12 mode */
@@ -450,12 +458,13 @@ struct mmc_host {
 #define MMC_CAP_CD_WAKE		(1 << 28)	/* Enable card detect wake */
 #define MMC_CAP_CMD_DURING_TFR	(1 << 29)	/* Commands during data transfer */
 #define MMC_CAP_CMD23		(1 << 30)	/* CMD23 supported. */
-#define MMC_CAP_HW_RESET	(1 << 31)	/* Hardware reset */
+#define MMC_CAP_HW_RESET	(1 << 31)	/* Reset the eMMC card via RST_n */
 
 	u32			caps2;		/* More host capabilities */
 
 #define MMC_CAP2_BOOTPART_NOACC	(1 << 0)	/* Boot partition no access */
 #define MMC_CAP2_FULL_PWR_CYCLE	(1 << 2)	/* Can do full power cycle */
+#define MMC_CAP2_FULL_PWR_CYCLE_IN_SUSPEND (1 << 3) /* Can do full power cycle in suspend */
 #define MMC_CAP2_HS200_1_8V_SDR	(1 << 5)        /* can support */
 #define MMC_CAP2_HS200_1_2V_SDR	(1 << 6)        /* can support */
 #define MMC_CAP2_HS200		(MMC_CAP2_HS200_1_8V_SDR | \
@@ -479,7 +488,11 @@ struct mmc_host {
 #define MMC_CAP2_CQE_DCMD	(1 << 24)	/* CQE can issue a direct command */
 #define MMC_CAP2_AVOID_3_3V	(1 << 25)	/* Host must negotiate down from 3.3V */
 #define MMC_CAP2_MERGE_CAPABLE	(1 << 26)	/* Host can merge a segment over the segment size */
+#ifdef CONFIG_MMC_CRYPTO
 #define MMC_CAP2_CRYPTO		(1 << 27)	/* Host supports inline encryption */
+#else
+#define MMC_CAP2_CRYPTO		0
+#endif
 #if defined(CONFIG_SDC_QTI)
 #define MMC_CAP2_CLK_SCALE      (1 << 28)       /* Allow dynamic clk scaling */
 #endif
@@ -509,6 +522,7 @@ struct mmc_host {
 	unsigned int		use_spi_crc:1;
 	unsigned int		claimed:1;	/* host exclusively claimed */
 	unsigned int		bus_dead:1;	/* bus has been released */
+	unsigned int		doing_init_tune:1; /* initial tuning in progress */
 	unsigned int		can_retune:1;	/* re-tuning can be used */
 	unsigned int		doing_retune:1;	/* re-tuning in progress */
 	unsigned int		retune_now:1;	/* do re-tuning at next req */
@@ -593,21 +607,30 @@ struct mmc_host {
 	void *crypto_DO_NOT_USE[7];
 #endif /* CONFIG_MMC_CRYPTO */
 
+	/* Inline encryption support */
+#ifdef CONFIG_MMC_CRYPTO
+	struct blk_keyslot_manager ksm;
+#endif
+
 	/* Host Software Queue support */
 	bool			hsq_enabled;
 #if defined(CONFIG_SDC_QTI)
 	bool                    need_hw_reset;
-#endif
-
-#if defined(CONFIG_SDC_QTI)
 	atomic_t active_reqs;
 #endif
-	unsigned long		private[0] ____cacheline_aligned;
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
+	ANDROID_VENDOR_DATA(1);
+	ANDROID_OEM_DATA(1);
+
+	unsigned long		private[] ____cacheline_aligned;
 };
 
 struct device_node;
 
 struct mmc_host *mmc_alloc_host(int extra, struct device *);
+struct mmc_host *devm_mmc_alloc_host(struct device *dev, int extra);
 int mmc_add_host(struct mmc_host *);
 void mmc_remove_host(struct mmc_host *);
 void mmc_free_host(struct mmc_host *);
@@ -732,6 +755,11 @@ static inline bool mmc_can_retune(struct mmc_host *host)
 static inline bool mmc_doing_retune(struct mmc_host *host)
 {
 	return host->doing_retune == 1;
+}
+
+static inline bool mmc_doing_tune(struct mmc_host *host)
+{
+	return host->doing_retune == 1 || host->doing_init_tune == 1;
 }
 
 static inline enum dma_data_direction mmc_get_dma_dir(struct mmc_data *data)

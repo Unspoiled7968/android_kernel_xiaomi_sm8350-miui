@@ -2001,12 +2001,11 @@ static void zram_bio_discard(struct zram *zram, u32 index,
 static int zram_bvec_rw(struct zram *zram, struct bio_vec *bvec, u32 index,
 			int offset, unsigned int op, struct bio *bio)
 {
-	unsigned long start_time = jiffies;
-	struct request_queue *q = zram->disk->queue;
+	unsigned long start_time;
 	int ret;
 
-	generic_start_io_acct(q, op, bvec->bv_len >> SECTOR_SHIFT,
-			&zram->disk->part0);
+	start_time = disk_start_io_acct(zram->disk,
+			bvec->bv_len >> SECTOR_SHIFT, op);
 
 	if (!op_is_write(op)) {
 		ret = zram_bvec_read(zram, bvec, index, offset, bio);
@@ -2015,7 +2014,7 @@ static int zram_bvec_rw(struct zram *zram, struct bio_vec *bvec, u32 index,
 		ret = zram_bvec_write(zram, bvec, index, offset, bio);
 	}
 
-	generic_end_io_acct(q, op, &zram->disk->part0, start_time);
+	disk_end_io_acct(zram->disk, op, start_time);
 
 	zram_slot_lock(zram, index);
 	zram_accessed(zram, index);
@@ -2080,7 +2079,7 @@ out:
 /*
  * Handler function for all zram I/O requests.
  */
-static blk_qc_t zram_make_request(struct request_queue *queue, struct bio *bio)
+static blk_qc_t zram_submit_bio(struct bio *bio)
 {
 	struct zram *zram = bio->bi_disk->private_data;
 
@@ -2258,7 +2257,7 @@ static ssize_t disksize_store(struct device *dev,
 	zram->disksize = disksize;
 	set_capacity(zram->disk, zram->disksize >> SECTOR_SHIFT);
 
-	revalidate_disk(zram->disk);
+	revalidate_disk_size(zram->disk, true);
 	up_write(&zram->init_lock);
 
 	return len;
@@ -2306,7 +2305,7 @@ static ssize_t reset_store(struct device *dev,
 	/* Make sure all the pending I/O are finished */
 	sync_blockdev(bdev);
 	zram_reset_device(zram);
-	revalidate_disk(zram->disk);
+	revalidate_disk_size(zram->disk, true);
 	bdput(bdev);
 
 	mutex_lock(&bdev->bd_mutex);
@@ -2333,6 +2332,7 @@ static int zram_open(struct block_device *bdev, fmode_t mode)
 
 static const struct block_device_operations zram_devops = {
 	.open = zram_open,
+	.submit_bio = zram_submit_bio,
 	.swap_slot_free_notify = zram_slot_free_notify,
 	.rw_page = zram_rw_page,
 	.owner = THIS_MODULE
@@ -2340,6 +2340,7 @@ static const struct block_device_operations zram_devops = {
 
 static const struct block_device_operations zram_wb_devops = {
 	.open = zram_open,
+	.submit_bio = zram_submit_bio,
 	.swap_slot_free_notify = zram_slot_free_notify,
 	.owner = THIS_MODULE
 };
@@ -2427,15 +2428,13 @@ static int zram_add(void)
 #ifdef CONFIG_ZRAM_DEDUP
 	zram->use_dedup = true;
 #endif
-	queue = blk_alloc_queue(GFP_KERNEL);
+	queue = blk_alloc_queue(NUMA_NO_NODE);
 	if (!queue) {
 		pr_err("Error allocating disk queue for device %d\n",
 			device_id);
 		ret = -ENOMEM;
 		goto out_free_idr;
 	}
-
-	blk_queue_make_request(queue, zram_make_request);
 
 	/* gendisk structure */
 	zram->disk = alloc_disk(1);
@@ -2485,7 +2484,7 @@ static int zram_add(void)
 	if (ZRAM_LOGICAL_BLOCK_SIZE == PAGE_SIZE)
 		blk_queue_max_write_zeroes_sectors(zram->disk->queue, UINT_MAX);
 
-	zram->disk->queue->backing_dev_info->capabilities |= BDI_CAP_STABLE_WRITES;
+	blk_queue_flag_set(QUEUE_FLAG_STABLE_WRITES, zram->disk->queue);
 	disk_to_dev(zram->disk)->groups = zram_disk_attr_groups;
 	add_disk(zram->disk);
 

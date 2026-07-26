@@ -18,7 +18,8 @@
 
 #include "../kselftest.h"
 
-#define MAP_SIZE 1048576
+#define MAP_SIZE_MB	100
+#define MAP_SIZE	(MAP_SIZE_MB * 1024 * 1024)
 
 struct map_list {
 	void *map;
@@ -88,6 +89,8 @@ int check_compaction(unsigned long mem_free, unsigned long hugepage_size)
 	int compaction_index = 0;
 	char initial_nr_hugepages[20] = {0};
 	char nr_hugepages[20] = {0};
+	char target_nr_hugepages[24] = {0};
+	int slen;
 
 	/* We want to test with 80% of available memory. Else, OOM killer comes
 	   in to play */
@@ -117,11 +120,18 @@ int check_compaction(unsigned long mem_free, unsigned long hugepage_size)
 
 	lseek(fd, 0, SEEK_SET);
 
-	/* Request a large number of huge pages. The Kernel will allocate
-	   as much as it can */
-	if (write(fd, "100000", (6*sizeof(char))) != (6*sizeof(char))) {
-		ksft_test_result_fail("Failed to write 100000 to /proc/sys/vm/nr_hugepages: %s\n",
-				      strerror(errno));
+	/*
+	 * Request huge pages for about half of the free memory. The Kernel
+	 * will allocate as much as it can, and we expect it will get at least 1/3
+	 */
+	nr_hugepages_ul = mem_free / hugepage_size / 2;
+	snprintf(target_nr_hugepages, sizeof(target_nr_hugepages),
+		 "%lu", nr_hugepages_ul);
+
+	slen = strlen(target_nr_hugepages);
+	if (write(fd, target_nr_hugepages, slen) != slen) {
+		ksft_test_result_fail("Failed to write %lu to /proc/sys/vm/nr_hugepages: %s\n",
+			       nr_hugepages_ul, strerror(errno));
 		goto close_fd;
 	}
 
@@ -176,7 +186,7 @@ int main(int argc, char **argv)
 	void *map = NULL;
 	unsigned long mem_free = 0;
 	unsigned long hugepage_size = 0;
-	unsigned long mem_fragmentable = 0;
+	long mem_fragmentable_MB = 0;
 
 	ksft_print_header();
 
@@ -195,9 +205,9 @@ int main(int argc, char **argv)
 	if (read_memory_info(&mem_free, &hugepage_size) != 0)
 		ksft_exit_fail_msg("Failed to get meminfo\n");
 
-	mem_fragmentable = mem_free * 0.8 / 1024;
+	mem_fragmentable_MB = mem_free * 0.8 / 1024;
 
-	while (mem_fragmentable > 0) {
+	while (mem_fragmentable_MB > 0) {
 		map = mmap(NULL, MAP_SIZE, PROT_READ | PROT_WRITE,
 			   MAP_ANONYMOUS | MAP_PRIVATE | MAP_LOCKED, -1, 0);
 		if (map == MAP_FAILED)
@@ -218,7 +228,7 @@ int main(int argc, char **argv)
 		for (i = 0; i < MAP_SIZE; i += page_size)
 			*(unsigned long *)(map + i) = (unsigned long)map + i;
 
-		mem_fragmentable--;
+		mem_fragmentable_MB -= MAP_SIZE_MB;
 	}
 
 	for (entry = list; entry != NULL; entry = entry->next) {

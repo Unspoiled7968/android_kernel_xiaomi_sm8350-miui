@@ -36,10 +36,9 @@
 #include <asm/fpu.h>
 #include <linux/uaccess.h>
 #include <asm/traps.h>
-#include <asm/pgalloc.h>
 #include <asm/machdep.h>
 #include <asm/siginfo.h>
-
+#include <asm/tlbflush.h>
 
 static const char *vec_names[] = {
 	[VEC_RESETSP]	= "RESET SP",
@@ -813,13 +812,13 @@ asmlinkage void buserr_c(struct frame *fp)
 
 static int kstack_depth_to_print = 48;
 
-void show_trace(unsigned long *stack)
+static void show_trace(unsigned long *stack, const char *loglvl)
 {
 	unsigned long *endstack;
 	unsigned long addr;
 	int i;
 
-	pr_info("Call Trace:");
+	printk("%sCall Trace:", loglvl);
 	addr = (unsigned long)stack + THREAD_SIZE - 1;
 	endstack = (unsigned long *)(addr & -THREAD_SIZE);
 	i = 0;
@@ -848,7 +847,6 @@ void show_trace(unsigned long *stack)
 void show_registers(struct pt_regs *regs)
 {
 	struct frame *fp = (struct frame *)regs;
-	mm_segment_t old_fs = get_fs();
 	u16 c, *cp;
 	unsigned long addr;
 	int i;
@@ -918,13 +916,12 @@ void show_registers(struct pt_regs *regs)
 	default:
 		pr_cont("\n");
 	}
-	show_stack(NULL, (unsigned long *)addr);
+	show_stack(NULL, (unsigned long *)addr, KERN_INFO);
 
 	pr_info("Code:");
-	set_fs(KERNEL_DS);
 	cp = (u16 *)regs->pc;
 	for (i = -8; i < 16; i++) {
-		if (get_user(c, cp + i) && i >= 0) {
+		if (get_kernel_nofault(c, cp + i) && i >= 0) {
 			pr_cont(" Bad PC value.");
 			break;
 		}
@@ -933,11 +930,11 @@ void show_registers(struct pt_regs *regs)
 		else
 			pr_cont(" <%04x>", c);
 	}
-	set_fs(old_fs);
 	pr_cont("\n");
 }
 
-void show_stack(struct task_struct *task, unsigned long *stack)
+void show_stack(struct task_struct *task, unsigned long *stack,
+		const char *loglvl)
 {
 	unsigned long *p;
 	unsigned long *endstack;
@@ -951,7 +948,7 @@ void show_stack(struct task_struct *task, unsigned long *stack)
 	}
 	endstack = (unsigned long *)(((unsigned long)stack + THREAD_SIZE - 1) & -THREAD_SIZE);
 
-	pr_info("Stack from %08lx:", (unsigned long)stack);
+	printk("%sStack from %08lx:", loglvl, (unsigned long)stack);
 	p = stack;
 	for (i = 0; i < kstack_depth_to_print; i++) {
 		if (p + 1 > endstack)
@@ -961,7 +958,7 @@ void show_stack(struct task_struct *task, unsigned long *stack)
 		pr_cont(" %08lx", *p++);
 	}
 	pr_cont("\n");
-	show_trace(stack);
+	show_trace(stack, loglvl);
 }
 
 /*
@@ -1155,7 +1152,7 @@ asmlinkage void set_esp0(unsigned long ssp)
  */
 asmlinkage void fpsp040_die(void)
 {
-	do_exit(SIGSEGV);
+	force_sigsegv(SIGSEGV);
 }
 
 #ifdef CONFIG_M68KFPU_EMU

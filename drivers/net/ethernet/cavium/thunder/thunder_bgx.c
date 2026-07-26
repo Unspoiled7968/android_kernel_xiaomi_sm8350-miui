@@ -1016,14 +1016,14 @@ static void bgx_poll_for_link(struct work_struct *work)
 
 	if ((spu_link & SPU_STATUS1_RCV_LNK) &&
 	    !(smu_link & SMU_RX_CTL_STATUS)) {
-		lmac->link_up = 1;
+		lmac->link_up = true;
 		if (lmac->lmac_type == BGX_MODE_XLAUI)
 			lmac->last_speed = SPEED_40000;
 		else
 			lmac->last_speed = SPEED_10000;
 		lmac->last_duplex = DUPLEX_FULL;
 	} else {
-		lmac->link_up = 0;
+		lmac->link_up = false;
 		lmac->last_speed = SPEED_UNKNOWN;
 		lmac->last_duplex = DUPLEX_UNKNOWN;
 	}
@@ -1032,7 +1032,7 @@ static void bgx_poll_for_link(struct work_struct *work)
 		if (lmac->link_up) {
 			if (bgx_xaui_check_link(lmac)) {
 				/* Errors, clear link_up state */
-				lmac->link_up = 0;
+				lmac->link_up = false;
 				lmac->last_speed = SPEED_UNKNOWN;
 				lmac->last_duplex = DUPLEX_UNKNOWN;
 			}
@@ -1048,7 +1048,7 @@ static int phy_interface_mode(u8 lmac_type)
 	if (lmac_type == BGX_MODE_QSGMII)
 		return PHY_INTERFACE_MODE_QSGMII;
 	if (lmac_type == BGX_MODE_RGMII)
-		return PHY_INTERFACE_MODE_RGMII;
+		return PHY_INTERFACE_MODE_RGMII_RXID;
 
 	return PHY_INTERFACE_MODE_SGMII;
 }
@@ -1064,11 +1064,11 @@ static int bgx_lmac_enable(struct bgx *bgx, u8 lmacid)
 	if ((lmac->lmac_type == BGX_MODE_SGMII) ||
 	    (lmac->lmac_type == BGX_MODE_QSGMII) ||
 	    (lmac->lmac_type == BGX_MODE_RGMII)) {
-		lmac->is_sgmii = 1;
+		lmac->is_sgmii = true;
 		if (bgx_lmac_sgmii_init(bgx, lmac))
 			return -1;
 	} else {
-		lmac->is_sgmii = 0;
+		lmac->is_sgmii = false;
 		if (bgx_lmac_xaui_init(bgx, lmac))
 			return -1;
 	}
@@ -1313,7 +1313,7 @@ static void lmac_set_training(struct bgx *bgx, struct lmac *lmac, int lmacid)
 {
 	if ((lmac->lmac_type != BGX_MODE_10G_KR) &&
 	    (lmac->lmac_type != BGX_MODE_40G_KR)) {
-		lmac->use_training = 0;
+		lmac->use_training = false;
 		return;
 	}
 
@@ -1430,9 +1430,9 @@ static acpi_status bgx_acpi_match_id(acpi_handle handle, u32 lvl,
 {
 	struct acpi_buffer string = { ACPI_ALLOCATE_BUFFER, NULL };
 	struct bgx *bgx = context;
-	char bgx_sel[5];
+	char bgx_sel[7];
 
-	snprintf(bgx_sel, 5, "BGX%d", bgx->bgx_id);
+	snprintf(bgx_sel, sizeof(bgx_sel), "BGX%d", bgx->bgx_id);
 	if (ACPI_FAILURE(acpi_get_name(handle, ACPI_SINGLE_NAME, &string))) {
 		pr_warn("Invalid link device\n");
 		return AE_OK;
@@ -1497,13 +1497,17 @@ static int bgx_init_of_phy(struct bgx *bgx)
 		 * this cortina phy, for which there is no driver
 		 * support, ignore it.
 		 */
-		if (phy_np &&
-		    !of_device_is_compatible(phy_np, "cortina,cs4223-slice")) {
-			/* Wait until the phy drivers are available */
-			pd = of_phy_find_device(phy_np);
-			if (!pd)
-				goto defer;
-			bgx->lmac[lmac].phydev = pd;
+		if (phy_np) {
+			if (!of_device_is_compatible(phy_np, "cortina,cs4223-slice")) {
+				/* Wait until the phy drivers are available */
+				pd = of_phy_find_device(phy_np);
+				if (!pd) {
+					of_node_put(phy_np);
+					goto defer;
+				}
+				bgx->lmac[lmac].phydev = pd;
+			}
+			of_node_put(phy_np);
 		}
 
 		lmac++;
@@ -1519,11 +1523,11 @@ defer:
 	 * for phy devices we may have already found.
 	 */
 	while (lmac) {
+		lmac--;
 		if (bgx->lmac[lmac].phydev) {
 			put_device(&bgx->lmac[lmac].phydev->mdio.dev);
 			bgx->lmac[lmac].phydev = NULL;
 		}
-		lmac--;
 	}
 	of_node_put(node);
 	return -EPROBE_DEFER;

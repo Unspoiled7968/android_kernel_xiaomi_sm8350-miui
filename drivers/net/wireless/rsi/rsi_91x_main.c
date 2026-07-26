@@ -1,4 +1,4 @@
-/**
+/*
  * Copyright (c) 2014 Redpine Signals Inc.
  *
  * Permission to use, copy, modify, and/or distribute this software for any
@@ -149,6 +149,7 @@ static struct sk_buff *rsi_prepare_skb(struct rsi_common *common,
 /**
  * rsi_read_pkt() - This function reads frames from the card.
  * @common: Pointer to the driver private structure.
+ * @rx_pkt: Received pkt.
  * @rcv_pkt_len: Received pkt length. In case of USB it is 0.
  *
  * Return: 0 on success, -1 on failure.
@@ -293,7 +294,7 @@ void rsi_attach_bt(struct rsi_common *common)
 
 /**
  * rsi_91x_init() - This function initializes os interface operations.
- * @void: Void.
+ * @oper_mode: One of DEV_OPMODE_*.
  *
  * Return: Pointer to the adapter structure on success, NULL on failure .
  */

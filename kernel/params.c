@@ -233,14 +233,33 @@ char *parse_args(const char *doing,
 	EXPORT_SYMBOL(param_ops_##name)
 
 
-STANDARD_PARAM_DEF(byte,	unsigned char,		"%hhu", kstrtou8);
-STANDARD_PARAM_DEF(short,	short,			"%hi",  kstrtos16);
-STANDARD_PARAM_DEF(ushort,	unsigned short,		"%hu",  kstrtou16);
-STANDARD_PARAM_DEF(int,		int,			"%i",   kstrtoint);
-STANDARD_PARAM_DEF(uint,	unsigned int,		"%u",   kstrtouint);
-STANDARD_PARAM_DEF(long,	long,			"%li",  kstrtol);
-STANDARD_PARAM_DEF(ulong,	unsigned long,		"%lu",  kstrtoul);
-STANDARD_PARAM_DEF(ullong,	unsigned long long,	"%llu", kstrtoull);
+STANDARD_PARAM_DEF(byte,	unsigned char,		"%hhu",		kstrtou8);
+STANDARD_PARAM_DEF(short,	short,			"%hi",		kstrtos16);
+STANDARD_PARAM_DEF(ushort,	unsigned short,		"%hu",		kstrtou16);
+STANDARD_PARAM_DEF(int,		int,			"%i",		kstrtoint);
+STANDARD_PARAM_DEF(uint,	unsigned int,		"%u",		kstrtouint);
+STANDARD_PARAM_DEF(long,	long,			"%li",		kstrtol);
+STANDARD_PARAM_DEF(ulong,	unsigned long,		"%lu",		kstrtoul);
+STANDARD_PARAM_DEF(ullong,	unsigned long long,	"%llu",		kstrtoull);
+STANDARD_PARAM_DEF(hexint,	unsigned int,		"%#08x", 	kstrtouint);
+
+int param_set_uint_minmax(const char *val, const struct kernel_param *kp,
+		unsigned int min, unsigned int max)
+{
+	unsigned int num;
+	int ret;
+
+	if (!val)
+		return -EINVAL;
+	ret = kstrtouint(val, 0, &num);
+	if (ret)
+		return ret;
+	if (num < min || num > max)
+		return -EINVAL;
+	*((unsigned int *)kp->arg) = num;
+	return 0;
+}
+EXPORT_SYMBOL_GPL(param_set_uint_minmax);
 
 int param_set_uint_minmax(const char *val, const struct kernel_param *kp,
 		unsigned int min, unsigned int max)
@@ -547,7 +566,7 @@ struct module_param_attrs
 {
 	unsigned int num;
 	struct attribute_group grp;
-	struct param_attribute attrs[0];
+	struct param_attribute attrs[];
 };
 
 #ifdef CONFIG_SYSFS
@@ -946,7 +965,9 @@ int module_sysfs_initialized;
 static void module_kobj_release(struct kobject *kobj)
 {
 	struct module_kobject *mk = to_module_kobject(kobj);
-	complete(mk->kobj_completion);
+
+	if (mk->kobj_completion)
+		complete(mk->kobj_completion);
 }
 
 struct kobj_type module_ktype = {

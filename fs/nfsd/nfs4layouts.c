@@ -120,7 +120,6 @@ nfsd4_set_deviceid(struct nfsd4_deviceid *id, const struct svc_fh *fhp,
 
 	id->fsid_idx = fhp->fh_export->ex_devid_map->idx;
 	id->generation = device_generation;
-	id->pad = 0;
 	return 0;
 }
 
@@ -681,7 +680,7 @@ nfsd4_cb_layout_done(struct nfsd4_callback *cb, struct rpc_task *task)
 			rpc_delay(task, HZ/100); /* 10 mili-seconds */
 			return 0;
 		}
-		/* Fallthrough */
+		fallthrough;
 	default:
 		/*
 		 * Unknown error or non-responding client, we'll need to fence.

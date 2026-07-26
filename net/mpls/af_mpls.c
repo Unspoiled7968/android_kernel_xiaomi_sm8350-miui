@@ -80,8 +80,8 @@ static struct mpls_route *mpls_route_input_rcu(struct net *net, unsigned index)
 
 	if (index < net->mpls.platform_labels) {
 		struct mpls_route __rcu **platform_label =
-			rcu_dereference(net->mpls.platform_label);
-		rt = rcu_dereference(platform_label[index]);
+			rcu_dereference_rtnl(net->mpls.platform_label);
+		rt = rcu_dereference_rtnl(platform_label[index]);
 	}
 	return rt;
 }
@@ -1078,9 +1078,9 @@ static void mpls_get_stats(struct mpls_dev *mdev,
 
 		p = per_cpu_ptr(mdev->stats, i);
 		do {
-			start = u64_stats_fetch_begin(&p->syncp);
+			start = u64_stats_fetch_begin_irq(&p->syncp);
 			local = p->stats;
-		} while (u64_stats_fetch_retry(&p->syncp, start));
+		} while (u64_stats_fetch_retry_irq(&p->syncp, start));
 
 		stats->rx_packets	+= local.rx_packets;
 		stats->rx_bytes		+= local.rx_bytes;
@@ -1362,8 +1362,7 @@ done:
 	(&((struct mpls_dev *)0)->field)
 
 static int mpls_conf_proc(struct ctl_table *ctl, int write,
-			  void __user *buffer,
-			  size_t *lenp, loff_t *ppos)
+			  void *buffer, size_t *lenp, loff_t *ppos)
 {
 	int oval = *(int *)ctl->data;
 	int ret = proc_dointvec(ctl, write, buffer, lenp, ppos);
@@ -1551,7 +1550,7 @@ static int mpls_ifdown(struct net_device *dev, int event)
 			case NETDEV_DOWN:
 			case NETDEV_UNREGISTER:
 				nh_flags |= RTNH_F_DEAD;
-				/* fall through */
+				fallthrough;
 			case NETDEV_CHANGE:
 				nh_flags |= RTNH_F_LINKDOWN;
 				break;
@@ -1618,20 +1617,10 @@ static int mpls_dev_notify(struct notifier_block *this, unsigned long event,
 	unsigned int flags;
 
 	if (event == NETDEV_REGISTER) {
+		mdev = mpls_add_dev(dev);
+		if (IS_ERR(mdev))
+			return notifier_from_errno(PTR_ERR(mdev));
 
-		/* For now just support Ethernet, IPGRE, IP6GRE, SIT and
-		 * IPIP devices
-		 */
-		if (dev->type == ARPHRD_ETHER ||
-		    dev->type == ARPHRD_LOOPBACK ||
-		    dev->type == ARPHRD_IPGRE ||
-		    dev->type == ARPHRD_IP6GRE ||
-		    dev->type == ARPHRD_SIT ||
-		    dev->type == ARPHRD_TUNNEL) {
-			mdev = mpls_add_dev(dev);
-			if (IS_ERR(mdev))
-				return notifier_from_errno(PTR_ERR(mdev));
-		}
 		return NOTIFY_OK;
 	}
 
@@ -2634,7 +2623,7 @@ nolabels:
 }
 
 static int mpls_platform_labels(struct ctl_table *table, int write,
-				void __user *buffer, size_t *lenp, loff_t *ppos)
+				void *buffer, size_t *lenp, loff_t *ppos)
 {
 	struct net *net = table->data;
 	int platform_labels = net->mpls.platform_labels;

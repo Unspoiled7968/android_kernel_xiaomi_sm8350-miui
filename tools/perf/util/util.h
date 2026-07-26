@@ -14,7 +14,6 @@
 
 /* General helper functions */
 void usage(const char *err) __noreturn;
-void die(const char *err, ...) __noreturn __printf(1, 2);
 
 struct dirent;
 struct strlist;
@@ -28,6 +27,8 @@ bool lsdir_no_dot_filter(const char *name, struct dirent *d);
 size_t hex_width(u64 v);
 
 int sysctl__max_stack(void);
+
+bool sysctl__nmi_watchdog_enabled(void);
 
 int fetch_kernel_version(unsigned int *puint,
 			 char *str, size_t str_sz);
@@ -60,4 +61,10 @@ char *perf_exe(char *buf, int len);
 #endif
 #endif
 
+extern bool test_attr__enabled;
+void test_attr__ready(void);
+void test_attr__init(void);
+struct perf_event_attr;
+void test_attr__open(struct perf_event_attr *attr, pid_t pid, int cpu,
+		     int fd, int group_fd, unsigned long flags);
 #endif /* GIT_COMPAT_UTIL_H */

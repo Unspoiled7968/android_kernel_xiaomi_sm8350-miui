@@ -236,7 +236,7 @@ nfnl_cthelper_create(const struct nlattr * const tb[],
 	nla_strlcpy(helper->name,
 		    tb[NFCTH_NAME], NF_CT_HELPER_NAME_LEN);
 	size = ntohl(nla_get_be32(tb[NFCTH_PRIV_DATA_LEN]));
-	if (size > FIELD_SIZEOF(struct nf_conn_help, data)) {
+	if (size > sizeof_field(struct nf_conn_help, data)) {
 		ret = -ENOMEM;
 		goto err2;
 	}
@@ -601,10 +601,10 @@ restart:
 				goto out;
 			}
 		}
-	}
-	if (cb->args[1]) {
-		cb->args[1] = 0;
-		goto restart;
+		if (cb->args[1]) {
+			cb->args[1] = 0;
+			goto restart;
+		}
 	}
 out:
 	rcu_read_unlock();

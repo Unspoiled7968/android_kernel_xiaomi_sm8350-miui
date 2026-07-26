@@ -35,11 +35,6 @@ static const struct bpf_func_proto rc_repeat_proto = {
 	.arg1_type = ARG_PTR_TO_CTX,
 };
 
-/*
- * Currently rc-core does not support 64-bit scancodes, but there are many
- * known protocols with more than 32 bits. So, define the interface as u64
- * as a future-proof.
- */
 BPF_CALL_4(bpf_rc_keydown, u32*, sample, u32, protocol, u64, scancode,
 	   u32, toggle)
 {
@@ -115,9 +110,9 @@ lirc_mode2_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 	case BPF_FUNC_get_prandom_u32:
 		return &bpf_get_prandom_u32_proto;
 	case BPF_FUNC_trace_printk:
-		if (capable(CAP_SYS_ADMIN))
+		if (perfmon_capable())
 			return bpf_get_trace_printk_proto();
-		/* fall through */
+		fallthrough;
 	default:
 		return NULL;
 	}
@@ -254,7 +249,7 @@ int lirc_prog_attach(const union bpf_attr *attr, struct bpf_prog *prog)
 	if (attr->attach_flags)
 		return -EINVAL;
 
-	rcdev = rc_dev_get_from_fd(attr->target_fd);
+	rcdev = rc_dev_get_from_fd(attr->target_fd, true);
 	if (IS_ERR(rcdev))
 		return PTR_ERR(rcdev);
 
@@ -279,7 +274,7 @@ int lirc_prog_detach(const union bpf_attr *attr)
 	if (IS_ERR(prog))
 		return PTR_ERR(prog);
 
-	rcdev = rc_dev_get_from_fd(attr->target_fd);
+	rcdev = rc_dev_get_from_fd(attr->target_fd, true);
 	if (IS_ERR(rcdev)) {
 		bpf_prog_put(prog);
 		return PTR_ERR(rcdev);
@@ -304,7 +299,7 @@ int lirc_prog_query(const union bpf_attr *attr, union bpf_attr __user *uattr)
 	if (attr->query.query_flags)
 		return -EINVAL;
 
-	rcdev = rc_dev_get_from_fd(attr->query.target_fd);
+	rcdev = rc_dev_get_from_fd(attr->query.target_fd, false);
 	if (IS_ERR(rcdev))
 		return PTR_ERR(rcdev);
 

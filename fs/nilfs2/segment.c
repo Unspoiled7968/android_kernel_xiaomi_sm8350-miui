@@ -732,7 +732,6 @@ static size_t nilfs_lookup_dirty_data_buffers(struct inode *inode,
 		}
 		if (!page_has_buffers(page))
 			create_empty_buffers(page, i_blocksize(inode), 0);
-		unlock_page(page);
 
 		bh = head = page_buffers(page);
 		do {
@@ -742,11 +741,14 @@ static size_t nilfs_lookup_dirty_data_buffers(struct inode *inode,
 			list_add_tail(&bh->b_assoc_buffers, listp);
 			ndirties++;
 			if (unlikely(ndirties >= nlimit)) {
+				unlock_page(page);
 				pagevec_release(&pvec);
 				cond_resched();
 				return ndirties;
 			}
 		} while (bh = bh->b_this_page, bh != head);
+
+		unlock_page(page);
 	}
 	pagevec_release(&pvec);
 	cond_resched();
@@ -1171,7 +1173,8 @@ static int nilfs_segctor_collect_blocks(struct nilfs_sc_info *sci, int mode)
 			nilfs_sc_cstage_set(sci, NILFS_ST_DAT);
 			goto dat_stage;
 		}
-		nilfs_sc_cstage_inc(sci);  /* Fall through */
+		nilfs_sc_cstage_inc(sci);
+		fallthrough;
 	case NILFS_ST_GC:
 		if (nilfs_doing_gc()) {
 			head = &sci->sc_gc_inodes;
@@ -1192,7 +1195,8 @@ static int nilfs_segctor_collect_blocks(struct nilfs_sc_info *sci, int mode)
 			}
 			sci->sc_stage.gc_inode_ptr = NULL;
 		}
-		nilfs_sc_cstage_inc(sci);  /* Fall through */
+		nilfs_sc_cstage_inc(sci);
+		fallthrough;
 	case NILFS_ST_FILE:
 		head = &sci->sc_dirty_files;
 		ii = list_prepare_entry(sci->sc_stage.dirty_file_ptr, head,
@@ -1219,7 +1223,7 @@ static int nilfs_segctor_collect_blocks(struct nilfs_sc_info *sci, int mode)
 		}
 		nilfs_sc_cstage_inc(sci);
 		sci->sc_stage.flags |= NILFS_CF_IFILE_STARTED;
-		/* Fall through */
+		fallthrough;
 	case NILFS_ST_IFILE:
 		err = nilfs_segctor_scan_file(sci, sci->sc_root->ifile,
 					      &nilfs_sc_file_ops);
@@ -1230,13 +1234,14 @@ static int nilfs_segctor_collect_blocks(struct nilfs_sc_info *sci, int mode)
 		err = nilfs_segctor_create_checkpoint(sci);
 		if (unlikely(err))
 			break;
-		/* Fall through */
+		fallthrough;
 	case NILFS_ST_CPFILE:
 		err = nilfs_segctor_scan_file(sci, nilfs->ns_cpfile,
 					      &nilfs_sc_file_ops);
 		if (unlikely(err))
 			break;
-		nilfs_sc_cstage_inc(sci);  /* Fall through */
+		nilfs_sc_cstage_inc(sci);
+		fallthrough;
 	case NILFS_ST_SUFILE:
 		err = nilfs_sufile_freev(nilfs->ns_sufile, sci->sc_freesegs,
 					 sci->sc_nfreesegs, &ndone);
@@ -1252,7 +1257,8 @@ static int nilfs_segctor_collect_blocks(struct nilfs_sc_info *sci, int mode)
 					      &nilfs_sc_file_ops);
 		if (unlikely(err))
 			break;
-		nilfs_sc_cstage_inc(sci);  /* Fall through */
+		nilfs_sc_cstage_inc(sci);
+		fallthrough;
 	case NILFS_ST_DAT:
  dat_stage:
 		err = nilfs_segctor_scan_file(sci, nilfs->ns_dat,
@@ -1263,7 +1269,8 @@ static int nilfs_segctor_collect_blocks(struct nilfs_sc_info *sci, int mode)
 			nilfs_sc_cstage_set(sci, NILFS_ST_DONE);
 			return 0;
 		}
-		nilfs_sc_cstage_inc(sci);  /* Fall through */
+		nilfs_sc_cstage_inc(sci);
+		fallthrough;
 	case NILFS_ST_SR:
 		if (mode == SC_LSEG_SR) {
 			/* Appending a super root */
@@ -1828,6 +1835,9 @@ static void nilfs_segctor_abort_construction(struct nilfs_sc_info *sci,
 	nilfs_abort_logs(&logs, ret ? : err);
 
 	list_splice_tail_init(&sci->sc_segbufs, &logs);
+	if (list_empty(&logs))
+		return; /* if the first segment buffer preparation failed */
+
 	nilfs_cancel_segusage(&logs, nilfs->ns_sufile);
 	nilfs_free_incomplete_logs(&logs, nilfs);
 
@@ -2072,7 +2082,7 @@ static int nilfs_segctor_do_construct(struct nilfs_sc_info *sci, int mode)
 
 		err = nilfs_segctor_begin_construction(sci, nilfs);
 		if (unlikely(err))
-			goto out;
+			goto failed;
 
 		/* Update time stamp */
 		sci->sc_seg_ctime = ktime_get_real_seconds();
@@ -2135,10 +2145,9 @@ static int nilfs_segctor_do_construct(struct nilfs_sc_info *sci, int mode)
 	return err;
 
  failed_to_write:
-	if (sci->sc_stage.flags & NILFS_CF_IFILE_STARTED)
-		nilfs_redirty_inodes(&sci->sc_dirty_files);
-
  failed:
+	if (mode == SC_LSEG_SR && nilfs_sc_cstage_get(sci) >= NILFS_ST_IFILE)
+		nilfs_redirty_inodes(&sci->sc_dirty_files);
 	if (nilfs_doing_gc())
 		nilfs_redirty_inodes(&sci->sc_gc_inodes);
 	nilfs_segctor_abort_construction(sci, nilfs, err);

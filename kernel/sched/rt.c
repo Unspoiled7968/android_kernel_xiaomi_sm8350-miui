@@ -1055,6 +1055,13 @@ static int sched_rt_runtime_exceeded(struct rt_rq *rt_rq)
 				once = true;
 				dump_throttled_rt_tasks(rt_rq);
 			}
+
+			trace_android_vh_dump_throttled_rt_tasks(
+				raw_smp_processor_id(),
+				rq_clock(rq_of_rt_rq(rt_rq)),
+				sched_rt_period(rt_rq),
+				runtime,
+				hrtimer_get_expires_ns(&rt_b->rt_period_timer));
 		} else {
 			/*
 			 * In case we did anyway, make it go away,
@@ -1100,6 +1107,8 @@ static void update_curr_rt(struct rq *rq)
 
 	curr->se.exec_start = now;
 	cgroup_account_cputime(curr, delta_exec);
+
+	trace_android_vh_sched_stat_runtime_rt(curr, delta_exec);
 
 	if (!rt_bandwidth_enabled())
 		return;
@@ -1454,6 +1463,27 @@ static void dequeue_rt_entity(struct sched_rt_entity *rt_se, unsigned int flags)
 	enqueue_top_rt_rq(&rq->rt);
 }
 
+#ifdef CONFIG_SMP
+static inline bool should_honor_rt_sync(struct rq *rq, struct task_struct *p,
+					bool sync)
+{
+	/*
+	 * If the waker is CFS, then an RT sync wakeup would preempt the waker
+	 * and force it to run for a likely small time after the RT wakee is
+	 * done. So, only honor RT sync wakeups from RT wakers.
+	 */
+	return sync && task_has_rt_policy(rq->curr) &&
+		p->prio <= rq->rt.highest_prio.next &&
+		rq->rt.rt_nr_running <= 2;
+}
+#else
+static inline bool should_honor_rt_sync(struct rq *rq, struct task_struct *p,
+					bool sync)
+{
+	return 0;
+}
+#endif
+
 /*
  * Adding/removing a task to/from a priority array:
  */
@@ -1461,6 +1491,7 @@ static void
 enqueue_task_rt(struct rq *rq, struct task_struct *p, int flags)
 {
 	struct sched_rt_entity *rt_se = &p->rt;
+	bool sync = !!(flags & ENQUEUE_WAKEUP_SYNC);
 
 	if (flags & ENQUEUE_WAKEUP)
 		rt_se->timeout = 0;
@@ -1468,7 +1499,8 @@ enqueue_task_rt(struct rq *rq, struct task_struct *p, int flags)
 	enqueue_rt_entity(rt_se, flags);
 	walt_inc_cumulative_runnable_avg(rq, p);
 
-	if (!task_current(rq, p) && p->nr_cpus_allowed > 1)
+	if (!task_current(rq, p) && p->nr_cpus_allowed > 1 &&
+	    !should_honor_rt_sync(rq, p, sync))
 		enqueue_pushable_task(rq, p);
 }
 
@@ -1520,6 +1552,7 @@ static void yield_task_rt(struct rq *rq)
 #ifdef CONFIG_SMP
 static int find_lowest_rq(struct task_struct *task);
 
+#ifdef CONFIG_RT_SOFTINT_OPTIMIZATION
 /*
  * Return whether the task on the given cpu is currently non-preemptible
  * while handling a potentially long softint, or if the task is likely
@@ -1531,12 +1564,14 @@ task_may_not_preempt(struct task_struct *task, int cpu)
 {
 	__u32 softirqs = per_cpu(active_softirqs, cpu) |
 			 __IRQ_STAT(cpu, __softirq_pending);
-	struct task_struct *cpu_ksoftirqd = per_cpu(ksoftirqd, cpu);
 
+	struct task_struct *cpu_ksoftirqd = per_cpu(ksoftirqd, cpu);
 	return ((softirqs & LONG_SOFTIRQ_MASK) &&
 		(task == cpu_ksoftirqd ||
 		 task_thread_info(task)->preempt_count & SOFTIRQ_MASK));
 }
+EXPORT_SYMBOL_GPL(task_may_not_preempt);
+#endif /* CONFIG_RT_SOFTINT_OPTIMIZATION */
 
 static int
 #ifdef CONFIG_SCHED_WALT
@@ -1548,9 +1583,12 @@ select_task_rq_rt(struct task_struct *p, int cpu, int sd_flag, int flags)
 {
 	struct task_struct *curr;
 	struct rq *rq;
-	bool may_not_preempt;
+	struct rq *this_cpu_rq;
 	bool test;
 	int target_cpu = -1;
+	bool may_not_preempt;
+	bool sync = !!(flags & WF_SYNC);
+	int this_cpu;
 
 	trace_android_rvh_select_task_rq_rt(p, cpu, sd_flag,
 					flags, &target_cpu);
@@ -1565,14 +1603,11 @@ select_task_rq_rt(struct task_struct *p, int cpu, int sd_flag, int flags)
 
 	rcu_read_lock();
 	curr = READ_ONCE(rq->curr); /* unlocked access */
+	this_cpu = smp_processor_id();
+	this_cpu_rq = cpu_rq(this_cpu);
 
 	/*
 	 * If the current task on @p's runqueue is a softirq task,
-	 * it may run without preemption for a time that is
-	 * ill-suited for a waiting RT task. Therefore, try to
-	 * wake this RT task on another runqueue.
-	 *
-	 * Also, if the current task on @p's runqueue is an RT task, then
 	 * it may run without preemption for a time that is
 	 * ill-suited for a waiting RT task. Therefore, try to
 	 * wake this RT task on another runqueue.
@@ -1603,12 +1638,20 @@ select_task_rq_rt(struct task_struct *p, int cpu, int sd_flag, int flags)
 	 * systems like big.LITTLE.
 	 */
 	may_not_preempt = task_may_not_preempt(curr, cpu);
-	test = curr &&
-	       unlikely(rt_task(curr)) &&
-	       (curr->nr_cpus_allowed < 2 || curr->prio <= p->prio);
+	test = (curr && (may_not_preempt ||
+			 (unlikely(rt_task(curr)) &&
+			  (curr->nr_cpus_allowed < 2 || curr->prio <= p->prio))));
 
-	if (sched_energy_enabled() || may_not_preempt ||
-	    test || !rt_task_fits_capacity(p, cpu)) {
+	/*
+	 * Respect the sync flag as long as the task can run on this CPU.
+	 */
+	if (should_honor_rt_sync(this_cpu_rq, p, sync) &&
+	    cpumask_test_cpu(this_cpu, p->cpus_ptr)) {
+		cpu = this_cpu;
+		goto out_unlock;
+	}
+
+	if (sched_energy_enabled() || test || !rt_task_fits_capacity(p, cpu)) {
 		int target = find_lowest_rq(p);
 
 		/*
@@ -1621,8 +1664,8 @@ select_task_rq_rt(struct task_struct *p, int cpu, int sd_flag, int flags)
 		/*
 		 * If cpu is non-preemptible, prefer remote cpu
 		 * even if it's running a higher-prio task.
-		 * Otherwise: Don't bother moving it if the
-		 * destination CPU is not running a lower priority task.
+		 * Otherwise: Don't bother moving it if the destination CPU is
+		 * not running a lower priority task.
 		 */
 		if (target != -1 &&
 		    (may_not_preempt ||
@@ -1716,6 +1759,8 @@ unlock:
 static int balance_rt(struct rq *rq, struct task_struct *p, struct rq_flags *rf)
 {
 	if (!on_rt_rq(&p->rt) && need_pull_rt_task(rq, p)) {
+		int done = 0;
+
 		/*
 		 * This is OK, because current is on_cpu, which avoids it being
 		 * picked for load-balance and preemption/IRQs are still
@@ -1723,14 +1768,17 @@ static int balance_rt(struct rq *rq, struct task_struct *p, struct rq_flags *rf)
 		 * not yet started the picking loop.
 		 */
 		rq_unpin_lock(rq, rf);
+		trace_android_rvh_sched_balance_rt(rq, p, &done);
+		if (!done) {
 #ifndef CONFIG_SCHED_WALT
-		pull_rt_task(rq);
-#else
-		if (rt_overloaded(rq))
 			pull_rt_task(rq);
-		else
-			try_pull_rt_task(rq);
+#else
+			if (rt_overloaded(rq))
+				pull_rt_task(rq);
+			else
+				try_pull_rt_task(rq);
 #endif
+		}
 		rq_repin_lock(rq, rf);
 	}
 
@@ -1820,12 +1868,9 @@ static struct task_struct *_pick_next_task_rt(struct rq *rq)
 	return rt_task_of(rt_se);
 }
 
-static struct task_struct *
-pick_next_task_rt(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+static struct task_struct *pick_next_task_rt(struct rq *rq)
 {
 	struct task_struct *p;
-
-	WARN_ON_ONCE(prev || rf);
 
 	if (!sched_rt_runnable(rq))
 		return NULL;
@@ -1867,7 +1912,7 @@ static int pick_rt_task(struct rq *rq, struct task_struct *p, int cpu)
  * Return the highest pushable rq's task, which is suitable to be executed
  * on the CPU, NULL otherwise
  */
-static struct task_struct *pick_highest_pushable_task(struct rq *rq, int cpu)
+struct task_struct *pick_highest_pushable_task(struct rq *rq, int cpu)
 {
 	struct plist_head *head = &rq->rt.pushable_tasks;
 	struct task_struct *p;
@@ -1882,6 +1927,7 @@ static struct task_struct *pick_highest_pushable_task(struct rq *rq, int cpu)
 
 	return NULL;
 }
+EXPORT_SYMBOL_GPL(pick_highest_pushable_task);
 
 static DEFINE_PER_CPU(cpumask_var_t, local_cpu_mask);
 
@@ -2015,13 +2061,8 @@ static int find_lowest_rq(struct task_struct *task)
 	struct sched_domain *sd;
 	struct cpumask *lowest_mask = this_cpu_cpumask_var_ptr(local_cpu_mask);
 	int this_cpu = smp_processor_id();
-	int cpu = -1;
+	int cpu      = -1;
 	int ret;
-	int lowest_cpu = -1;
-
-	trace_android_rvh_find_lowest_rq(task, lowest_mask, &lowest_cpu);
-	if (lowest_cpu >= 0)
-		return lowest_cpu;
 
 	/* Make sure the mask is initialized first */
 	if (unlikely(!lowest_mask))
@@ -2044,6 +2085,10 @@ static int find_lowest_rq(struct task_struct *task)
 		ret = cpupri_find(&task_rq(task)->rd->cpupri,
 				  task, lowest_mask);
 	}
+
+	trace_android_rvh_find_lowest_rq(task, lowest_mask, ret, &cpu);
+	if (cpu >= 0)
+		return cpu;
 
 	if (!ret)
 		return -1; /* No targets found */
@@ -2328,6 +2373,7 @@ static void push_rt_tasks(struct rq *rq)
  */
 static int rto_next_cpu(struct root_domain *rd)
 {
+	int this_cpu = smp_processor_id();
 	int next;
 	int cpu;
 
@@ -2350,6 +2396,10 @@ static int rto_next_cpu(struct root_domain *rd)
 		cpu = cpumask_next(rd->rto_cpu, rd->rto_mask);
 
 		rd->rto_cpu = cpu;
+
+		/* Do not send IPI to self */
+		if (cpu == this_cpu)
+			continue;
 
 		if (cpu < nr_cpu_ids)
 			return cpu;
@@ -2776,8 +2826,8 @@ static unsigned int get_rr_interval_rt(struct rq *rq, struct task_struct *task)
 		return 0;
 }
 
-const struct sched_class rt_sched_class = {
-	.next			= &fair_sched_class,
+const struct sched_class rt_sched_class
+	__section("__rt_sched_class") = {
 	.enqueue_task		= enqueue_task_rt,
 	.dequeue_task		= dequeue_task_rt,
 	.yield_task		= yield_task_rt,
@@ -2818,10 +2868,11 @@ const struct sched_class rt_sched_class = {
  */
 static DEFINE_MUTEX(rt_constraints_mutex);
 
-/* Must be called with tasklist_lock held */
 static inline int tg_has_rt_tasks(struct task_group *tg)
 {
-	struct task_struct *g, *p;
+	struct task_struct *task;
+	struct css_task_iter it;
+	int ret = 0;
 
 	/*
 	 * Autogroups do not have RT tasks; see autogroup_create().
@@ -2829,12 +2880,12 @@ static inline int tg_has_rt_tasks(struct task_group *tg)
 	if (task_group_is_autogroup(tg))
 		return 0;
 
-	for_each_process_thread(g, p) {
-		if (rt_task(p) && task_group(p) == tg)
-			return 1;
-	}
+	css_task_iter_start(&tg->css, 0, &it);
+	while (!ret && (task = css_task_iter_next(&it)))
+		ret |= rt_task(task);
+	css_task_iter_end(&it);
 
-	return 0;
+	return ret;
 }
 
 struct rt_schedulable_data {
@@ -2847,7 +2898,7 @@ static int tg_rt_schedulable(struct task_group *tg, void *data)
 {
 	struct rt_schedulable_data *d = data;
 	struct task_group *child;
-	unsigned long total, sum = 0;
+	u64 total, sum = 0;
 	u64 period, runtime;
 
 	period = ktime_to_ns(tg->rt_bandwidth.rt_period);
@@ -2865,9 +2916,10 @@ static int tg_rt_schedulable(struct task_group *tg, void *data)
 		return -EINVAL;
 
 	/*
-	 * Ensure we don't starve existing RT tasks.
+	 * Ensure we don't starve existing RT tasks if runtime turns zero.
 	 */
-	if (rt_bandwidth_enabled() && !runtime && tg_has_rt_tasks(tg))
+	if (rt_bandwidth_enabled() && !runtime &&
+	    tg->rt_bandwidth.rt_runtime && tg_has_rt_tasks(tg))
 		return -EBUSY;
 
 	total = to_ratio(period, runtime);
@@ -2939,7 +2991,6 @@ static int tg_set_rt_bandwidth(struct task_group *tg,
 		return -EINVAL;
 
 	mutex_lock(&rt_constraints_mutex);
-	read_lock(&tasklist_lock);
 	err = __rt_schedulable(tg, rt_period, rt_runtime);
 	if (err)
 		goto unlock;
@@ -2957,7 +3008,6 @@ static int tg_set_rt_bandwidth(struct task_group *tg,
 	}
 	raw_spin_unlock_irq(&tg->rt_bandwidth.rt_runtime_lock);
 unlock:
-	read_unlock(&tasklist_lock);
 	mutex_unlock(&rt_constraints_mutex);
 
 	return err;
@@ -3016,9 +3066,7 @@ static int sched_rt_global_constraints(void)
 	int ret = 0;
 
 	mutex_lock(&rt_constraints_mutex);
-	read_lock(&tasklist_lock);
 	ret = __rt_schedulable(NULL, 0, 0);
-	read_unlock(&tasklist_lock);
 	mutex_unlock(&rt_constraints_mutex);
 
 	return ret;
@@ -3074,9 +3122,8 @@ static void sched_rt_do_global(void)
 	raw_spin_unlock_irqrestore(&def_rt_bandwidth.rt_runtime_lock, flags);
 }
 
-int sched_rt_handler(struct ctl_table *table, int write,
-		void __user *buffer, size_t *lenp,
-		loff_t *ppos)
+int sched_rt_handler(struct ctl_table *table, int write, void *buffer,
+		size_t *lenp, loff_t *ppos)
 {
 	int old_period, old_runtime;
 	static DEFINE_MUTEX(mutex);
@@ -3114,9 +3161,8 @@ undo:
 	return ret;
 }
 
-int sched_rr_handler(struct ctl_table *table, int write,
-		void __user *buffer, size_t *lenp,
-		loff_t *ppos)
+int sched_rr_handler(struct ctl_table *table, int write, void *buffer,
+		size_t *lenp, loff_t *ppos)
 {
 	int ret;
 	static DEFINE_MUTEX(mutex);

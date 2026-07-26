@@ -147,7 +147,7 @@ static ssize_t ltc2990_value_show(struct device *dev,
 	if (unlikely(ret < 0))
 		return ret;
 
-	return snprintf(buf, PAGE_SIZE, "%d\n", value);
+	return sysfs_emit(buf, "%d\n", value);
 }
 
 static umode_t ltc2990_attrs_visible(struct kobject *kobj,
@@ -200,8 +200,7 @@ static const struct attribute_group ltc2990_group = {
 };
 __ATTRIBUTE_GROUPS(ltc2990);
 
-static int ltc2990_i2c_probe(struct i2c_client *i2c,
-			     const struct i2c_device_id *id)
+static int ltc2990_i2c_probe(struct i2c_client *i2c)
 {
 	int ret;
 	struct device *hwmon_dev;
@@ -269,7 +268,7 @@ static struct i2c_driver ltc2990_i2c_driver = {
 	.driver = {
 		.name = "ltc2990",
 	},
-	.probe    = ltc2990_i2c_probe,
+	.probe_new = ltc2990_i2c_probe,
 	.id_table = ltc2990_i2c_id,
 };
 

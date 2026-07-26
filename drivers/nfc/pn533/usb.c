@@ -225,7 +225,7 @@ static void pn533_usb_abort_cmd(struct pn533 *dev, gfp_t flags)
 	usb_kill_urb(phy->in_urb);
 }
 
-/* ACR122 specific structs and fucntions */
+/* ACR122 specific structs and functions */
 
 /* ACS ACR122 pn533 frame definitions */
 #define PN533_ACR122_TX_FRAME_HEADER_LEN (sizeof(struct pn533_acr122_tx_frame) \
@@ -411,7 +411,7 @@ static int pn533_acr122_poweron_rdr(struct pn533_usb_phy *phy)
 	if (rc || (transferred != sizeof(cmd))) {
 		nfc_err(&phy->udev->dev,
 			"Reader power on cmd error %d\n", rc);
-		return rc;
+		return rc ?: -EINVAL;
 	}
 
 	rc =  usb_submit_urb(phy->in_urb, GFP_KERNEL);
@@ -573,9 +573,9 @@ static int pn533_usb_probe(struct usb_interface *interface,
 		goto error;
 	}
 
-	priv = pn533_register_device(id->driver_info, protocols, protocol_type,
+	priv = pn53x_common_init(id->driver_info, protocol_type,
 					phy, &usb_phy_ops, fops,
-					&phy->udev->dev, &interface->dev);
+					&phy->udev->dev);
 
 	if (IS_ERR(priv)) {
 		rc = PTR_ERR(priv);
@@ -586,14 +586,17 @@ static int pn533_usb_probe(struct usb_interface *interface,
 
 	rc = pn533_finalize_setup(priv);
 	if (rc)
-		goto err_deregister;
+		goto err_clean;
 
 	usb_set_intfdata(interface, phy);
+	rc = pn53x_register_nfc(priv, protocols, &interface->dev);
+	if (rc)
+		goto err_clean;
 
 	return 0;
 
-err_deregister:
-	pn533_unregister_device(phy->priv);
+err_clean:
+	pn53x_common_clean(priv);
 error:
 	usb_kill_urb(phy->in_urb);
 	usb_kill_urb(phy->out_urb);
@@ -616,7 +619,8 @@ static void pn533_usb_disconnect(struct usb_interface *interface)
 	if (!phy)
 		return;
 
-	pn533_unregister_device(phy->priv);
+	pn53x_unregister_nfc(phy->priv);
+	pn53x_common_clean(phy->priv);
 
 	usb_set_intfdata(interface, NULL);
 
@@ -629,6 +633,7 @@ static void pn533_usb_disconnect(struct usb_interface *interface)
 	usb_free_urb(phy->out_urb);
 	usb_free_urb(phy->ack_urb);
 	kfree(phy->ack_buffer);
+	usb_put_dev(phy->udev);
 
 	nfc_info(&interface->dev, "NXP PN533 NFC device disconnected\n");
 }

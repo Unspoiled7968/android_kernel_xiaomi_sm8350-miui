@@ -49,7 +49,7 @@ void mac802154_llsec_destroy(struct mac802154_llsec *sec)
 
 		msl = container_of(sl, struct mac802154_llsec_seclevel, level);
 		list_del(&sl->list);
-		kzfree(msl);
+		kfree_sensitive(msl);
 	}
 
 	list_for_each_entry_safe(dev, dn, &sec->table.devices, list) {
@@ -66,7 +66,7 @@ void mac802154_llsec_destroy(struct mac802154_llsec *sec)
 		mkey = container_of(key->key, struct mac802154_llsec_key, key);
 		list_del(&key->list);
 		llsec_key_put(mkey);
-		kzfree(key);
+		kfree_sensitive(key);
 	}
 }
 
@@ -155,7 +155,7 @@ err_tfm:
 		if (!IS_ERR_OR_NULL(key->tfm[i]))
 			crypto_free_aead(key->tfm[i]);
 
-	kzfree(key);
+	kfree_sensitive(key);
 	return NULL;
 }
 
@@ -170,7 +170,7 @@ static void llsec_key_release(struct kref *ref)
 		crypto_free_aead(key->tfm[i]);
 
 	crypto_free_sync_skcipher(key->tfm0);
-	kzfree(key);
+	kfree_sensitive(key);
 }
 
 static struct mac802154_llsec_key*
@@ -261,8 +261,20 @@ int mac802154_llsec_key_add(struct mac802154_llsec *sec,
 	return 0;
 
 fail:
-	kzfree(new);
+	kfree_sensitive(new);
 	return -ENOMEM;
+}
+
+static void mac802154_llsec_key_del_rcu(struct rcu_head *rcu)
+{
+	struct ieee802154_llsec_key_entry *pos;
+	struct mac802154_llsec_key *mkey;
+
+	pos = container_of(rcu, struct ieee802154_llsec_key_entry, rcu);
+	mkey = container_of(pos->key, struct mac802154_llsec_key, key);
+
+	llsec_key_put(mkey);
+	kfree_sensitive(pos);
 }
 
 int mac802154_llsec_key_del(struct mac802154_llsec *sec,
@@ -271,13 +283,9 @@ int mac802154_llsec_key_del(struct mac802154_llsec *sec,
 	struct ieee802154_llsec_key_entry *pos;
 
 	list_for_each_entry(pos, &sec->table.keys, list) {
-		struct mac802154_llsec_key *mkey;
-
-		mkey = container_of(pos->key, struct mac802154_llsec_key, key);
-
 		if (llsec_key_id_equal(&pos->id, key)) {
 			list_del_rcu(&pos->list);
-			llsec_key_put(mkey);
+			call_rcu(&pos->rcu, mac802154_llsec_key_del_rcu);
 			return 0;
 		}
 	}
@@ -341,10 +349,10 @@ static void llsec_dev_free(struct mac802154_llsec_device *dev)
 				      devkey);
 
 		list_del(&pos->list);
-		kzfree(devkey);
+		kfree_sensitive(devkey);
 	}
 
-	kzfree(dev);
+	kfree_sensitive(dev);
 }
 
 int mac802154_llsec_dev_add(struct mac802154_llsec *sec,
@@ -682,7 +690,7 @@ llsec_do_encrypt_auth(struct sk_buff *skb, const struct mac802154_llsec *sec,
 
 	rc = crypto_aead_encrypt(req);
 
-	kzfree(req);
+	kfree_sensitive(req);
 
 	return rc;
 }
@@ -702,6 +710,7 @@ int mac802154_llsec_encrypt(struct mac802154_llsec *sec, struct sk_buff *skb)
 {
 	struct ieee802154_hdr hdr;
 	int rc, authlen, hlen;
+	struct sk_buff *trailer;
 	struct mac802154_llsec_key *key;
 	u32 frame_ctr;
 
@@ -757,6 +766,12 @@ int mac802154_llsec_encrypt(struct mac802154_llsec *sec, struct sk_buff *skb)
 
 	skb->mac_len = ieee802154_hdr_push(skb, &hdr);
 	skb_reset_mac_header(skb);
+
+	rc = skb_cow_data(skb, 0, &trailer);
+	if (rc < 0) {
+		llsec_key_put(key);
+		return rc;
+	}
 
 	rc = llsec_do_encrypt(skb, sec, &hdr, key);
 	llsec_key_put(key);
@@ -886,7 +901,7 @@ llsec_do_decrypt_auth(struct sk_buff *skb, const struct mac802154_llsec *sec,
 
 	rc = crypto_aead_decrypt(req);
 
-	kzfree(req);
+	kfree_sensitive(req);
 	skb_trim(skb, skb->len - authlen);
 
 	return rc;
@@ -897,6 +912,13 @@ llsec_do_decrypt(struct sk_buff *skb, const struct mac802154_llsec *sec,
 		 const struct ieee802154_hdr *hdr,
 		 struct mac802154_llsec_key *key, __le64 dev_addr)
 {
+	struct sk_buff *trailer;
+	int err;
+
+	err = skb_cow_data(skb, 0, &trailer);
+	if (err < 0)
+		return err;
+
 	if (hdr->sec.level == IEEE802154_SCF_SECLEVEL_ENC)
 		return llsec_do_decrypt_unauth(skb, sec, hdr, key, dev_addr);
 	else
@@ -926,7 +948,7 @@ llsec_update_devkey_record(struct mac802154_llsec_device *dev,
 		if (!devkey)
 			list_add_rcu(&next->devkey.list, &dev->dev.keys);
 		else
-			kzfree(next);
+			kfree_sensitive(next);
 
 		spin_unlock_bh(&dev->lock);
 	}

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Copyright (C) 2007-2019  B.A.T.M.A.N. contributors:
+/* Copyright (C) 2007-2020  B.A.T.M.A.N. contributors:
  *
  * Marek Lindner
  */
@@ -20,6 +20,7 @@
 #include <linux/if_ether.h>
 #include <linux/kernel.h>
 #include <linux/list.h>
+#include <linux/minmax.h>
 #include <linux/module.h>
 #include <linux/netdevice.h>
 #include <linux/pkt_sched.h>
@@ -134,9 +135,6 @@ static ssize_t batadv_socket_read(struct file *file, char __user *buf,
 
 	if (!buf || count < sizeof(struct batadv_icmp_packet))
 		return -EINVAL;
-
-	if (!access_ok(buf, count))
-		return -EFAULT;
 
 	error = wait_event_interruptible(socket_client->queue_wait,
 					 socket_client->queue_len);

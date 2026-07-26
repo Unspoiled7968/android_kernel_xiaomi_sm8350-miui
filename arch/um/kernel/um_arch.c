@@ -14,8 +14,8 @@
 #include <linux/sched.h>
 #include <linux/sched/task.h>
 #include <linux/kmsg_dump.h>
+#include <linux/suspend.h>
 
-#include <asm/pgtable.h>
 #include <asm/processor.h>
 #include <asm/sections.h>
 #include <asm/setup.h>
@@ -54,7 +54,7 @@ struct cpuinfo_um boot_cpu_data = {
 };
 
 union thread_union cpu0_irqstack
-	__attribute__((__section__(".data..init_irqstack"))) =
+	__section(".data..init_irqstack") =
 		{ .thread_info = INIT_THREAD_INFO(init_task) };
 
 /* Changed in setup_arch, which is called in early boot */
@@ -360,6 +360,54 @@ void __init arch_cpu_finalize_init(void)
 	os_check_bugs();
 }
 
+void apply_retpolines(s32 *start, s32 *end)
+{
+}
+
+void apply_returns(s32 *start, s32 *end)
+{
+}
+
 void apply_alternatives(struct alt_instr *start, struct alt_instr *end)
 {
 }
+
+void *text_poke(void *addr, const void *opcode, size_t len)
+{
+	/*
+	 * In UML, the only reference to this function is in
+	 * apply_relocate_add(), which shouldn't ever actually call this
+	 * because UML doesn't have live patching.
+	 */
+	WARN_ON(1);
+
+	return memcpy(addr, opcode, len);
+}
+
+void text_poke_sync(void)
+{
+}
+
+void uml_pm_wake(void)
+{
+	pm_system_wakeup();
+}
+
+#ifdef CONFIG_PM_SLEEP
+static int init_pm_wake_signal(void)
+{
+	/*
+	 * In external time-travel mode we can't use signals to wake up
+	 * since that would mess with the scheduling. We'll have to do
+	 * some additional work to support wakeup on virtio devices or
+	 * similar, perhaps implementing a fake RTC controller that can
+	 * trigger wakeup (and request the appropriate scheduling from
+	 * the external scheduler when going to suspend.)
+	 */
+	if (time_travel_mode != TT_MODE_EXTERNAL)
+		register_pm_wake_signal();
+	return 0;
+}
+
+late_initcall(init_pm_wake_signal);
+#endif

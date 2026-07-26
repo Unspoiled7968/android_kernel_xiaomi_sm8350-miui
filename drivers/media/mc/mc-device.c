@@ -18,6 +18,7 @@
 #include <linux/pci.h>
 #include <linux/usb.h>
 #include <linux/version.h>
+#include <trace/hooks/v4l2mc.h>
 
 #include <media/media-device.h>
 #include <media/media-devnode.h>
@@ -203,6 +204,7 @@ static long media_device_setup_link(struct media_device *mdev, void *arg)
 	struct media_link *link = NULL;
 	struct media_entity *source;
 	struct media_entity *sink;
+	int ret = 0;
 
 	/* Find the source and sink entities and link.
 	 */
@@ -221,9 +223,13 @@ static long media_device_setup_link(struct media_device *mdev, void *arg)
 	if (link == NULL)
 		return -EINVAL;
 
-	memset(linkd->reserved, 0, sizeof(linkd->reserved));
+	/* Setup the link on both entities */
+	trace_android_vh_media_device_setup_link(link, linkd, &ret);
+	trace_android_rvh_media_device_setup_link(link, linkd, &ret);
+	if (ret)
+		return ret;
 
-	/* Setup the link on both entities. */
+	memset(linkd->reserved, 0, sizeof(linkd->reserved));
 	return __media_entity_setup_link(link, linkd->flags);
 }
 
@@ -370,10 +376,11 @@ static long media_device_get_topology(struct media_device *mdev, void *arg)
 	return ret;
 }
 
-static long media_device_request_alloc(struct media_device *mdev,
-				       int *alloc_fd)
+static long media_device_request_alloc(struct media_device *mdev, void *arg)
 {
 #ifdef CONFIG_MEDIA_CONTROLLER_REQUEST_API
+	int *alloc_fd = arg;
+
 	if (!mdev->ops || !mdev->ops->req_validate || !mdev->ops->req_queue)
 		return -ENOTTY;
 
@@ -407,7 +414,7 @@ static long copy_arg_to_user(void __user *uarg, void *karg, unsigned int cmd)
 #define MEDIA_IOC_ARG(__cmd, func, fl, from_user, to_user)		\
 	[_IOC_NR(MEDIA_IOC_##__cmd)] = {				\
 		.cmd = MEDIA_IOC_##__cmd,				\
-		.fn = (long (*)(struct media_device *, void *))func,	\
+		.fn = func,						\
 		.flags = fl,						\
 		.arg_from_user = from_user,				\
 		.arg_to_user = to_user,					\

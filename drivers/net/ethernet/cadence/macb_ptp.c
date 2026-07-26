@@ -2,7 +2,7 @@
 /**
  * 1588 PTP support for Cadence GEM device.
  *
- * Copyright (C) 2017 Cadence Design Systems - http://www.cadence.com
+ * Copyright (C) 2017 Cadence Design Systems - https://www.cadence.com
  *
  * Authors: Rafal Ozieblo <rafalo@cadence.com>
  *          Bartosz Folta <bfolta@cadence.com>
@@ -395,8 +395,10 @@ void gem_ptp_remove(struct net_device *ndev)
 {
 	struct macb *bp = netdev_priv(ndev);
 
-	if (bp->ptp_clock)
+	if (bp->ptp_clock) {
 		ptp_clock_unregister(bp->ptp_clock);
+		bp->ptp_clock = NULL;
+	}
 
 	gem_ptp_clear_timer(bp);
 
@@ -469,7 +471,7 @@ int gem_set_hwtst(struct net_device *dev, struct ifreq *ifr, int cmd)
 	case HWTSTAMP_TX_ONESTEP_SYNC:
 		if (gem_ptp_set_one_step_sync(bp, 1) != 0)
 			return -ERANGE;
-		/* fall through */
+		fallthrough;
 	case HWTSTAMP_TX_ON:
 		tx_bd_control = TSTAMP_ALL_FRAMES;
 		break;

@@ -15,8 +15,8 @@
 
 #include <linux/bitops.h>
 #include <linux/compiler.h>
-#include <linux/android_kabi.h>
 #include <linux/android_vendor.h>
+#include <linux/android_kabi.h>
 #ifdef CONFIG_NF_CONNTRACK_SIP_SEGMENTATION
 #include <linux/list.h>
 #endif
@@ -146,7 +146,7 @@ struct nf_conn {
 	ANDROID_KABI_RESERVE(1);
 	ANDROID_KABI_RESERVE(2);
 
-	ANDROID_VENDOR_DATA(1);
+	ANDROID_OEM_DATA(1);
 };
 
 static inline struct nf_conn *
@@ -304,14 +304,14 @@ static inline bool nf_is_loopback_packet(const struct sk_buff *skb)
 /* jiffies until ct expires, 0 if already expired */
 static inline unsigned long nf_ct_expires(const struct nf_conn *ct)
 {
-	s32 timeout = ct->timeout - nfct_time_stamp;
+	s32 timeout = READ_ONCE(ct->timeout) - nfct_time_stamp;
 
 	return timeout > 0 ? timeout : 0;
 }
 
 static inline bool nf_ct_is_expired(const struct nf_conn *ct)
 {
-	return (__s32)(ct->timeout - nfct_time_stamp) <= 0;
+	return (__s32)(READ_ONCE(ct->timeout) - nfct_time_stamp) <= 0;
 }
 
 /* use after obtaining a reference count */
@@ -321,6 +321,18 @@ static inline bool nf_ct_should_gc(const struct nf_conn *ct)
 	       !nf_ct_is_dying(ct);
 }
 
+#define	NF_CT_DAY	(86400 * HZ)
+
+/* Set an arbitrary timeout large enough not to ever expire, this save
+ * us a check for the IPS_OFFLOAD_BIT from the packet path via
+ * nf_ct_is_expired().
+ */
+static inline void nf_ct_offload_timeout(struct nf_conn *ct)
+{
+	if (nf_ct_expires(ct) < NF_CT_DAY / 2)
+		WRITE_ONCE(ct->timeout, nfct_time_stamp + NF_CT_DAY);
+}
+
 struct kernel_param;
 
 int nf_conntrack_set_hashsize(const char *val, const struct kernel_param *kp);
@@ -328,7 +340,7 @@ int nf_conntrack_hash_resize(unsigned int hashsize);
 
 extern struct hlist_nulls_head *nf_conntrack_hash;
 extern unsigned int nf_conntrack_htable_size;
-extern seqcount_t nf_conntrack_generation;
+extern seqcount_spinlock_t nf_conntrack_generation;
 extern unsigned int nf_conntrack_max;
 #ifdef CONFIG_ENABLE_SFE
 extern unsigned int nf_conntrack_pkt_threshold;

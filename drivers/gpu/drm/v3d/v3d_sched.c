@@ -188,11 +188,15 @@ v3d_tfu_job_run(struct drm_sched_job *sched_job)
 	struct drm_device *dev = &v3d->drm;
 	struct dma_fence *fence;
 
+	if (unlikely(job->base.base.s_fence->finished.error))
+		return NULL;
+
+	v3d->tfu_job = job;
+
 	fence = v3d_fence_create(v3d, V3D_TFU);
 	if (IS_ERR(fence))
 		return NULL;
 
-	v3d->tfu_job = job;
 	if (job->base.irq_fence)
 		dma_fence_put(job->base.irq_fence);
 	job->base.irq_fence = dma_fence_get(fence);
@@ -225,6 +229,9 @@ v3d_csd_job_run(struct drm_sched_job *sched_job)
 	struct drm_device *dev = &v3d->drm;
 	struct dma_fence *fence;
 	int i;
+
+	if (unlikely(job->base.base.s_fence->finished.error))
+		return NULL;
 
 	v3d->csd_job = job;
 
@@ -403,7 +410,7 @@ v3d_sched_init(struct v3d_dev *v3d)
 			     msecs_to_jiffies(hang_limit_ms),
 			     "v3d_bin");
 	if (ret) {
-		dev_err(v3d->dev, "Failed to create bin scheduler: %d.", ret);
+		dev_err(v3d->drm.dev, "Failed to create bin scheduler: %d.", ret);
 		return ret;
 	}
 
@@ -413,7 +420,7 @@ v3d_sched_init(struct v3d_dev *v3d)
 			     msecs_to_jiffies(hang_limit_ms),
 			     "v3d_render");
 	if (ret) {
-		dev_err(v3d->dev, "Failed to create render scheduler: %d.",
+		dev_err(v3d->drm.dev, "Failed to create render scheduler: %d.",
 			ret);
 		v3d_sched_fini(v3d);
 		return ret;
@@ -425,7 +432,7 @@ v3d_sched_init(struct v3d_dev *v3d)
 			     msecs_to_jiffies(hang_limit_ms),
 			     "v3d_tfu");
 	if (ret) {
-		dev_err(v3d->dev, "Failed to create TFU scheduler: %d.",
+		dev_err(v3d->drm.dev, "Failed to create TFU scheduler: %d.",
 			ret);
 		v3d_sched_fini(v3d);
 		return ret;
@@ -438,7 +445,7 @@ v3d_sched_init(struct v3d_dev *v3d)
 				     msecs_to_jiffies(hang_limit_ms),
 				     "v3d_csd");
 		if (ret) {
-			dev_err(v3d->dev, "Failed to create CSD scheduler: %d.",
+			dev_err(v3d->drm.dev, "Failed to create CSD scheduler: %d.",
 				ret);
 			v3d_sched_fini(v3d);
 			return ret;
@@ -450,7 +457,7 @@ v3d_sched_init(struct v3d_dev *v3d)
 				     msecs_to_jiffies(hang_limit_ms),
 				     "v3d_cache_clean");
 		if (ret) {
-			dev_err(v3d->dev, "Failed to create CACHE_CLEAN scheduler: %d.",
+			dev_err(v3d->drm.dev, "Failed to create CACHE_CLEAN scheduler: %d.",
 				ret);
 			v3d_sched_fini(v3d);
 			return ret;

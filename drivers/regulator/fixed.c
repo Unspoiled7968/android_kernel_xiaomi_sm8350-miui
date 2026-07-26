@@ -44,14 +44,6 @@ struct fixed_dev_type {
 	bool has_enable_clock;
 };
 
-static const struct fixed_dev_type fixed_voltage_data = {
-	.has_enable_clock = false,
-};
-
-static const struct fixed_dev_type fixed_clkenable_data = {
-	.has_enable_clock = true,
-};
-
 static int reg_clock_enable(struct regulator_dev *rdev)
 {
 	struct fixed_voltage_data *priv = rdev_get_drvdata(rdev);
@@ -126,6 +118,7 @@ of_get_fixed_voltage_config(struct device *dev,
 		config->enabled_at_boot = true;
 
 	of_property_read_u32(np, "startup-delay-us", &config->startup_delay);
+	of_property_read_u32(np, "off-on-delay-us", &config->off_on_delay);
 
 	if (of_find_property(np, "vin-supply", NULL))
 		config->input_supply = "vin";
@@ -133,10 +126,10 @@ of_get_fixed_voltage_config(struct device *dev,
 	return config;
 }
 
-static struct regulator_ops fixed_voltage_ops = {
+static const struct regulator_ops fixed_voltage_ops = {
 };
 
-static struct regulator_ops fixed_voltage_clkenabled_ops = {
+static const struct regulator_ops fixed_voltage_clkenabled_ops = {
 	.enable = reg_clock_enable,
 	.disable = reg_clock_disable,
 	.is_enabled = reg_clock_is_enabled,
@@ -209,6 +202,7 @@ static int reg_fixed_voltage_probe(struct platform_device *pdev)
 	}
 
 	drvdata->desc.enable_time = config->startup_delay;
+	drvdata->desc.off_on_delay = config->off_on_delay;
 
 	if (config->input_supply) {
 		drvdata->desc.supply_name = devm_kstrdup(&pdev->dev,
@@ -228,7 +222,7 @@ static int reg_fixed_voltage_probe(struct platform_device *pdev)
 
 	/*
 	 * The signal will be inverted by the GPIO core if flagged so in the
-	 * decriptor.
+	 * descriptor.
 	 */
 	if (config->enabled_at_boot)
 		gflags = GPIOD_OUT_HIGH;
@@ -264,8 +258,10 @@ static int reg_fixed_voltage_probe(struct platform_device *pdev)
 	drvdata->dev = devm_regulator_register(&pdev->dev, &drvdata->desc,
 					       &cfg);
 	if (IS_ERR(drvdata->dev)) {
-		ret = PTR_ERR(drvdata->dev);
-		dev_err(&pdev->dev, "Failed to register regulator: %d\n", ret);
+		ret = dev_err_probe(&pdev->dev, PTR_ERR(drvdata->dev),
+				    "Failed to register regulator: %ld\n",
+				    PTR_ERR(drvdata->dev));
+		gpiod_put(cfg.ena_gpiod);
 		return ret;
 	}
 
@@ -280,6 +276,14 @@ static int reg_fixed_voltage_probe(struct platform_device *pdev)
 }
 
 #if defined(CONFIG_OF)
+static const struct fixed_dev_type fixed_voltage_data = {
+	.has_enable_clock = false,
+};
+
+static const struct fixed_dev_type fixed_clkenable_data = {
+	.has_enable_clock = true,
+};
+
 static const struct of_device_id fixed_of_match[] = {
 #ifdef QTI_FIXED_REGULATOR
 	{

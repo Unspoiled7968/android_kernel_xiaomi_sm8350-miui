@@ -56,14 +56,6 @@ struct kmem_cache *radix_tree_node_cachep;
 #define IDR_PRELOAD_SIZE	(IDR_MAX_PATH * 2 - 1)
 
 /*
- * The IDA is even shorter since it uses a bitmap at the last level.
- */
-#define IDA_INDEX_BITS		(8 * sizeof(int) - 1 - ilog2(IDA_BITMAP_BITS))
-#define IDA_MAX_PATH		(DIV_ROUND_UP(IDA_INDEX_BITS, \
-						RADIX_TREE_MAP_SHIFT))
-#define IDA_PRELOAD_SIZE	(IDA_MAX_PATH * 2 - 1)
-
-/*
  * Per-cpu pool of preloaded nodes
  */
 DEFINE_PER_CPU(struct radix_tree_preload, radix_tree_preloads) = {
@@ -333,7 +325,7 @@ static __must_check int __radix_tree_preload(gfp_t gfp_mask, unsigned nr)
 	int ret = -ENOMEM;
 
 	/*
-	 * Nodes preloaded by one cgroup can be be used by another cgroup, so
+	 * Nodes preloaded by one cgroup can be used by another cgroup, so
 	 * they should never be accounted to any particular memory cgroup.
 	 */
 	gfp_mask &= ~__GFP_ACCOUNT;

@@ -262,12 +262,12 @@ struct scpi_drvinfo {
 struct scpi_shared_mem {
 	__le32 command;
 	__le32 status;
-	u8 payload[0];
+	u8 payload[];
 } __packed;
 
 struct legacy_scpi_shared_mem {
 	__le32 status;
-	u8 payload[0];
+	u8 payload[];
 } __packed;
 
 struct scp_capabilities {
@@ -626,6 +626,9 @@ static struct scpi_dvfs_info *scpi_dvfs_get_info(u8 domain)
 				&buf, sizeof(buf));
 	if (ret)
 		return ERR_PTR(ret);
+
+	if (!buf.opp_count)
+		return ERR_PTR(-ENOENT);
 
 	info = kmalloc(sizeof(*info), GFP_KERNEL);
 	if (!info)

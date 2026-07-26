@@ -612,7 +612,7 @@ acpi_video_bqc_value_to_level(struct acpi_video_device *device,
 				ACPI_VIDEO_FIRST_LEVEL - 1 - bqc_value;
 
 		level = device->brightness->levels[bqc_value +
-		                                   ACPI_VIDEO_FIRST_LEVEL];
+						   ACPI_VIDEO_FIRST_LEVEL];
 	} else {
 		level = bqc_value;
 	}
@@ -733,9 +733,13 @@ acpi_video_device_EDID(struct acpi_video_device *device,
  *			event notify code.
  *	lcd_flag	:
  *		0.	The system BIOS should automatically control the brightness level
- *			of the LCD when the power changes from AC to DC
+ *			of the LCD when:
+ *			- the power changes from AC to DC (ACPI appendix B)
+ *			- a brightness hotkey gets pressed (implied by Win7/8 backlight docs)
  *		1.	The system BIOS should NOT automatically control the brightness
- *			level of the LCD when the power changes from AC to DC.
+ *			level of the LCD when:
+ *			- the power changes from AC to DC (ACPI appendix B)
+ *			- a brightness hotkey gets pressed (implied by Win7/8 backlight docs)
  *  Return Value:
  *		-EINVAL	wrong arg.
  */
@@ -973,7 +977,7 @@ acpi_video_init_brightness(struct acpi_video_device *device)
 	int i, max_level = 0;
 	unsigned long long level, level_old;
 	struct acpi_video_device_brightness *br = NULL;
-	int result = -EINVAL;
+	int result;
 
 	result = acpi_video_get_levels(device->dev, &br, &max_level);
 	if (result)
@@ -1020,8 +1024,8 @@ set_level:
 		goto out_free_levels;
 
 	ACPI_DEBUG_PRINT((ACPI_DB_INFO,
-	                  "found %d brightness levels\n",
-	                  br->count - ACPI_VIDEO_FIRST_LEVEL));
+			  "found %d brightness levels\n",
+			  br->count - ACPI_VIDEO_FIRST_LEVEL));
 	return 0;
 
 out_free_levels:
@@ -2024,8 +2028,10 @@ static void acpi_video_bus_remove_notify_handler(struct acpi_video_bus *video)
 	struct acpi_video_device *dev;
 
 	mutex_lock(&video->device_list_lock);
-	list_for_each_entry(dev, &video->video_device_list, entry)
+	list_for_each_entry(dev, &video->video_device_list, entry) {
 		acpi_video_dev_remove_notify_handler(dev);
+		cancel_delayed_work_sync(&dev->switch_brightness_work);
+	}
 	mutex_unlock(&video->device_list_lock);
 
 	acpi_video_bus_stop_devices(video);
@@ -2217,7 +2223,7 @@ int acpi_video_register(void)
 	if (register_count) {
 		/*
 		 * if the function of acpi_video_register is already called,
-		 * don't register the acpi_vide_bus again and return no error.
+		 * don't register the acpi_video_bus again and return no error.
 		 */
 		goto leave;
 	}

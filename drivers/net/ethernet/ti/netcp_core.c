@@ -1339,10 +1339,10 @@ int netcp_txpipe_open(struct netcp_tx_pipe *tx_pipe)
 
 	tx_pipe->dma_channel = knav_dma_open_channel(dev,
 				tx_pipe->dma_chan_name, &config);
-	if (IS_ERR(tx_pipe->dma_channel)) {
+	if (!tx_pipe->dma_channel) {
 		dev_err(dev, "failed opening tx chan(%s)\n",
 			tx_pipe->dma_chan_name);
-		ret = PTR_ERR(tx_pipe->dma_channel);
+		ret = -EINVAL;
 		goto err;
 	}
 
@@ -1350,9 +1350,9 @@ int netcp_txpipe_open(struct netcp_tx_pipe *tx_pipe)
 	tx_pipe->dma_queue = knav_queue_open(name, tx_pipe->dma_queue_id,
 					     KNAV_QUEUE_SHARED);
 	if (IS_ERR(tx_pipe->dma_queue)) {
+		dev_err(dev, "Could not open DMA queue for channel \"%s\": %pe\n",
+			name, tx_pipe->dma_queue);
 		ret = PTR_ERR(tx_pipe->dma_queue);
-		dev_err(dev, "Could not open DMA queue for channel \"%s\": %d\n",
-			name, ret);
 		goto err;
 	}
 
@@ -1360,7 +1360,7 @@ int netcp_txpipe_open(struct netcp_tx_pipe *tx_pipe)
 	return 0;
 
 err:
-	if (!IS_ERR_OR_NULL(tx_pipe->dma_channel))
+	if (tx_pipe->dma_channel)
 		knav_dma_close_channel(tx_pipe->dma_channel);
 	tx_pipe->dma_channel = NULL;
 	return ret;
@@ -1679,10 +1679,10 @@ static int netcp_setup_navigator_resources(struct net_device *ndev)
 
 	netcp->rx_channel = knav_dma_open_channel(netcp->netcp_device->device,
 					netcp->dma_chan_name, &config);
-	if (IS_ERR(netcp->rx_channel)) {
+	if (!netcp->rx_channel) {
 		dev_err(netcp->ndev_dev, "failed opening rx chan(%s\n",
 			netcp->dma_chan_name);
-		ret = PTR_ERR(netcp->rx_channel);
+		ret = -EINVAL;
 		goto fail;
 	}
 
@@ -1811,7 +1811,7 @@ out:
 	return (ret == 0) ? 0 : err;
 }
 
-static void netcp_ndo_tx_timeout(struct net_device *ndev)
+static void netcp_ndo_tx_timeout(struct net_device *ndev, unsigned int txqueue)
 {
 	struct netcp_intf *netcp = netdev_priv(ndev);
 	unsigned int descs = knav_pool_count(netcp->tx_pool);
@@ -2019,7 +2019,7 @@ static int netcp_create_interface(struct netcp_device *netcp_device,
 			goto quit;
 		}
 
-		efuse = devm_ioremap_nocache(dev, res.start, size);
+		efuse = devm_ioremap(dev, res.start, size);
 		if (!efuse) {
 			dev_err(dev, "could not map resource\n");
 			devm_release_mem_region(dev, res.start, size);

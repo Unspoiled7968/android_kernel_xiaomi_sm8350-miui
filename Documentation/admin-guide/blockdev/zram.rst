@@ -266,7 +266,6 @@ line of text and contains the following stats separated by whitespace:
                   No memory is allocated for such pages.
  pages_compacted  the number of pages freed during compaction
  huge_pages	  the number of incompressible pages
- huge_pages_since the number of incompressible pages since zram set up
  ================ =============================================================
 
 File /sys/block/zram<id>/bd_stat
@@ -335,18 +334,8 @@ Admin can request writeback of those idle pages at right timing via::
 
 With the command, zram writeback idle pages from memory to the storage.
 
-Additionally, if a user choose to writeback only huge and idle pages
-this can be accomplished with::
-
-        echo huge_idle > /sys/block/zramX/writeback
-
-If a user chooses to writeback only incompressible pages (pages that none of
-algorithms can compress) this can be accomplished with::
-
-	echo incompressible > /sys/block/zramX/writeback
-
 If admin want to write a specific page in zram device to backing device,
-they could write a page index into the interface::
+they could write a page index into the interface.
 
 	echo "page_index=1251" > /sys/block/zramX/writeback
 
@@ -376,7 +365,7 @@ like below::
 		/sys/block/zram0/writeback_limit.
 	$ echo 1 > /sys/block/zram0/writeback_limit_enable
 
-If admins want to allow further write again once the budget is exhausted,
+If admins want to allow further write again once the bugdet is exhausted,
 he could do it like below::
 
 	$ echo $((400<<MB_SHIFT>>4K_SHIFT)) > \
@@ -408,11 +397,9 @@ pages of the process with*pagemap.
 If you enable the feature, you could see block state via
 /sys/kernel/debug/zram/zram0/block_state". The output is as follows::
 
-	  300    75.033841 .wh...
-	  301    63.806904 s.....
-	  302    63.806919 ..hi..
-	  303    62.801919 ....r.
-	  304   146.781902 ..hi.n
+	  300    75.033841 .wh.
+	  301    63.806904 s...
+	  302    63.806919 ..hi
 
 First column
 	zram's block index.
@@ -429,10 +416,6 @@ Third column
 		huge page
 	i:
 		idle page
-	r:
-		recompressed page (secondary compression algorithm)
-	n:
-		none (including secondary) of algorithms could compress it
 
 First line of above example says 300th block is accessed at 75.033841sec
 and the block's state is huge so it is written back to the backing

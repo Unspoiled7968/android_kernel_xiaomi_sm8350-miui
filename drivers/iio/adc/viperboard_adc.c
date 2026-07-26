@@ -70,8 +70,10 @@ static int vprbrd_iio_read_raw(struct iio_dev *iio_dev,
 			VPRBRD_USB_TYPE_OUT, 0x0000, 0x0000, admsg,
 			sizeof(struct vprbrd_adc_msg), VPRBRD_USB_TIMEOUT_MS);
 		if (ret != sizeof(struct vprbrd_adc_msg)) {
-			dev_err(&iio_dev->dev, "usb send error on adc read\n");
+			mutex_unlock(&vb->lock);
 			error = -EREMOTEIO;
+			dev_err(&iio_dev->dev, "usb send error on adc read\n");
+			goto error;
 		}
 
 		ret = usb_control_msg(vb->usb_dev,
@@ -121,7 +123,6 @@ static int vprbrd_adc_probe(struct platform_device *pdev)
 	adc = iio_priv(indio_dev);
 	adc->vb = vb;
 	indio_dev->name = "viperboard adc";
-	indio_dev->dev.parent = &pdev->dev;
 	indio_dev->info = &vprbrd_adc_iio_info;
 	indio_dev->modes = INDIO_DIRECT_MODE;
 	indio_dev->channels = vprbrd_adc_iio_channels;

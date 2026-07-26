@@ -44,7 +44,7 @@ static int qrtr_tun_open(struct inode *inode, struct file *filp)
 
 	filp->private_data = tun;
 
-	ret = qrtr_endpoint_register(&tun->ep, QRTR_EP_NET_ID_AUTO, 0);
+	ret = qrtr_endpoint_register(&tun->ep, QRTR_EP_NID_AUTO);
 	if (ret)
 		goto out;
 
@@ -127,15 +127,11 @@ static __poll_t qrtr_tun_poll(struct file *filp, poll_table *wait)
 static int qrtr_tun_release(struct inode *inode, struct file *filp)
 {
 	struct qrtr_tun *tun = filp->private_data;
-	struct sk_buff *skb;
 
 	qrtr_endpoint_unregister(&tun->ep);
 
 	/* Discard all SKBs */
-	while (!skb_queue_empty(&tun->queue)) {
-		skb = skb_dequeue(&tun->queue);
-		kfree_skb(skb);
-	}
+	skb_queue_purge(&tun->queue);
 
 	kfree(tun);
 

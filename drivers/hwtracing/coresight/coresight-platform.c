@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2012, 2019 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012, The Linux Foundation. All rights reserved.
  */
 
 #include <linux/acpi.h>
@@ -27,9 +27,8 @@ static int coresight_alloc_conns(struct device *dev,
 				 struct coresight_platform_data *pdata)
 {
 	if (pdata->nr_outport) {
-		pdata->conns = devm_kzalloc(dev, pdata->nr_outport *
-					    sizeof(*pdata->conns),
-					    GFP_KERNEL);
+		pdata->conns = devm_kcalloc(dev, pdata->nr_outport,
+					    sizeof(*pdata->conns), GFP_KERNEL);
 		if (!pdata->conns)
 			return -ENOMEM;
 	}
@@ -57,6 +56,27 @@ coresight_find_device_by_fwnode(struct fwnode_handle *fwnode)
 	return bus_find_device_by_fwnode(&amba_bustype, fwnode);
 }
 
+/*
+ * Find a registered coresight device from a device fwnode.
+ * The node info is associated with the AMBA parent, but the
+ * csdev keeps a copy so iterate round the coresight bus to
+ * find the device.
+ */
+struct coresight_device *
+coresight_find_csdev_by_fwnode(struct fwnode_handle *r_fwnode)
+{
+	struct device *dev;
+	struct coresight_device *csdev = NULL;
+
+	dev = bus_find_device_by_fwnode(&coresight_bustype, r_fwnode);
+	if (dev) {
+		csdev = to_coresight_device(dev);
+		put_device(dev);
+	}
+	return csdev;
+}
+EXPORT_SYMBOL_GPL(coresight_find_csdev_by_fwnode);
+
 #ifdef CONFIG_OF
 static inline bool of_coresight_legacy_ep_is_input(struct device_node *ep)
 {
@@ -69,14 +89,13 @@ static void of_coresight_get_ports_legacy(const struct device_node *node,
 	struct device_node *ep = NULL;
 	struct of_endpoint endpoint;
 	int in = 0, out = 0;
-	struct device_node *ports = NULL, *port = NULL;
 
-	ports = of_get_child_by_name(node, "ports");
-	port = of_get_child_by_name(node, "port");
-
-	if (!ports && !port)
+	/*
+	 * Avoid warnings in of_graph_get_next_endpoint()
+	 * if the device doesn't have any graph connections
+	 */
+	if (!of_graph_is_present(node))
 		return;
-
 	do {
 		ep = of_graph_get_next_endpoint(node, ep);
 		if (!ep)
@@ -238,11 +257,10 @@ static int of_coresight_parse_endpoint(struct device *dev,
 		conn = &pdata->conns[endpoint.port];
 		if (conn->child_fwnode) {
 			dev_warn(dev, "Duplicate output port %d\n",
-				endpoint.port);
+				 endpoint.port);
 			ret = -EINVAL;
 			break;
 		}
-
 		conn->outport = endpoint.port;
 		/*
 		 * Hold the refcount to the target device. This could be
@@ -272,6 +290,7 @@ static int of_coresight_parse_endpoint(struct device *dev,
 
 	return ret;
 }
+
 #ifdef CONFIG_CORESIGHT_QGKI
 static struct coresight_reg_clk *
 of_coresight_get_reg_clk(struct device *dev, const struct device_node *node)
@@ -326,6 +345,7 @@ of_coresight_get_reg_clk(struct device *dev, const struct device_node *node)
 	return reg_clk;
 }
 #endif
+
 static int of_get_coresight_platform_data(struct device *dev,
 					  struct coresight_platform_data *pdata)
 {
@@ -375,8 +395,10 @@ static int of_get_coresight_platform_data(struct device *dev,
 			continue;
 
 		ret = of_coresight_parse_endpoint(dev, ep, pdata);
-		if (ret)
+		if (ret) {
+			of_node_put(ep);
 			return ret;
+		}
 	}
 
 	return 0;
@@ -569,7 +591,7 @@ static inline bool acpi_validate_dsd_graph(const union acpi_object *graph)
 }
 
 /* acpi_get_dsd_graph	- Find the _DSD Graph property for the given device. */
-const union acpi_object *
+static const union acpi_object *
 acpi_get_dsd_graph(struct acpi_device *adev)
 {
 	int i;
@@ -632,7 +654,7 @@ acpi_validate_coresight_graph(const union acpi_object *cs_graph)
  * Returns the pointer to the CoreSight Graph Package when found. Otherwise
  * returns NULL.
  */
-const union acpi_object *
+static const union acpi_object *
 acpi_get_coresight_graph(struct acpi_device *adev)
 {
 	const union acpi_object *graph_list, *graph;
@@ -770,11 +792,11 @@ static int acpi_coresight_parse_graph(struct acpi_device *adev,
 			return dir;
 
 		if (dir == ACPI_CORESIGHT_LINK_MASTER) {
-			if (ptr->outport > pdata->nr_outport)
-				pdata->nr_outport = ptr->outport;
+			if (ptr->outport >= pdata->nr_outport)
+				pdata->nr_outport = ptr->outport + 1;
 			ptr++;
 		} else {
-			WARN_ON(pdata->nr_inport == ptr->child_port);
+			WARN_ON(pdata->nr_inport == ptr->child_port + 1);
 			/*
 			 * We do not track input port connections for a device.
 			 * However we need the highest port number described,
@@ -782,8 +804,8 @@ static int acpi_coresight_parse_graph(struct acpi_device *adev,
 			 * record for an output connection. Hence, do not move
 			 * the ptr for input connections
 			 */
-			if (ptr->child_port > pdata->nr_inport)
-				pdata->nr_inport = ptr->child_port;
+			if (ptr->child_port >= pdata->nr_inport)
+				pdata->nr_inport = ptr->child_port + 1;
 		}
 	}
 
@@ -792,7 +814,6 @@ static int acpi_coresight_parse_graph(struct acpi_device *adev,
 		return rc;
 
 	/* Copy the connection information to the final location */
-
 	for (i = 0; conns + i < ptr; i++) {
 		int port = conns[i].outport;
 
@@ -916,7 +937,7 @@ coresight_get_platform_data(struct device *dev)
 error:
 	if (!IS_ERR_OR_NULL(pdata))
 		/* Cleanup the connection information */
-		coresight_release_platform_data(pdata);
+		coresight_release_platform_data(NULL, pdata);
 	return ERR_PTR(ret);
 }
 EXPORT_SYMBOL_GPL(coresight_get_platform_data);

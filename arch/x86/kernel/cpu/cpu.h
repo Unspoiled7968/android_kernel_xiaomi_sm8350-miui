@@ -38,7 +38,7 @@ struct _tlb_table {
 
 #define cpu_dev_register(cpu_devX) \
 	static const struct cpu_dev *const __cpu_dev_##cpu_devX __used \
-	__attribute__((__section__(".x86_cpu_dev.init"))) = \
+	__section(".x86_cpu_dev.init") = \
 	&cpu_devX;
 
 extern const struct cpu_dev *const __x86_cpu_dev_start[],
@@ -59,6 +59,8 @@ extern void tsx_disable(void);
 #else
 static inline void tsx_init(void) { }
 #endif /* CONFIG_CPU_SUP_INTEL */
+
+extern void init_spectral_chicken(struct cpuinfo_x86 *c);
 
 extern void get_cpu_cap(struct cpuinfo_x86 *c);
 extern void get_cpu_address_sizes(struct cpuinfo_x86 *c);

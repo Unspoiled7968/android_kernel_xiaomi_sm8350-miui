@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Copyright (C) 2007-2019  B.A.T.M.A.N. contributors:
+/* Copyright (C) 2007-2020  B.A.T.M.A.N. contributors:
  *
  * Marek Lindner, Simon Wunderlich
  */
@@ -71,13 +71,13 @@ static void _batadv_update_route(struct batadv_priv *bat_priv,
 	 * the code needs to ensure the curr_router variable contains a pointer
 	 * to the replaced best neighbor.
 	 */
-	curr_router = rcu_dereference_protected(orig_ifinfo->router, true);
 
 	/* increase refcount of new best neighbor */
 	if (neigh_node)
 		kref_get(&neigh_node->refcount);
 
-	rcu_assign_pointer(orig_ifinfo->router, neigh_node);
+	curr_router = rcu_replace_pointer(orig_ifinfo->router, neigh_node,
+					  true);
 	spin_unlock_bh(&orig_node->neigh_list_lock);
 	batadv_orig_ifinfo_put(orig_ifinfo);
 
@@ -449,7 +449,7 @@ free_skb:
  * @skb: packet to check
  * @hdr_size: size of header to pull
  *
- * Check for short header and bad addresses in given packet.
+ * Checks for short header and bad addresses in the given packet.
  *
  * Return: negative value when check fails and 0 otherwise. The negative value
  * depends on the reason: -ENODATA for bad header, -EBADR for broadcast
@@ -1117,7 +1117,7 @@ free_skb:
  * @recv_if: interface that the skb is received on
  *
  * This function does one of the three following things: 1) Forward fragment, if
- * the assembled packet will exceed our MTU; 2) Buffer fragment, if we till
+ * the assembled packet will exceed our MTU; 2) Buffer fragment, if we still
  * lack further fragments; 3) Merge fragments, if we have all needed parts.
  *
  * Return: NET_RX_DROP if the skb is not consumed, NET_RX_SUCCESS otherwise.
@@ -1143,10 +1143,9 @@ int batadv_recv_frag_packet(struct sk_buff *skb,
 
 	/* Route the fragment if it is not for us and too big to be merged. */
 	if (!batadv_is_my_mac(bat_priv, frag_packet->dest) &&
-	    batadv_frag_skb_fwd(skb, recv_if, orig_node_src)) {
+	    batadv_frag_skb_fwd(skb, recv_if, orig_node_src, &ret)) {
 		/* skb was consumed */
 		skb = NULL;
-		ret = NET_RX_SUCCESS;
 		goto put_orig_node;
 	}
 

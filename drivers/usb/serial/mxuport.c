@@ -327,14 +327,14 @@ static void mxuport_process_read_urb_data(struct usb_serial_port *port,
 {
 	int i;
 
-	if (!port->port.console || !port->sysrq) {
-		tty_insert_flip_string(&port->port, data, size);
-	} else {
+	if (port->sysrq) {
 		for (i = 0; i < size; i++, data++) {
 			if (!usb_serial_handle_sysrq_char(port, *data))
 				tty_insert_flip_char(&port->port, *data,
 						     TTY_NORMAL);
 		}
+	} else {
+		tty_insert_flip_string(&port->port, data, size);
 	}
 	tty_flip_buffer_push(&port->port);
 }
@@ -968,6 +968,14 @@ static int mxuport_calc_num_ports(struct usb_serial *serial,
 	 * bulk-out endpoint.
 	 */
 	BUILD_BUG_ON(ARRAY_SIZE(epds->bulk_out) < 16);
+
+	/*
+	 * The bulk-out buffers must be large enough for the four-byte header
+	 * (and following data), but assume anything smaller than eight bytes
+	 * is broken.
+	 */
+	if (usb_endpoint_maxp(epds->bulk_out[0]) < 8)
+		return -EINVAL;
 
 	for (i = 1; i < num_ports; ++i)
 		epds->bulk_out[i] = epds->bulk_out[0];

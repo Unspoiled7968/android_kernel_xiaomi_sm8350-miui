@@ -1156,7 +1156,7 @@ err_put_banks:
 	return ret;
 }
 
-/**
+/*
  * samsung_pinctrl_suspend - save pinctrl state for suspend
  *
  * Save data for all banks handled by this device.
@@ -1203,7 +1203,7 @@ static int __maybe_unused samsung_pinctrl_suspend(struct device *dev)
 	return 0;
 }
 
-/**
+/*
  * samsung_pinctrl_resume - restore pinctrl state from suspend
  *
  * Restore one of the banks that was saved during suspend.

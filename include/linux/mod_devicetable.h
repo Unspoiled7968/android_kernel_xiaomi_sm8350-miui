@@ -251,6 +251,8 @@ struct hda_device_id {
 struct sdw_device_id {
 	__u16 mfg_id;
 	__u16 part_id;
+	__u8  sdw_version;
+	__u8  class_id;
 	kernel_ulong_t driver_data;
 };
 
@@ -318,7 +320,7 @@ struct pcmcia_device_id {
 #define INPUT_DEVICE_ID_LED_MAX		0x0f
 #define INPUT_DEVICE_ID_SND_MAX		0x07
 #define INPUT_DEVICE_ID_FF_MAX		0x7f
-#define INPUT_DEVICE_ID_SW_MAX		0x3f
+#define INPUT_DEVICE_ID_SW_MAX		0x10
 #define INPUT_DEVICE_ID_PROP_MAX	0x1f
 
 #define INPUT_DEVICE_ID_MATCH_BUS	1
@@ -434,7 +436,7 @@ struct virtio_device_id {
  * For Hyper-V devices we use the device guid as the id.
  */
 struct hv_vmbus_device_id {
-	uuid_le guid;
+	guid_t guid;
 	kernel_ulong_t driver_data;	/* Data private to the driver */
 };
 
@@ -531,6 +533,8 @@ enum dmi_field {
 	DMI_BIOS_VENDOR,
 	DMI_BIOS_VERSION,
 	DMI_BIOS_DATE,
+	DMI_BIOS_RELEASE,
+	DMI_EC_FIRMWARE_RELEASE,
 	DMI_SYS_VENDOR,
 	DMI_PRODUCT_NAME,
 	DMI_PRODUCT_VERSION,
@@ -666,7 +670,10 @@ struct x86_cpu_id {
 	__u16 vendor;
 	__u16 family;
 	__u16 model;
+	__u16 steppings;
 	__u16 feature;	/* bit index */
+	/* Solely for kernel-internal use: DO NOT EXPORT to userspace! */
+	__u16 flags;
 	kernel_ulong_t driver_data;
 	__u16 steppings;
 };
@@ -824,6 +831,7 @@ struct wmi_device_id {
 	const void *context;
 };
 
+#define MHI_DEVICE_MODALIAS_FMT "mhi:%s"
 #define MHI_NAME_SIZE 32
 
 /**
@@ -831,7 +839,6 @@ struct wmi_device_id {
  * @chan: MHI channel name
  * @driver_data: driver data;
  */
-
 struct mhi_device_id {
 	const char chan[MHI_NAME_SIZE];
 	kernel_ulong_t driver_data;

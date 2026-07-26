@@ -42,7 +42,6 @@ static struct acpi_osi_entry
 osi_setup_entries[OSI_STRING_ENTRIES_MAX] __initdata = {
 	{"Module Device", true},
 	{"Processor Device", true},
-	{"3.0 _SCP Extensions", true},
 	{"Processor Aggregator Device", true},
 	/*
 	 * Linux-Dell-Video is used by BIOS to disable RTD3 for NVidia graphics
@@ -415,6 +414,19 @@ static const struct dmi_system_id acpi_osi_dmi_table[] __initconst = {
 	},
 
 	/*
+	 * The screen backlight turns off during udev device creation
+	 * when returning true for _OSI("Windows 2009")
+	 */
+	{
+	.callback = dmi_disable_osi_win7,
+	.ident = "Acer Aspire One D255",
+	.matches = {
+		     DMI_MATCH(DMI_SYS_VENDOR, "Acer"),
+		     DMI_MATCH(DMI_PRODUCT_NAME, "AOD255"),
+		},
+	},
+
+	/*
 	 * The wireless hotkey does not work on those machines when
 	 * returning true for _OSI("Windows 2012")
 	 */
@@ -473,9 +485,9 @@ static const struct dmi_system_id acpi_osi_dmi_table[] __initconst = {
 	 */
 
 	/*
-	 * Without this this EEEpc exports a non working WMI interface, with
-	 * this it exports a working "good old" eeepc_laptop interface, fixing
-	 * both brightness control, and rfkill not working.
+	 * Without this EEEpc exports a non working WMI interface, with
+	 * this it exports a working "good old" eeepc_laptop interface,
+	 * fixing both brightness control, and rfkill not working.
 	 */
 	{
 	.callback = dmi_enable_osi_linux,

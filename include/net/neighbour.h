@@ -28,6 +28,7 @@
 #include <linux/err.h>
 #include <linux/sysctl.h>
 #include <linux/workqueue.h>
+#include <linux/android_kabi.h>
 #include <net/rtnetlink.h>
 
 /*
@@ -84,6 +85,8 @@ struct neigh_parms {
 	int	reachable_time;
 	int	data[NEIGH_VAR_DATA_MAX];
 	DECLARE_BITMAP(data_state, NEIGH_VAR_DATA_MAX);
+
+	ANDROID_KABI_RESERVE(1);
 };
 
 static inline void neigh_var_set(struct neigh_parms *p, int index, int val)
@@ -158,6 +161,9 @@ struct neighbour {
 	struct list_head	gc_list;
 	struct rcu_head		rcu;
 	struct net_device	*dev;
+
+	ANDROID_KABI_RESERVE(1);
+
 	u8			primary_key[0];
 } __randomize_layout;
 
@@ -175,7 +181,7 @@ struct pneigh_entry {
 	struct net_device	*dev;
 	u8			flags;
 	u8			protocol;
-	u8			key[0];
+	u8			key[];
 };
 
 /*
@@ -205,6 +211,7 @@ struct neigh_table {
 	int			(*pconstructor)(struct pneigh_entry *);
 	void			(*pdestructor)(struct pneigh_entry *);
 	void			(*proxy_redo)(struct sk_buff *skb);
+	int			(*is_multicast)(const void *pkey);
 	bool			(*allow_add)(const struct net_device *dev,
 					     struct netlink_ext_ack *extack);
 	char			*id;
@@ -226,6 +233,8 @@ struct neigh_table {
 	struct neigh_statistics	__percpu *stats;
 	struct neigh_hash_table __rcu *nht;
 	struct pneigh_entry	**phash_buckets;
+
+	ANDROID_KABI_RESERVE(1);
 };
 
 enum {
@@ -387,13 +396,12 @@ void *neigh_seq_next(struct seq_file *, void *, loff_t *);
 void neigh_seq_stop(struct seq_file *, void *);
 
 int neigh_proc_dointvec(struct ctl_table *ctl, int write,
-			void __user *buffer, size_t *lenp, loff_t *ppos);
+			void *buffer, size_t *lenp, loff_t *ppos);
 int neigh_proc_dointvec_jiffies(struct ctl_table *ctl, int write,
-				void __user *buffer,
+				void *buffer,
 				size_t *lenp, loff_t *ppos);
 int neigh_proc_dointvec_ms_jiffies(struct ctl_table *ctl, int write,
-				   void __user *buffer,
-				   size_t *lenp, loff_t *ppos);
+				   void *buffer, size_t *lenp, loff_t *ppos);
 
 int neigh_sysctl_register(struct net_device *dev, struct neigh_parms *p,
 			  proc_handler *proc_handler);

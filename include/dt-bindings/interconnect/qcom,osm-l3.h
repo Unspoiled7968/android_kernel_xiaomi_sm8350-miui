@@ -14,4 +14,7 @@
 #define SLAVE_OSM_L3_MISC		5
 #define SLAVE_OSM_L3_GPU		6
 
+#define MASTER_EPSS_L3_APPS	0
+#define SLAVE_EPSS_L3_SHARED	1
+
 #endif

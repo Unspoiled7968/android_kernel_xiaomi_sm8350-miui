@@ -81,6 +81,7 @@ MODULE_ALIAS("wmi:676AA15E-6A47-4D9F-A2CC-1E6D18D14026");
 
 enum acer_wmi_event_ids {
 	WMID_HOTKEY_EVENT = 0x1,
+	WMID_BACKLIGHT_EVENT = 0x4,
 	WMID_ACCEL_OR_KBD_DOCK_EVENT = 0x5,
 };
 
@@ -1059,7 +1060,7 @@ static acpi_status WMID_get_u32(u32 *value, u32 cap)
 			*value = tmp & 0x1;
 			return 0;
 		}
-		/* fall through */
+		fallthrough;
 	default:
 		return AE_ERROR;
 	}
@@ -1384,7 +1385,7 @@ static acpi_status get_u32(u32 *value, u32 cap)
 			status = AMW0_get_u32(value, cap);
 			break;
 		}
-		/* fall through */
+		fallthrough;
 	case ACER_WMID:
 		status = WMID_get_u32(value, cap);
 		break;
@@ -1427,7 +1428,7 @@ static acpi_status set_u32(u32 value, u32 cap)
 
 				return AMW0_set_u32(value, cap);
 			}
-			/* fall through */
+			fallthrough;
 		case ACER_WMID:
 			return WMID_set_u32(value, cap);
 		case ACER_WMID_v2:
@@ -1437,7 +1438,7 @@ static acpi_status set_u32(u32 value, u32 cap)
 				return wmid_v2_set_u32(value, cap);
 			else if (wmi_has_guid(WMID_GUID2))
 				return WMID_set_u32(value, cap);
-			/* fall through */
+			fallthrough;
 		default:
 			return AE_BAD_PARAMETER;
 		}
@@ -1889,6 +1890,9 @@ static void acer_wmi_notify(u32 value, void *context)
 			}
 			sparse_keymap_report_event(acer_wmi_input_dev, scancode, 1, true);
 		}
+		break;
+	case WMID_BACKLIGHT_EVENT:
+		/* Already handled by acpi-video */
 		break;
 	case WMID_ACCEL_OR_KBD_DOCK_EVENT:
 		acer_gsensor_event();

@@ -2,6 +2,7 @@
 /*
  * Copyright (C) 2019 HUAWEI, Inc.
  *             https://www.huawei.com/
+ * Created by Gao Xiang <gaoxiang25@huawei.com>
  */
 #include "compress.h"
 #include <linux/module.h>
@@ -23,7 +24,7 @@ struct z_erofs_decompressor {
 	 */
 	int (*prepare_destpages)(struct z_erofs_decompress_req *rq,
 				 struct list_head *pagepool);
-	int (*decompress)(struct z_erofs_decompress_req *rq, u8 *dst);
+	int (*decompress)(struct z_erofs_decompress_req *rq, u8 *out);
 	char *name;
 };
 
@@ -124,8 +125,8 @@ static int z_erofs_lz4_prepare_destpages(struct z_erofs_decompress_req *rq,
 }
 
 static void *z_erofs_handle_inplace_io(struct z_erofs_decompress_req *rq,
-			void *inpage, void *out, unsigned int *inputmargin,
-			int *maptype, bool support_0padding)
+		void *inpage, void *out, unsigned int *inputmargin, int *maptype,
+		bool support_0padding)
 {
 	unsigned int nrpages_in, nrpages_out;
 	unsigned int ofull, oend, inputsize, total, i;
@@ -356,7 +357,6 @@ static int z_erofs_decompress_generic(struct z_erofs_decompress_req *rq,
 
 dstmap_out:
 	ret = alg->decompress(rq, dst);
-
 	if (!dst_maptype)
 		kunmap_atomic(dst);
 	else if (dst_maptype == 2)
@@ -410,3 +410,4 @@ int z_erofs_decompress(struct z_erofs_decompress_req *rq,
 		return z_erofs_shifted_transform(rq, pagepool);
 	return z_erofs_decompress_generic(rq, pagepool);
 }
+

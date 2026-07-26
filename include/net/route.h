@@ -159,7 +159,7 @@ static inline struct rtable *ip_route_output_ports(struct net *net, struct flowi
 			   sk ? inet_sk_flowi_flags(sk) : 0,
 			   daddr, saddr, dport, sport, sock_net_uid(net, sk));
 	if (sk)
-		security_sk_classify_flow(sk, flowi4_to_flowi(fl4));
+		security_sk_classify_flow(sk, flowi4_to_flowi_common(fl4));
 	return ip_route_output_flow(net, fl4, sk);
 }
 
@@ -184,6 +184,10 @@ int ip_route_input_noref(struct sk_buff *skb, __be32 dst, __be32 src,
 int ip_route_input_rcu(struct sk_buff *skb, __be32 dst, __be32 src,
 		       u8 tos, struct net_device *devin,
 		       struct fib_result *res);
+
+int ip_route_use_hint(struct sk_buff *skb, __be32 dst, __be32 src,
+		      u8 tos, struct net_device *devin,
+		      const struct sk_buff *hint);
 
 static inline int ip_route_input(struct sk_buff *skb, __be32 dst, __be32 src,
 				 u8 tos, struct net_device *devin)
@@ -221,7 +225,7 @@ int ip_rt_ioctl(struct net *, unsigned int cmd, struct rtentry *rt);
 void ip_rt_get_source(u8 *src, struct sk_buff *skb, struct rtable *rt);
 struct rtable *rt_dst_alloc(struct net_device *dev,
 			     unsigned int flags, u16 type,
-			     bool nopolicy, bool noxfrm, bool will_cache);
+			     bool nopolicy, bool noxfrm);
 struct rtable *rt_dst_clone(struct net_device *dev, struct rtable *rt);
 
 struct in_ifaddr;
@@ -312,7 +316,7 @@ static inline struct rtable *ip_route_connect(struct flowi4 *fl4,
 		ip_rt_put(rt);
 		flowi4_update_output(fl4, oif, tos, fl4->daddr, fl4->saddr);
 	}
-	security_sk_classify_flow(sk, flowi4_to_flowi(fl4));
+	security_sk_classify_flow(sk, flowi4_to_flowi_common(fl4));
 	return ip_route_output_flow(net, fl4, sk);
 }
 
@@ -328,7 +332,7 @@ static inline struct rtable *ip_route_newports(struct flowi4 *fl4, struct rtable
 		flowi4_update_output(fl4, sk->sk_bound_dev_if,
 				     RT_CONN_FLAGS(sk), fl4->daddr,
 				     fl4->saddr);
-		security_sk_classify_flow(sk, flowi4_to_flowi(fl4));
+		security_sk_classify_flow(sk, flowi4_to_flowi_common(fl4));
 		return ip_route_output_flow(sock_net(sk), fl4, sk);
 	}
 	return rt;

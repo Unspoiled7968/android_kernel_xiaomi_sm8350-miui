@@ -32,6 +32,7 @@
 #include <linux/tty.h>
 #include <linux/tty_flip.h>
 #include <linux/mm.h>
+#include <linux/nospec.h>
 #include <linux/string.h>
 #include <linux/init.h>
 #include <linux/slab.h>
@@ -1460,7 +1461,7 @@ static void kbd_keycode(unsigned int keycode, int down, int hw_raw)
 		rc = atomic_notifier_call_chain(&keyboard_notifier_list,
 						KBD_UNICODE, &param);
 		if (rc != NOTIFY_STOP)
-			if (down && !raw_mode)
+			if (down && !(raw_mode || kbd->kbdmode == VC_OFF))
 				k_unicode(vc, keysym, !down);
 		return;
 	}
@@ -2022,7 +2023,7 @@ int vt_do_kdgkb_ioctl(int cmd, struct kbsentry __user *user_kdgkb, int perm)
 		goto reterr;
 	}
 	kbs->kb_string[sizeof(kbs->kb_string)-1] = '\0';
-	i = kbs->kb_func;
+	i = array_index_nospec(kbs->kb_func, MAX_NR_FUNC);
 
 	switch (cmd) {
 	case KDGKBSENT: {

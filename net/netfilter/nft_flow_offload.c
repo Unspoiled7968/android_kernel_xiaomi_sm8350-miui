@@ -90,7 +90,7 @@ static void nft_flow_offload_eval(const struct nft_expr *expr,
 
 	switch (ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple.dst.protonum) {
 	case IPPROTO_TCP:
-		tcph = skb_header_pointer(pkt->skb, pkt->xt.thoff,
+		tcph = skb_header_pointer(pkt->skb, nft_thoff(pkt),
 					  sizeof(_tcph), &_tcph);
 		if (unlikely(!tcph || tcph->fin || tcph->rst))
 			goto out;
@@ -102,7 +102,7 @@ static void nft_flow_offload_eval(const struct nft_expr *expr,
 	}
 
 	if (nf_ct_ext_exist(ct, NF_CT_EXT_HELPER) ||
-	    ct->status & IPS_SEQ_ADJUST)
+	    ct->status & (IPS_SEQ_ADJUST | IPS_NAT_CLASH))
 		goto out;
 
 	if (!nf_ct_is_confirmed(ct))
@@ -115,9 +115,12 @@ static void nft_flow_offload_eval(const struct nft_expr *expr,
 	if (nft_flow_route(pkt, ct, &route, dir) < 0)
 		goto err_flow_route;
 
-	flow = flow_offload_alloc(ct, &route);
+	flow = flow_offload_alloc(ct);
 	if (!flow)
 		goto err_flow_alloc;
+
+	if (flow_offload_route_init(flow, &route) < 0)
+		goto err_flow_add;
 
 	if (tcph) {
 		ct->proto.tcp.seen[0].flags |= IP_CT_TCP_FLAG_BE_LIBERAL;
@@ -290,3 +293,4 @@ module_exit(nft_flow_offload_module_exit);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Pablo Neira Ayuso <pablo@netfilter.org>");
 MODULE_ALIAS_NFT_EXPR("flow_offload");
+MODULE_DESCRIPTION("nftables hardware flow offload module");

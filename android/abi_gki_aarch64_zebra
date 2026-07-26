@@ -1,17 +1,7 @@
 [abi_symbol_list]
-# commonly used symbols
-
-# for wifi
-  mmc_sw_reset
-  nla_reserve
-  nla_append
-  prandom_seed
-  regulatory_set_wiphy_regd_sync_rtnl
-  cfg80211_cac_event
-  cfg80211_radar_event
-  cfg80211_chandef_valid
-  kobject_add
-  sock_wfree
-  dev_change_flags
-  netdev_master_upper_dev_get
-  prandom_bytes
+  __traceiter_android_vh_wakeup_bypass
+  __tracepoint_android_vh_wakeup_bypass
+  tty_termios_hw_change
+  usb_bus_idr
+  usb_bus_idr_lock
+  phy_device_free

@@ -18,7 +18,7 @@ struct comedi_subdevice;
 struct device;
 
 int do_rangeinfo_ioctl(struct comedi_device *dev,
-		       struct comedi_rangeinfo __user *arg);
+		       struct comedi_rangeinfo *it);
 struct comedi_device *comedi_alloc_board_minor(struct device *hardware_device);
 void comedi_release_hardware_device(struct device *hardware_device);
 int comedi_alloc_subdevice_minor(struct comedi_subdevice *s);
@@ -32,8 +32,8 @@ void comedi_buf_map_get(struct comedi_buf_map *bm);
 int comedi_buf_map_put(struct comedi_buf_map *bm);
 int comedi_buf_map_access(struct comedi_buf_map *bm, unsigned long offset,
 			  void *buf, int len, int write);
-struct comedi_buf_map *comedi_buf_map_from_subdev_get(
-		struct comedi_subdevice *s);
+struct comedi_buf_map *
+comedi_buf_map_from_subdev_get(struct comedi_subdevice *s);
 unsigned int comedi_buf_write_n_available(struct comedi_subdevice *s);
 unsigned int comedi_buf_write_n_allocated(struct comedi_subdevice *s);
 void comedi_device_cancel_all(struct comedi_device *dev);
@@ -50,6 +50,7 @@ extern struct mutex comedi_drivers_list_lock;
 int insn_inval(struct comedi_device *dev, struct comedi_subdevice *s,
 	       struct comedi_insn *insn, unsigned int *data);
 
+void comedi_device_detach_locked(struct comedi_device *dev);
 void comedi_device_detach(struct comedi_device *dev);
 int comedi_device_attach(struct comedi_device *dev,
 			 struct comedi_devconfig *it);

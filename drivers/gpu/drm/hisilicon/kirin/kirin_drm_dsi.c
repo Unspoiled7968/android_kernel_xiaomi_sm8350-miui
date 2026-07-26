@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * DesignWare MIPI DSI Host Controller v1.02 driver
  *
@@ -8,11 +9,6 @@
  *	<shizongxuan@huawei.com>
  *	<zhangxiubin@huawei.com>
  *	<lvda3@hisilicon.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
  */
 #include <linux/clk.h>
 #include <linux/component.h>
@@ -60,27 +56,20 @@ void dsi_set_output_client(struct drm_device *dev)
 	/*
 	 * set the proper dsi output client
 	 */
-	client = connector->status == connector_status_connected ?
-		OUT_HDMI : OUT_PANEL;
+	client = connector->status == connector_status_connected ? OUT_HDMI :
+								   OUT_PANEL;
 	if (client != dsi->cur_client) {
-		/* associate bridge and dsi encoder */
-		if (client == OUT_HDMI)
-			encoder->bridge = dsi->bridge;
-		else
-			encoder->bridge = NULL;
 		/*
 		 * set the switch ic to select the HDMI or MIPI_DSI
-		*/
-		if (KIRIN960_DSI == hisi_dsi_ops->version) {
+		 */
+		if (hisi_dsi_ops->version == KIRIN960_DSI)
 			gpiod_set_value_cansleep(dsi->gpio_mux, client);
-		}else if (KIRIN620_DSI == hisi_dsi_ops->version) {
-			/*the gpio0_1*/
-		}
+
 		dsi->cur_client = client;
 		/* let the userspace know panel connector status has changed */
 		drm_sysfs_hotplug_event(dev);
-		DRM_INFO("client change to %s\n", client == OUT_HDMI ?
-				 "HDMI" : "panel");
+		DRM_INFO("client change to %s\n",
+			 client == OUT_HDMI ? "HDMI" : "panel");
 	}
 
 	mutex_unlock(&dev->mode_config.mutex);
@@ -91,7 +80,7 @@ static int dsi_connector_get_modes(struct drm_connector *connector)
 {
 	struct dw_dsi *dsi = connector_to_dsi(connector);
 
-	return drm_panel_get_modes(dsi->panel);
+	return drm_panel_get_modes(dsi->panel, connector);
 }
 
 static enum drm_mode_status
@@ -123,8 +112,8 @@ dsi_connector_detect(struct drm_connector *connector, bool force)
 	struct dw_dsi *dsi = connector_to_dsi(connector);
 	enum drm_connector_status status;
 
-	status = dsi->cur_client == OUT_PANEL ?	connector_status_connected :
-		connector_status_disconnected;
+	status = dsi->cur_client == OUT_PANEL ? connector_status_connected :
+						connector_status_disconnected;
 
 	return status;
 }
@@ -151,8 +140,7 @@ static int dsi_connector_init(struct drm_device *dev, struct dw_dsi *dsi)
 	int ret;
 
 	connector->polled = DRM_CONNECTOR_POLL_HPD;
-	drm_connector_helper_add(connector,
-				 &dsi_connector_helper_funcs);
+	drm_connector_helper_add(connector, &dsi_connector_helper_funcs);
 
 	ret = drm_connector_init(dev, &dsi->connector,
 				 &dsi_atomic_connector_funcs,
@@ -164,20 +152,16 @@ static int dsi_connector_init(struct drm_device *dev, struct dw_dsi *dsi)
 	if (ret)
 		return ret;
 
-	ret = drm_panel_attach(dsi->panel, connector);
-	if (ret)
-		return ret;
-
 	DRM_INFO("connector init\n");
 	return 0;
 }
+
 /****************************************************************************/
 
 /***************************for the encoder_helper_funcs****************************************/
 static const struct drm_encoder_funcs dw_encoder_funcs = {
 	.destroy = drm_encoder_cleanup,
 };
-
 
 static int dsi_encoder_atomic_check(struct drm_encoder *encoder,
 				    struct drm_crtc_state *crtc_state,
@@ -187,11 +171,12 @@ static int dsi_encoder_atomic_check(struct drm_encoder *encoder,
 	return 0;
 }
 
-static enum drm_mode_status dsi_encoder_mode_valid(struct drm_encoder *encoder,
-					const struct drm_display_mode *mode)
+static enum drm_mode_status
+dsi_encoder_mode_valid(struct drm_encoder *encoder,
+		       const struct drm_display_mode *mode)
 
 {
-	 return hisi_dsi_ops->encoder_valid(encoder,mode);
+	return hisi_dsi_ops->encoder_valid(encoder, mode);
 }
 
 static void dsi_encoder_mode_set(struct drm_encoder *encoder,
@@ -207,14 +192,12 @@ static void dsi_encoder_enable(struct drm_encoder *encoder)
 {
 	struct dw_dsi *dsi = encoder_to_dsi(encoder);
 
-
-
 	if (dsi->enable)
 		return;
 
 	hisi_dsi_ops->encoder_enable(encoder);
 
-	if (KIRIN960_DSI == hisi_dsi_ops->version) {
+	if (hisi_dsi_ops->version == KIRIN960_DSI) {
 		/* turn on panel */
 		if (dsi->panel && drm_panel_prepare(dsi->panel))
 			DRM_ERROR("failed to prepare panel\n");
@@ -224,7 +207,6 @@ static void dsi_encoder_enable(struct drm_encoder *encoder)
 		/* turn on panel's back light */
 		if (dsi->panel && drm_panel_enable(dsi->panel))
 			DRM_ERROR("failed to enable panel\n");
-
 	}
 
 	dsi->enable = true;
@@ -249,8 +231,8 @@ static void dsi_encoder_disable(struct drm_encoder *encoder)
 		return;
 
 	dw_dsi_set_mode(dsi, DSI_COMMAND_MODE);
-	
-	if (KIRIN960_DSI == hisi_dsi_ops->version) {
+
+	if (hisi_dsi_ops->version == KIRIN960_DSI) {
 		/* turn off panel's backlight */
 		if (dsi->panel && drm_panel_disable(dsi->panel))
 			DRM_ERROR("failed to disable panel\n");
@@ -268,11 +250,11 @@ static void dsi_encoder_disable(struct drm_encoder *encoder)
 }
 
 static const struct drm_encoder_helper_funcs dw_encoder_helper_funcs = {
-	.atomic_check	= dsi_encoder_atomic_check,
-	.mode_valid	= dsi_encoder_mode_valid,
-	.mode_set	= dsi_encoder_mode_set,
-	.enable		= dsi_encoder_enable,
-	.disable	= dsi_encoder_disable
+	.atomic_check = dsi_encoder_atomic_check,
+	.mode_valid = dsi_encoder_mode_valid,
+	.mode_set = dsi_encoder_mode_set,
+	.enable = dsi_encoder_enable,
+	.disable = dsi_encoder_disable
 };
 
 /****************************************************************************/
@@ -283,7 +265,8 @@ static int dsi_bridge_init(struct drm_device *dev, struct dw_dsi *dsi)
 	int ret;
 
 	/* associate the bridge to dsi encoder */
-	ret = drm_bridge_attach(encoder, bridge, NULL);
+	ret = drm_bridge_attach(encoder, bridge, NULL, 0);
+
 	if (ret) {
 		DRM_ERROR("failed to attach external bridge\n");
 		return ret;
@@ -292,8 +275,7 @@ static int dsi_bridge_init(struct drm_device *dev, struct dw_dsi *dsi)
 	return 0;
 }
 
-static int dw_drm_encoder_init(struct device *dev,
-			       struct drm_device *drm_dev,
+static int dw_drm_encoder_init(struct device *dev, struct drm_device *drm_dev,
 			       struct drm_encoder *encoder)
 {
 	int ret;
@@ -324,7 +306,7 @@ static int dsi_bind(struct device *dev, struct device *master, void *data)
 	struct drm_device *drm_dev = data;
 	int ret;
 
-	DRM_INFO("+. \n");
+	DRM_INFO("+.\n");
 	ret = dw_drm_encoder_init(dev, drm_dev, &dsi->encoder);
 	if (ret)
 		return ret;
@@ -335,17 +317,17 @@ static int dsi_bind(struct device *dev, struct device *master, void *data)
 			return ret;
 	}
 
-	if (KIRIN960_DSI == hisi_dsi_ops->version) {
+	if (hisi_dsi_ops->version == KIRIN960_DSI) {
 		if (dsi->panel) {
 			ret = dsi_connector_init(drm_dev, dsi);
 			if (ret)
 				return ret;
 		}
-	}else if (KIRIN620_DSI == hisi_dsi_ops->version) {
+	} else if (hisi_dsi_ops->version == KIRIN620_DSI) {
 		/*the panel for the kirin620 drm have not support*/
 	}
 
-	DRM_INFO("-. \n");
+	DRM_INFO("-.\n");
 	return 0;
 }
 
@@ -355,11 +337,9 @@ static void dsi_unbind(struct device *dev, struct device *master, void *data)
 }
 
 static const struct component_ops dsi_ops = {
-	.bind	= dsi_bind,
-	.unbind	= dsi_unbind,
+	.bind = dsi_bind,
+	.unbind = dsi_unbind,
 };
-
-
 
 static int dsi_probe(struct platform_device *pdev)
 {
@@ -369,9 +349,9 @@ static int dsi_probe(struct platform_device *pdev)
 	struct dsi_hw_ctx *ctx;
 	int ret;
 
-	hisi_dsi_ops =  (struct kirin_dsi_ops *) of_device_get_match_data(dev);
+	hisi_dsi_ops = (struct kirin_dsi_ops *)of_device_get_match_data(dev);
 
-	DRM_INFO("+. \n");
+	DRM_INFO("+.\n");
 	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
 	if (!data) {
 		DRM_ERROR("failed to allocate dsi data.\n");
@@ -381,13 +361,12 @@ static int dsi_probe(struct platform_device *pdev)
 	ctx = &data->ctx;
 	dsi->ctx = ctx;
 
-	if (NULL == hisi_dsi_ops) {
+	if (hisi_dsi_ops == NULL)
 		DRM_ERROR("hisi_dsi_ops is not bind\n");
-	}
 	ret = hisi_dsi_ops->host_init(dev, dsi);
 	if (ret)
 		return ret;
-	
+
 	ret = hisi_dsi_ops->parse_dt(pdev, dsi);
 	if (ret)
 		goto err_host_unregister;
@@ -398,13 +377,14 @@ static int dsi_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_host_unregister;
 
-	DRM_INFO("-. \n");
+	DRM_INFO("-.\n");
 	return 0;
 
 err_host_unregister:
 	mipi_dsi_host_unregister(&dsi->host);
 	return ret;
 }
+
 static int dsi_remove(struct platform_device *pdev)
 {
 	component_del(&pdev->dev, &dsi_ops);
@@ -425,7 +405,7 @@ static const struct of_device_id dsi_of_match[] = {
 		.data = &kirin_dsi_620,
 	},
 #endif
-	{ /* end node */}
+	{ /* end node */ }
 };
 MODULE_DEVICE_TABLE(of, dsi_of_match);
 

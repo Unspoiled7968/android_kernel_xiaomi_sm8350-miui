@@ -13,6 +13,7 @@
 #include <linux/device.h>
 #include <linux/mutex.h>
 #include <linux/module.h>
+#include <linux/mod_devicetable.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/stat.h>
@@ -118,7 +119,7 @@ static bool tsys01_crc_valid(u16 *n_prom)
 	u8 sum = 0;
 
 	for (cnt = 0; cnt < TSYS01_PROM_WORDS_NB; cnt++)
-		sum += ((n_prom[0] >> 8) + (n_prom[0] & 0xFF));
+		sum += ((n_prom[cnt] >> 8) + (n_prom[cnt] & 0xFF));
 
 	return (sum == 0);
 }
@@ -160,7 +161,6 @@ static int tsys01_probe(struct iio_dev *indio_dev, struct device *dev)
 
 	indio_dev->info = &tsys01_info;
 	indio_dev->name = dev->driver->name;
-	indio_dev->dev.parent = dev;
 	indio_dev->modes = INDIO_DIRECT_MODE;
 	indio_dev->channels = tsys01_channels;
 	indio_dev->num_channels = ARRAY_SIZE(tsys01_channels);
@@ -223,7 +223,7 @@ static struct i2c_driver tsys01_driver = {
 	.id_table = tsys01_id,
 	.driver = {
 		   .name = "tsys01",
-		   .of_match_table = of_match_ptr(tsys01_of_match),
+		   .of_match_table = tsys01_of_match,
 		   },
 };
 

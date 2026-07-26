@@ -28,8 +28,9 @@
 	};
 
 	leds {
-		pinctrl-names = "default";
 		compatible = "gpio-leds";
+		pinctrl-names = "default";
+		pinctrl-0 = <&spi_quad_pins>;
 
 		power1 {
 			label = "udpu:green:power";
@@ -69,6 +70,7 @@
 		mod-def0-gpio = <&gpiosb 3 GPIO_ACTIVE_LOW>;
 		tx-disable-gpio = <&gpiosb 4 GPIO_ACTIVE_HIGH>;
 		tx-fault-gpio = <&gpiosb 5 GPIO_ACTIVE_HIGH>;
+		maximum-power-milliwatt = <3000>;
 	};
 
 	sfp_eth1: sfp-eth1 {
@@ -78,6 +80,7 @@
 		mod-def0-gpio = <&gpiosb 8 GPIO_ACTIVE_LOW>;
 		tx-disable-gpio = <&gpiosb 9 GPIO_ACTIVE_HIGH>;
 		tx-fault-gpio = <&gpiosb 10 GPIO_ACTIVE_HIGH>;
+		maximum-power-milliwatt = <3000>;
 	};
 };
 
@@ -94,8 +97,6 @@
 
 &spi0 {
 	status = "okay";
-	pinctrl-names = "default";
-	pinctrl-0 = <&spi_quad_pins>;
 
 	m25p80@0 {
 		compatible = "jedec,spi-nor";
@@ -115,16 +116,40 @@
 	};
 };
 
+&spi_quad_pins {
+	function = "gpio";
+};
+
+&pinctrl_nb {
+	i2c1_recovery_pins: i2c1-recovery-pins {
+		groups = "i2c1";
+		function = "gpio";
+	};
+
+	i2c2_recovery_pins: i2c2-recovery-pins {
+		groups = "i2c2";
+		function = "gpio";
+	};
+};
+
 &i2c0 {
 	status = "okay";
-	pinctrl-names = "default";
+	pinctrl-names = "default", "recovery";
 	pinctrl-0 = <&i2c1_pins>;
+	pinctrl-1 = <&i2c1_recovery_pins>;
+	/delete-property/mrvl,i2c-fast-mode;
+	scl-gpios = <&gpionb 0 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+	sda-gpios = <&gpionb 1 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
 };
 
 &i2c1 {
 	status = "okay";
-	pinctrl-names = "default";
+	pinctrl-names = "default", "recovery";
 	pinctrl-0 = <&i2c2_pins>;
+	pinctrl-1 = <&i2c2_recovery_pins>;
+	/delete-property/mrvl,i2c-fast-mode;
+	scl-gpios = <&gpionb 2 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+	sda-gpios = <&gpionb 3 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
 
 	lm75@48 {
 		status = "okay";

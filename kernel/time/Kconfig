@@ -62,6 +62,15 @@ config PRINT_SUSPEND_EPOCH_QGKI
 	  synchronize various subsystem timestamps and have an unique
 	  timestamp to correlate between various subsystems.
 
+# Select to handle posix CPU timers from task_work
+# and not from the timer interrupt context
+config HAVE_POSIX_CPU_TIMERS_TASK_WORK
+	bool
+
+config POSIX_CPU_TIMERS_TASK_WORK
+	bool
+	default y if POSIX_TIMERS && HAVE_POSIX_CPU_TIMERS_TASK_WORK
+
 if GENERIC_CLOCKEVENTS
 menu "Timers subsystem"
 

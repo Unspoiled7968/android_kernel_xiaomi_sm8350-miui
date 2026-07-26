@@ -645,6 +645,24 @@ static struct configfs_item_operations serial_item_ops = {
 	.release	= serial_attr_release,
 };
 
+#ifdef CONFIG_U_SERIAL_CONSOLE
+
+static ssize_t f_serial_console_store(struct config_item *item,
+		const char *page, size_t count)
+{
+	return gserial_set_console(to_f_serial_opts(item)->port_num,
+				   page, count);
+}
+
+static ssize_t f_serial_console_show(struct config_item *item, char *page)
+{
+	return gserial_get_console(to_f_serial_opts(item)->port_num, page);
+}
+
+CONFIGFS_ATTR(f_serial_, console);
+
+#endif /* CONFIG_U_SERIAL_CONSOLE */
+
 static ssize_t f_serial_port_num_show(struct config_item *item, char *page)
 {
 	return sprintf(page, "%u\n", to_f_serial_opts(item)->port_num);
@@ -653,6 +671,9 @@ static ssize_t f_serial_port_num_show(struct config_item *item, char *page)
 CONFIGFS_ATTR_RO(f_serial_, port_num);
 
 static struct configfs_attribute *acm_attrs[] = {
+#ifdef CONFIG_U_SERIAL_CONSOLE
+	&f_serial_attr_console,
+#endif
 	&f_serial_attr_port_num,
 	NULL,
 };
@@ -703,10 +724,26 @@ static void gser_free(struct usb_function *f)
 
 static void gser_unbind(struct usb_configuration *c, struct usb_function *f)
 {
-	struct f_gser *gser = func_to_gser(f);
+	struct f_gser	*gser = func_to_gser(f);
 
+	/* Ensure port is disconnected before unbinding */
+	gserial_disconnect(&gser->port);
 	usb_free_all_descriptors(f);
 	gs_free_req(gser->notify, gser->notify_req);
+}
+
+static void gser_resume(struct usb_function *f)
+{
+	struct f_gser *gser = func_to_gser(f);
+
+	gserial_resume(&gser->port);
+}
+
+static void gser_suspend(struct usb_function *f)
+{
+	struct f_gser *gser = func_to_gser(f);
+
+	gserial_suspend(&gser->port);
 }
 
 static struct usb_function *gser_alloc(struct usb_function_instance *fi)
@@ -735,6 +772,8 @@ static struct usb_function *gser_alloc(struct usb_function_instance *fi)
 	gser->port.connect = gser_connect;
 	gser->port.disconnect = gser_disconnect;
 	gser->port.send_break = gser_send_break;
+	gser->port.func.resume = gser_resume;
+	gser->port.func.suspend = gser_suspend;
 
 	return &gser->port.func;
 }

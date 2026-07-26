@@ -42,6 +42,7 @@ struct msm_function {
  * @mux_bit:              Offset in @ctl_reg for the pinmux function selection.
  * @pull_bit:             Offset in @ctl_reg for the bias configuration.
  * @drv_bit:              Offset in @ctl_reg for the drive strength configuration.
+ * @od_bit:               Offset in @ctl_reg for controlling open drain.
  * @oe_bit:               Offset in @ctl_reg for controlling output enable.
  * @in_bit:               Offset in @io_reg for the input bit value.
  * @out_bit:              Offset in @io_reg for the output bit value.
@@ -85,6 +86,7 @@ struct msm_pingroup {
 
 	unsigned egpio_enable:5;
 	unsigned egpio_present:5;
+	unsigned od_bit:5;
 	unsigned oe_bit:5;
 	unsigned in_bit:5;
 	unsigned out_bit:5;
@@ -156,10 +158,14 @@ struct msm_gpio_wakeirq_map {
  * @ngpio:	    The number of pingroups the driver should expose as GPIOs.
  * @pull_no_keeper: The SoC does not support keeper bias.
  * @wakeirq_map:    The map of wakeup capable GPIOs and the pin at PDC/MPM
- * @nwakeirq_map:   The number of entries in @hierarchy_map
+ * @nwakeirq_map:   The number of entries in @wakeirq_map
  * @no_wake_gpios:  The list of non-wakeup capable GPIOs
  * @n_no_wake_gpios:The number of entries in non-wakeup capable gpios
  * @dir_conn:       An array describing all the pins directly connected to GIC.
+ * @wakeirq_dual_edge_errata: If true then GPIOs using the wakeirq_map need
+ *                            to be aware that their parent can't handle dual
+ *                            edge interrupts.
+ * @gpio_func: Which function number is GPIO (usually 0).
  */
 struct msm_pinctrl_soc_data {
 	const struct pinctrl_pin_desc *pins;
@@ -182,6 +188,8 @@ struct msm_pinctrl_soc_data {
 	const struct msm_spare_tlmm *spare_regs;
 	unsigned int nspare_regs;
 	struct msm_dir_conn *dir_conn;
+	bool wakeirq_dual_edge_errata;
+	unsigned int gpio_func;
 };
 
 extern const struct dev_pm_ops msm_pinctrl_dev_pm_ops;

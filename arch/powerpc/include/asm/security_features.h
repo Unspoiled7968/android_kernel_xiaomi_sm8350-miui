@@ -68,6 +68,8 @@ static inline enum stf_barrier_type stf_barrier_type_get(void) { return STF_BARR
 // bcctr 2,0,0 triggers a hardware assisted count cache flush
 #define SEC_FTR_BCCTR_FLUSH_ASSIST	0x0000000000000800ull
 
+// bcctr 2,0,0 triggers a hardware assisted link stack flush
+#define SEC_FTR_BCCTR_LINK_FLUSH_ASSIST	0x0000000000002000ull
 
 // Features indicating need for Spectre/Meltdown mitigations
 

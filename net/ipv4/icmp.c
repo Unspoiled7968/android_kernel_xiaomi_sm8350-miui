@@ -357,7 +357,7 @@ static int icmp_glue_bits(void *from, char *to, int offset, int len, int odd,
 
 	csum = skb_copy_and_csum_bits(icmp_param->skb,
 				      icmp_param->offset + offset,
-				      to, len, 0);
+				      to, len);
 
 	skb->csum = csum_block_add(skb->csum, csum, odd);
 	if (icmp_pointers[icmp_param->data.icmph.type].error)
@@ -381,15 +381,15 @@ static void icmp_push_reply(struct icmp_bxm *icmp_param,
 		ip_flush_pending_frames(sk);
 	} else if ((skb = skb_peek(&sk->sk_write_queue)) != NULL) {
 		struct icmphdr *icmph = icmp_hdr(skb);
-		__wsum csum = 0;
+		__wsum csum;
 		struct sk_buff *skb1;
 
+		csum = csum_partial_copy_nocheck((void *)&icmp_param->data,
+						 (char *)icmph,
+						 icmp_param->head_len);
 		skb_queue_walk(&sk->sk_write_queue, skb1) {
 			csum = csum_add(csum, skb1->csum);
 		}
-		csum = csum_partial_copy_nocheck((void *)&icmp_param->data,
-						 (char *)icmph,
-						 icmp_param->head_len, csum);
 		icmph->checksum = csum_fold(csum);
 		skb->ip_summed = CHECKSUM_NONE;
 		ip_push_pending_frames(sk, fl4);
@@ -449,7 +449,7 @@ static void icmp_reply(struct icmp_bxm *icmp_param, struct sk_buff *skb)
 	fl4.flowi4_tos = RT_TOS(ip_hdr(skb)->tos);
 	fl4.flowi4_proto = IPPROTO_ICMP;
 	fl4.flowi4_oif = l3mdev_master_ifindex(skb->dev);
-	security_skb_classify_flow(skb, flowi4_to_flowi(&fl4));
+	security_skb_classify_flow(skb, flowi4_to_flowi_common(&fl4));
 	rt = ip_route_output_key(net, &fl4);
 	if (IS_ERR(rt))
 		goto out_unlock;
@@ -505,7 +505,7 @@ static struct rtable *icmp_route_lookup(struct net *net,
 	route_lookup_dev = icmp_get_route_lookup_dev(skb_in);
 	fl4->flowi4_oif = l3mdev_master_ifindex(route_lookup_dev);
 
-	security_skb_classify_flow(skb_in, flowi4_to_flowi(fl4));
+	security_skb_classify_flow(skb_in, flowi4_to_flowi_common(fl4));
 	rt = ip_route_output_key_hash(net, fl4, skb_in);
 	if (IS_ERR(rt))
 		return rt;
@@ -707,15 +707,16 @@ void __icmp_send(struct sk_buff *skb_in, int type, int code, __be32 info,
 			dev = dev_get_by_index_rcu(net, inet_iif(skb_in));
 
 		if (dev)
-			saddr = inet_select_addr(dev, 0, RT_SCOPE_LINK);
+			saddr = inet_select_addr(dev, iph->saddr,
+						 RT_SCOPE_LINK);
 		else
 			saddr = 0;
 		rcu_read_unlock();
 	}
 
-	tos = icmp_pointers[type].error ? ((iph->tos & IPTOS_TOS_MASK) |
+	tos = icmp_pointers[type].error ? (RT_TOS(iph->tos) |
 					   IPTOS_PREC_INTERNETCONTROL) :
-					  iph->tos;
+					   iph->tos;
 	mark = IP4_REPLY_MARK(net, skb_in->mark);
 
 	if (__ip_options_echo(net, &icmp_param.replyopts.opt.opt, skb_in, opt))
@@ -790,11 +791,12 @@ void icmp_ndo_send(struct sk_buff *skb_in, int type, int code, __be32 info)
 	struct sk_buff *cloned_skb = NULL;
 	struct ip_options opts = { 0 };
 	enum ip_conntrack_info ctinfo;
+	enum ip_conntrack_dir dir;
 	struct nf_conn *ct;
 	__be32 orig_ip;
 
 	ct = nf_ct_get(skb_in, &ctinfo);
-	if (!ct || !(ct->status & IPS_SRC_NAT)) {
+	if (!ct || !(READ_ONCE(ct->status) & IPS_NAT_MASK)) {
 		__icmp_send(skb_in, type, code, info, &opts);
 		return;
 	}
@@ -809,7 +811,8 @@ void icmp_ndo_send(struct sk_buff *skb_in, int type, int code, __be32 info)
 		goto out;
 
 	orig_ip = ip_hdr(skb_in)->saddr;
-	ip_hdr(skb_in)->saddr = ct->tuplehash[0].tuple.src.u3.ip;
+	dir = CTINFO2DIR(ctinfo);
+	ip_hdr(skb_in)->saddr = ct->tuplehash[dir].tuple.src.u3.ip;
 	__icmp_send(skb_in, type, code, info, &opts);
 	ip_hdr(skb_in)->saddr = orig_ip;
 out:
@@ -820,7 +823,7 @@ EXPORT_SYMBOL(icmp_ndo_send);
 
 static void icmp_socket_deliver(struct sk_buff *skb, u32 info)
 {
-	const struct iphdr *iph = (const struct iphdr *) skb->data;
+	const struct iphdr *iph = (const struct iphdr *)skb->data;
 	const struct net_protocol *ipprot;
 	int protocol = iph->protocol;
 
@@ -841,10 +844,12 @@ static void icmp_socket_deliver(struct sk_buff *skb, u32 info)
 
 static bool icmp_tag_validation(int proto)
 {
+	const struct net_protocol *ipprot;
 	bool ok;
 
 	rcu_read_lock();
-	ok = rcu_dereference(inet_protos[proto])->icmp_strict_tag_validation;
+	ipprot = rcu_dereference(inet_protos[proto]);
+	ok = ipprot ? ipprot->icmp_strict_tag_validation : false;
 	rcu_read_unlock();
 	return ok;
 }
@@ -889,7 +894,7 @@ static bool icmp_unreach(struct sk_buff *skb)
 		case ICMP_FRAG_NEEDED:
 			/* for documentation of the ip_no_pmtu_disc
 			 * values please see
-			 * Documentation/networking/ip-sysctl.txt
+			 * Documentation/networking/ip-sysctl.rst
 			 */
 			switch (READ_ONCE(net->ipv4.sysctl_ip_no_pmtu_disc)) {
 			default:
@@ -901,7 +906,7 @@ static bool icmp_unreach(struct sk_buff *skb)
 			case 3:
 				if (!icmp_tag_validation(iph->protocol))
 					goto out;
-				/* fall through */
+				fallthrough;
 			case 0:
 				info = ntohs(icmph->un.frag.mtu);
 			}
@@ -1151,6 +1156,65 @@ error:
 	__ICMP_INC_STATS(net, ICMP_MIB_INERRORS);
 	goto drop;
 }
+
+static bool ip_icmp_error_rfc4884_validate(const struct sk_buff *skb, int off)
+{
+	struct icmp_extobj_hdr *objh, _objh;
+	struct icmp_ext_hdr *exth, _exth;
+	u16 olen;
+
+	exth = skb_header_pointer(skb, off, sizeof(_exth), &_exth);
+	if (!exth)
+		return false;
+	if (exth->version != 2)
+		return true;
+
+	if (exth->checksum &&
+	    csum_fold(skb_checksum(skb, off, skb->len - off, 0)))
+		return false;
+
+	off += sizeof(_exth);
+	while (off < skb->len) {
+		objh = skb_header_pointer(skb, off, sizeof(_objh), &_objh);
+		if (!objh)
+			return false;
+
+		olen = ntohs(objh->length);
+		if (olen < sizeof(_objh))
+			return false;
+
+		off += olen;
+		if (off > skb->len)
+			return false;
+	}
+
+	return true;
+}
+
+void ip_icmp_error_rfc4884(const struct sk_buff *skb,
+			   struct sock_ee_data_rfc4884 *out,
+			   int thlen, int off)
+{
+	int hlen;
+
+	/* original datagram headers: end of icmph to payload (skb->data) */
+	hlen = -skb_transport_offset(skb) - thlen;
+
+	/* per rfc 4884: minimal datagram length of 128 bytes */
+	if (off < 128 || off < hlen)
+		return;
+
+	/* kernel has stripped headers: return payload offset in bytes */
+	off -= hlen;
+	if (off + sizeof(struct icmp_ext_hdr) > skb->len)
+		return;
+
+	out->len = off;
+
+	if (!ip_icmp_error_rfc4884_validate(skb, off))
+		out->flags |= SO_EE_RFC4884_FLAG_INVALID;
+}
+EXPORT_SYMBOL_GPL(ip_icmp_error_rfc4884);
 
 int icmp_err(struct sk_buff *skb, u32 info)
 {

@@ -643,9 +643,8 @@ static int synquacer_spi_probe(struct platform_device *pdev)
 		}
 
 		if (IS_ERR(sspi->clk)) {
-			if (!(PTR_ERR(sspi->clk) == -EPROBE_DEFER))
-				dev_err(&pdev->dev, "clock not found\n");
-			ret = PTR_ERR(sspi->clk);
+			ret = dev_err_probe(&pdev->dev, PTR_ERR(sspi->clk),
+					    "clock not found\n");
 			goto put_spi;
 		}
 
@@ -720,7 +719,7 @@ static int synquacer_spi_probe(struct platform_device *pdev)
 	pm_runtime_set_active(sspi->dev);
 	pm_runtime_enable(sspi->dev);
 
-	ret = devm_spi_register_master(sspi->dev, master);
+	ret = spi_register_master(master);
 	if (ret)
 		goto disable_pm;
 
@@ -741,9 +740,15 @@ static int synquacer_spi_remove(struct platform_device *pdev)
 	struct spi_master *master = platform_get_drvdata(pdev);
 	struct synquacer_spi *sspi = spi_master_get_devdata(master);
 
+	spi_master_get(master);
+
+	spi_unregister_master(master);
+
 	pm_runtime_disable(sspi->dev);
 
 	clk_disable_unprepare(sspi->clk);
+
+	spi_master_put(master);
 
 	return 0;
 }

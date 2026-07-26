@@ -511,7 +511,7 @@ static int process_leaf(struct btrfs_root *root,
 		switch (key.type) {
 		case BTRFS_EXTENT_ITEM_KEY:
 			*num_bytes = key.offset;
-			/* fall through */
+			fallthrough;
 		case BTRFS_METADATA_ITEM_KEY:
 			*bytenr = key.objectid;
 			ret = process_extent_item(fs_info, path, &key, i,
@@ -575,10 +575,9 @@ static int walk_down_tree(struct btrfs_root *root, struct btrfs_path *path,
 				return -EIO;
 			}
 			btrfs_tree_read_lock(eb);
-			btrfs_set_lock_blocking_read(eb);
 			path->nodes[level-1] = eb;
 			path->slots[level-1] = 0;
-			path->locks[level-1] = BTRFS_READ_LOCK_BLOCKING;
+			path->locks[level-1] = BTRFS_READ_LOCK;
 		} else {
 			ret = process_leaf(root, path, bytenr, num_bytes);
 			if (ret)
@@ -804,6 +803,17 @@ int btrfs_ref_tree_mod(struct btrfs_fs_info *fs_info,
 			dump_ref_action(fs_info, ra);
 			kfree(ref);
 			kfree(ra);
+			kfree(re);
+			goto out_unlock;
+		} else if (be->num_refs == 0) {
+			btrfs_err(fs_info,
+		"trying to do action %d for a bytenr that has 0 total references",
+				action);
+			dump_block_entry(fs_info, be);
+			dump_ref_action(fs_info, ra);
+			kfree(ref);
+			kfree(ra);
+			kfree(re);
 			goto out_unlock;
 		}
 
@@ -851,6 +861,7 @@ int btrfs_ref_tree_mod(struct btrfs_fs_info *fs_info,
 "dropping a ref for a root that doesn't have a ref on the block");
 			dump_block_entry(fs_info, be);
 			dump_ref_action(fs_info, ra);
+			rb_erase(&ref->node, &be->refs);
 			kfree(ref);
 			kfree(ra);
 			goto out_unlock;
@@ -994,11 +1005,10 @@ int btrfs_build_ref_tree(struct btrfs_fs_info *fs_info)
 		return -ENOMEM;
 
 	eb = btrfs_read_lock_root_node(fs_info->extent_root);
-	btrfs_set_lock_blocking_read(eb);
 	level = btrfs_header_level(eb);
 	path->nodes[level] = eb;
 	path->slots[level] = 0;
-	path->locks[level] = BTRFS_READ_LOCK_BLOCKING;
+	path->locks[level] = BTRFS_READ_LOCK;
 
 	while (1) {
 		/*

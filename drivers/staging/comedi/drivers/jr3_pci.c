@@ -24,7 +24,7 @@
  * The DSP on the board requires initialization code, which can be
  * loaded by placing it in /lib/firmware/comedi.  The initialization
  * code should be somewhere on the media you got with your card.  One
- * version is available from http://www.comedi.org in the
+ * version is available from https://www.comedi.org in the
  * comedi_nonfree_firmware tarball.  The file is called "jr3pci.idm".
  */
 
@@ -88,6 +88,7 @@ struct jr3_pci_poll_delay {
 struct jr3_pci_dev_private {
 	struct timer_list timer;
 	struct comedi_device *dev;
+	bool timer_enable;
 };
 
 union jr3_pci_single_range {
@@ -612,10 +613,11 @@ static void jr3_pci_poll_dev(struct timer_list *t)
 				delay = sub_delay.max;
 		}
 	}
+	if (devpriv->timer_enable) {
+		devpriv->timer.expires = jiffies + msecs_to_jiffies(delay);
+		add_timer(&devpriv->timer);
+	}
 	spin_unlock_irqrestore(&dev->spinlock, flags);
-
-	devpriv->timer.expires = jiffies + msecs_to_jiffies(delay);
-	add_timer(&devpriv->timer);
 }
 
 static struct jr3_pci_subdev_private *
@@ -764,6 +766,7 @@ static int jr3_pci_auto_attach(struct comedi_device *dev,
 	devpriv->dev = dev;
 	timer_setup(&devpriv->timer, jr3_pci_poll_dev, 0);
 	devpriv->timer.expires = jiffies + msecs_to_jiffies(1000);
+	devpriv->timer_enable = true;
 	add_timer(&devpriv->timer);
 
 	return 0;
@@ -773,8 +776,12 @@ static void jr3_pci_detach(struct comedi_device *dev)
 {
 	struct jr3_pci_dev_private *devpriv = dev->private;
 
-	if (devpriv)
+	if (devpriv) {
+		spin_lock_bh(&dev->spinlock);
+		devpriv->timer_enable = false;
+		spin_unlock_bh(&dev->spinlock);
 		del_timer_sync(&devpriv->timer);
+	}
 
 	comedi_pci_detach(dev);
 }
@@ -810,7 +817,7 @@ static struct pci_driver jr3_pci_pci_driver = {
 };
 module_comedi_pci_driver(jr3_pci_driver, jr3_pci_pci_driver);
 
-MODULE_AUTHOR("Comedi http://www.comedi.org");
+MODULE_AUTHOR("Comedi https://www.comedi.org");
 MODULE_DESCRIPTION("Comedi driver for JR3/PCI force sensor board");
 MODULE_LICENSE("GPL");
 MODULE_FIRMWARE("comedi/jr3pci.idm");

@@ -629,19 +629,6 @@ static s8 b43_rssi_postprocess(struct b43_wldev *dev,
 	return (s8) tmp;
 }
 
-//TODO
-#if 0
-static s8 b43_rssinoise_postprocess(struct b43_wldev *dev, u8 in_rssi)
-{
-	struct b43_phy *phy = &dev->phy;
-	s8 ret;
-
-	ret = b43_rssi_postprocess(dev, in_rssi, 0, 1, 1);
-
-	return ret;
-}
-#endif
-
 void b43_rx(struct b43_wldev *dev, struct sk_buff *skb, const void *_rxhdr)
 {
 	struct ieee80211_rx_status status;
@@ -715,7 +702,8 @@ void b43_rx(struct b43_wldev *dev, struct sk_buff *skb, const void *_rxhdr)
 		 * key index, but the ucode passed it slightly different.
 		 */
 		keyidx = b43_kidx_to_raw(dev, keyidx);
-		B43_WARN_ON(keyidx >= ARRAY_SIZE(dev->key));
+		if (B43_WARN_ON(keyidx >= ARRAY_SIZE(dev->key)))
+			goto drop;
 
 		if (dev->key[keyidx].algorithm != B43_SEC_ALGO_NONE) {
 			wlhdr_len = ieee80211_hdrlen(fctl);

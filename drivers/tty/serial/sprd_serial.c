@@ -3,10 +3,6 @@
  * Copyright (C) 2012-2015 Spreadtrum Communications Inc.
  */
 
-#if defined(CONFIG_SERIAL_SPRD_CONSOLE) && defined(CONFIG_MAGIC_SYSRQ)
-#define SUPPORT_SYSRQ
-#endif
-
 #include <linux/clk.h>
 #include <linux/console.h>
 #include <linux/delay.h>
@@ -1017,7 +1013,7 @@ static void sprd_console_write(struct console *co, const char *s,
 		spin_unlock_irqrestore(&port->lock, flags);
 }
 
-static int __init sprd_console_setup(struct console *co, char *options)
+static int sprd_console_setup(struct console *co, char *options)
 {
 	struct sprd_uart_port *sprd_uart_port;
 	int baud = 115200;
@@ -1127,7 +1123,8 @@ static bool sprd_uart_is_console(struct uart_port *uport)
 {
 	struct console *cons = sprd_uart_driver.cons;
 
-	if (cons && cons->index >= 0 && cons->index == uport->line)
+	if ((cons && cons->index >= 0 && cons->index == uport->line) ||
+	    of_console_check(uport->dev->of_node, SPRD_TTY_NAME, uport->line))
 		return true;
 
 	return false;
@@ -1140,6 +1137,9 @@ static int sprd_clk_init(struct uart_port *uport)
 
 	clk_uart = devm_clk_get(uport->dev, "uart");
 	if (IS_ERR(clk_uart)) {
+		if (PTR_ERR(clk_uart) == -EPROBE_DEFER)
+			return -EPROBE_DEFER;
+
 		dev_warn(uport->dev, "uart%d can't get uart clock\n",
 			 uport->line);
 		clk_uart = NULL;
@@ -1147,6 +1147,9 @@ static int sprd_clk_init(struct uart_port *uport)
 
 	clk_parent = devm_clk_get(uport->dev, "source");
 	if (IS_ERR(clk_parent)) {
+		if (PTR_ERR(clk_parent) == -EPROBE_DEFER)
+			return -EPROBE_DEFER;
+
 		dev_warn(uport->dev, "uart%d can't get source clock\n",
 			 uport->line);
 		clk_parent = NULL;
@@ -1203,6 +1206,7 @@ static int sprd_probe(struct platform_device *pdev)
 	up->fifosize = SPRD_FIFO_SIZE;
 	up->ops = &serial_sprd_ops;
 	up->flags = UPF_BOOT_AUTOCONF;
+	up->has_sysrq = IS_ENABLED(CONFIG_SERIAL_SPRD_CONSOLE);
 
 	ret = sprd_clk_init(up);
 	if (ret)

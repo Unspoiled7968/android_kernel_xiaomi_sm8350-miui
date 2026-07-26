@@ -64,19 +64,19 @@ static int ehset_set_testmode(struct device *dev, struct usb_device *child_udev,
 	switch (test_id) {
 	case TEST_SE0_NAK_PID:
 		ret = ehset_set_port_feature(hub_udev, USB_PORT_FEAT_TEST,
-					(TEST_SE0_NAK << 8) | port, 1000);
+					(USB_TEST_SE0_NAK << 8) | port, 1000);
 		break;
 	case TEST_J_PID:
 		ret = ehset_set_port_feature(hub_udev, USB_PORT_FEAT_TEST,
-					(TEST_J << 8) | port, 1000);
+					(USB_TEST_J << 8) | port, 1000);
 		break;
 	case TEST_K_PID:
 		ret = ehset_set_port_feature(hub_udev, USB_PORT_FEAT_TEST,
-					(TEST_K << 8) | port, 1000);
+					(USB_TEST_K << 8) | port, 1000);
 		break;
 	case TEST_PACKET_PID:
 		ret = ehset_set_port_feature(hub_udev, USB_PORT_FEAT_TEST,
-					(TEST_PACKET << 8) | port, 1000);
+					(USB_TEST_PACKET << 8) | port, 1000);
 		break;
 	case TEST_HS_HOST_PORT_SUSPEND_RESUME:
 		/* Test: wait for 15secs -> suspend -> 15secs delay -> resume */

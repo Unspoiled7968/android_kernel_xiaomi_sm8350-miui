@@ -37,7 +37,6 @@ int afs_open_socket(struct afs_net *net)
 {
 	struct sockaddr_rxrpc srx;
 	struct socket *socket;
-	unsigned int min_level;
 	int ret;
 
 	_enter("");
@@ -57,9 +56,8 @@ int afs_open_socket(struct afs_net *net)
 	srx.transport.sin6.sin6_family	= AF_INET6;
 	srx.transport.sin6.sin6_port	= htons(AFS_CM_PORT);
 
-	min_level = RXRPC_SECURITY_ENCRYPT;
-	ret = kernel_setsockopt(socket, SOL_RXRPC, RXRPC_MIN_SECURITY_LEVEL,
-				(void *)&min_level, sizeof(min_level));
+	ret = rxrpc_sock_set_min_security_level(socket->sk,
+						RXRPC_SECURITY_ENCRYPT);
 	if (ret < 0)
 		goto error_2;
 
@@ -151,7 +149,7 @@ static struct afs_call *afs_alloc_call(struct afs_net *net,
 	INIT_WORK(&call->async_work, afs_process_async_call);
 	init_waitqueue_head(&call->waitq);
 	spin_lock_init(&call->state_lock);
-	call->_iter = &call->iter;
+	call->iter = &call->def_iter;
 
 	o = atomic_inc_return(&net->nr_outstanding_calls);
 	trace_afs_call(call, afs_call_trace_alloc, 1, o,
@@ -183,8 +181,7 @@ void afs_put_call(struct afs_call *call)
 		if (call->type->destructor)
 			call->type->destructor(call);
 
-		afs_put_server(call->net, call->server, afs_server_trace_put_call);
-		afs_put_cb_interest(call->net, call->cbi);
+		afs_unuse_server_notime(call->net, call->server, afs_server_trace_put_call);
 		afs_put_addrlist(call->alist);
 		kfree(call->request);
 
@@ -283,18 +280,19 @@ static void afs_load_bvec(struct afs_call *call, struct msghdr *msg,
 			  struct bio_vec *bv, pgoff_t first, pgoff_t last,
 			  unsigned offset)
 {
+	struct afs_operation *op = call->op;
 	struct page *pages[AFS_BVEC_MAX];
 	unsigned int nr, n, i, to, bytes = 0;
 
 	nr = min_t(pgoff_t, last - first + 1, AFS_BVEC_MAX);
-	n = find_get_pages_contig(call->mapping, first, nr, pages);
+	n = find_get_pages_contig(op->store.mapping, first, nr, pages);
 	ASSERTCMP(n, ==, nr);
 
 	msg->msg_flags |= MSG_MORE;
 	for (i = 0; i < nr; i++) {
 		to = PAGE_SIZE;
 		if (first + i >= last) {
-			to = call->last_to;
+			to = op->store.last_to;
 			msg->msg_flags &= ~MSG_MORE;
 		}
 		bv[i].bv_page = pages[i];
@@ -304,7 +302,7 @@ static void afs_load_bvec(struct afs_call *call, struct msghdr *msg,
 		offset = 0;
 	}
 
-	iov_iter_bvec(&msg->msg_iter, WRITE, bv, nr, bytes);
+	iov_iter_bvec(&msg->msg_iter, ITER_SOURCE, bv, nr, bytes);
 }
 
 /*
@@ -324,13 +322,14 @@ static void afs_notify_end_request_tx(struct sock *sock,
  */
 static int afs_send_pages(struct afs_call *call, struct msghdr *msg)
 {
+	struct afs_operation *op = call->op;
 	struct bio_vec bv[AFS_BVEC_MAX];
 	unsigned int bytes, nr, loop, offset;
-	pgoff_t first = call->first, last = call->last;
+	pgoff_t first = op->store.first, last = op->store.last;
 	int ret;
 
-	offset = call->first_offset;
-	call->first_offset = 0;
+	offset = op->store.first_offset;
+	op->store.first_offset = 0;
 
 	do {
 		afs_load_bvec(call, msg, bv, first, last, offset);
@@ -340,7 +339,7 @@ static int afs_send_pages(struct afs_call *call, struct msghdr *msg)
 		bytes = msg->msg_iter.count;
 		nr = msg->msg_iter.nr_segs;
 
-		ret = rxrpc_kernel_send_data(call->net->socket, call->rxcall, msg,
+		ret = rxrpc_kernel_send_data(op->net->socket, call->rxcall, msg,
 					     bytes, afs_notify_end_request_tx);
 		for (loop = 0; loop < nr; loop++)
 			put_page(bv[loop].bv_page);
@@ -350,7 +349,7 @@ static int afs_send_pages(struct afs_call *call, struct msghdr *msg)
 		first += nr;
 	} while (first <= last);
 
-	trace_afs_sent_pages(call, call->first, last, first, ret);
+	trace_afs_sent_pages(call, op->store.first, last, first, ret);
 	return ret;
 }
 
@@ -385,16 +384,18 @@ void afs_make_call(struct afs_addr_cursor *ac, struct afs_call *call, gfp_t gfp)
 	 */
 	tx_total_len = call->request_size;
 	if (call->send_pages) {
-		if (call->last == call->first) {
-			tx_total_len += call->last_to - call->first_offset;
+		struct afs_operation *op = call->op;
+
+		if (op->store.last == op->store.first) {
+			tx_total_len += op->store.last_to - op->store.first_offset;
 		} else {
 			/* It looks mathematically like you should be able to
 			 * combine the following lines with the ones above, but
 			 * unsigned arithmetic is fun when it wraps...
 			 */
-			tx_total_len += PAGE_SIZE - call->first_offset;
-			tx_total_len += call->last_to;
-			tx_total_len += (call->last - call->first - 1) * PAGE_SIZE;
+			tx_total_len += PAGE_SIZE - op->store.first_offset;
+			tx_total_len += op->store.last_to;
+			tx_total_len += (op->store.last - op->store.first - 1) * PAGE_SIZE;
 		}
 	}
 
@@ -436,7 +437,7 @@ void afs_make_call(struct afs_addr_cursor *ac, struct afs_call *call, gfp_t gfp)
 
 	msg.msg_name		= NULL;
 	msg.msg_namelen		= 0;
-	iov_iter_kvec(&msg.msg_iter, WRITE, iov, 1, call->request_size);
+	iov_iter_kvec(&msg.msg_iter, ITER_SOURCE, iov, 1, call->request_size);
 	msg.msg_control		= NULL;
 	msg.msg_controllen	= 0;
 	msg.msg_flags		= MSG_WAITALL | (call->send_pages ? MSG_MORE : 0);
@@ -466,7 +467,7 @@ error_do_abort:
 		rxrpc_kernel_abort_call(call->net->socket, rxcall,
 					RX_USER_ABORT, ret, "KSD");
 	} else {
-		iov_iter_kvec(&msg.msg_iter, READ, NULL, 0, 0);
+		iov_iter_kvec(&msg.msg_iter, ITER_DEST, NULL, 0, 0);
 		rxrpc_kernel_recv_data(call->net->socket, rxcall,
 				       &msg.msg_iter, false,
 				       &call->abort_code, &call->service_id);
@@ -516,12 +517,12 @@ static void afs_deliver_to_call(struct afs_call *call)
 	       state == AFS_CALL_SV_AWAIT_ACK
 	       ) {
 		if (state == AFS_CALL_SV_AWAIT_ACK) {
-			iov_iter_kvec(&call->iter, READ, NULL, 0, 0);
+			iov_iter_kvec(&call->def_iter, ITER_DEST, NULL, 0, 0);
 			ret = rxrpc_kernel_recv_data(call->net->socket,
-						     call->rxcall, &call->iter,
+						     call->rxcall, &call->def_iter,
 						     false, &remote_abort,
 						     &call->service_id);
-			trace_afs_receive_data(call, &call->iter, false, ret);
+			trace_afs_receive_data(call, &call->def_iter, false, ret);
 
 			if (ret == -EINPROGRESS || ret == -EAGAIN)
 				return;
@@ -541,9 +542,9 @@ static void afs_deliver_to_call(struct afs_call *call)
 		case 0:
 			afs_queue_call_work(call);
 			if (state == AFS_CALL_CL_PROC_REPLY) {
-				if (call->cbi)
+				if (call->op)
 					set_bit(AFS_SERVER_FL_MAY_HAVE_CB,
-						&call->cbi->server->flags);
+						&call->op->server->flags);
 				goto call_complete;
 			}
 			ASSERTCMP(state, >, AFS_CALL_CL_PROC_REPLY);
@@ -562,10 +563,12 @@ static void afs_deliver_to_call(struct afs_call *call)
 		case -EIO:
 			pr_err("kAFS: Call %u in bad state %u\n",
 			       call->debug_id, state);
-			/* Fall through */
+			fallthrough;
 		case -ENODATA:
 		case -EBADMSG:
 		case -EMSGSIZE:
+		case -ENOMEM:
+		case -EFAULT:
 			abort_code = RXGEN_CC_UNMARSHAL;
 			if (state != AFS_CALL_CL_AWAIT_REPLY)
 				abort_code = RXGEN_SS_UNMARSHAL;
@@ -573,7 +576,7 @@ static void afs_deliver_to_call(struct afs_call *call)
 						abort_code, ret, "KUM");
 			goto local_abort;
 		default:
-			abort_code = RX_USER_ABORT;
+			abort_code = RX_CALL_DEAD;
 			rxrpc_kernel_abort_call(call->net->socket, call->rxcall,
 						abort_code, ret, "KER");
 			goto local_abort;
@@ -663,7 +666,7 @@ long afs_wait_for_call_to_complete(struct afs_call *call,
 		ret = call->ret0;
 		call->ret0 = 0;
 
-		/* Fall through */
+		fallthrough;
 	case -ECONNABORTED:
 		ac->responded = true;
 		break;
@@ -802,7 +805,7 @@ static int afs_deliver_cm_op_id(struct afs_call *call)
 {
 	int ret;
 
-	_enter("{%zu}", iov_iter_count(call->_iter));
+	_enter("{%zu}", iov_iter_count(call->iter));
 
 	/* the operation ID forms the first four bytes of the request data */
 	ret = afs_extract_data(call, true);
@@ -851,7 +854,7 @@ void afs_send_empty_reply(struct afs_call *call)
 
 	msg.msg_name		= NULL;
 	msg.msg_namelen		= 0;
-	iov_iter_kvec(&msg.msg_iter, WRITE, NULL, 0, 0);
+	iov_iter_kvec(&msg.msg_iter, ITER_SOURCE, NULL, 0, 0);
 	msg.msg_control		= NULL;
 	msg.msg_controllen	= 0;
 	msg.msg_flags		= 0;
@@ -865,8 +868,8 @@ void afs_send_empty_reply(struct afs_call *call)
 	case -ENOMEM:
 		_debug("oom");
 		rxrpc_kernel_abort_call(net->socket, call->rxcall,
-					RX_USER_ABORT, -ENOMEM, "KOO");
-		/* Fall through */
+					RXGEN_SS_MARSHAL, -ENOMEM, "KOO");
+		fallthrough;
 	default:
 		_leave(" [error]");
 		return;
@@ -891,7 +894,7 @@ void afs_send_simple_reply(struct afs_call *call, const void *buf, size_t len)
 	iov[0].iov_len		= len;
 	msg.msg_name		= NULL;
 	msg.msg_namelen		= 0;
-	iov_iter_kvec(&msg.msg_iter, WRITE, iov, 1, len);
+	iov_iter_kvec(&msg.msg_iter, ITER_SOURCE, iov, 1, len);
 	msg.msg_control		= NULL;
 	msg.msg_controllen	= 0;
 	msg.msg_flags		= 0;
@@ -907,7 +910,7 @@ void afs_send_simple_reply(struct afs_call *call, const void *buf, size_t len)
 	if (n == -ENOMEM) {
 		_debug("oom");
 		rxrpc_kernel_abort_call(net->socket, call->rxcall,
-					RX_USER_ABORT, -ENOMEM, "KOO");
+					RXGEN_SS_MARSHAL, -ENOMEM, "KOO");
 	}
 	_leave(" [error]");
 }
@@ -918,7 +921,7 @@ void afs_send_simple_reply(struct afs_call *call, const void *buf, size_t len)
 int afs_extract_data(struct afs_call *call, bool want_more)
 {
 	struct afs_net *net = call->net;
-	struct iov_iter *iter = call->_iter;
+	struct iov_iter *iter = call->iter;
 	enum afs_call_state state;
 	u32 remote_abort = 0;
 	int ret;
@@ -956,11 +959,11 @@ int afs_extract_data(struct afs_call *call, bool want_more)
 /*
  * Log protocol error production.
  */
-noinline int afs_protocol_error(struct afs_call *call, int error,
+noinline int afs_protocol_error(struct afs_call *call,
 				enum afs_eproto_cause cause)
 {
-	trace_afs_protocol_error(call, error, cause);
+	trace_afs_protocol_error(call, cause);
 	if (call)
 		call->unmarshalling_error = true;
-	return error;
+	return -EBADMSG;
 }

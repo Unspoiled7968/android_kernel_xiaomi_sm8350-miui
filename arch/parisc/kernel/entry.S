@@ -19,7 +19,6 @@
 #include <asm/psw.h>
 #include <asm/cache.h>		/* for L1_CACHE_SHIFT */
 #include <asm/assembly.h>	/* for LDREG/STREG defines */
-#include <asm/pgtable.h>
 #include <asm/signal.h>
 #include <asm/unistd.h>
 #include <asm/ldcw.h>
@@ -28,6 +27,7 @@
 #include <asm/alternative.h>
 
 #include <linux/linkage.h>
+#include <linux/pgtable.h>
 
 #ifdef CONFIG_64BIT
 	.level 2.0w
@@ -35,10 +35,9 @@
 	.level 2.0
 #endif
 
-	.import		pa_tlb_lock,data
-	.macro  load_pa_tlb_lock reg
-	mfctl		%cr25,\reg
-	addil		L%(PAGE_SIZE << (PGD_ALLOC_ORDER - 1)),\reg
+	/* Get aligned page_table_lock address for this mm from cr28/tr4 */
+	.macro  get_ptl reg
+	mfctl	%cr28,\reg
 	.endm
 
 	/* space_to_prot macro creates a prot id from a space id */
@@ -407,7 +406,9 @@
 # endif
 #endif
 	dep             %r0,31,PAGE_SHIFT,\pmd  /* clear offset */
+#if CONFIG_PGTABLE_LEVELS < 3
 	copy		%r0,\pte
+#endif
 	ldw,s		\index(\pmd),\pmd
 	bb,>=,n		\pmd,_PxD_PRESENT_BIT,\fault
 	dep		%r0,31,PxD_FLAG_SHIFT,\pmd /* clear flags */
@@ -417,38 +418,23 @@
 	shladd		\index,BITS_PER_PTE_ENTRY,\pmd,\pmd /* pmd is now pte */
 	.endm
 
-	/* Look up PTE in a 3-Level scheme.
-	 *
-	 * Here we implement a Hybrid L2/L3 scheme: we allocate the
-	 * first pmd adjacent to the pgd.  This means that we can
-	 * subtract a constant offset to get to it.  The pmd and pgd
-	 * sizes are arranged so that a single pmd covers 4GB (giving
-	 * a full LP64 process access to 8TB) so our lookups are
-	 * effectively L2 for the first 4GB of the kernel (i.e. for
-	 * all ILP32 processes and all the kernel for machines with
-	 * under 4GB of memory) */
+	/* Look up PTE in a 3-Level scheme. */
 	.macro		L3_ptep pgd,pte,index,va,fault
-#if CONFIG_PGTABLE_LEVELS == 3 /* we might have a 2-Level scheme, e.g. with 16kb page size */
+#if CONFIG_PGTABLE_LEVELS == 3
+	copy		%r0,\pte
 	extrd,u		\va,63-ASM_PGDIR_SHIFT,ASM_BITS_PER_PGD,\index
-	extrd,u,*=	\va,63-ASM_PGDIR_SHIFT,64-ASM_PGDIR_SHIFT,%r0
 	ldw,s		\index(\pgd),\pgd
-	extrd,u,*=	\va,63-ASM_PGDIR_SHIFT,64-ASM_PGDIR_SHIFT,%r0
 	bb,>=,n		\pgd,_PxD_PRESENT_BIT,\fault
-	extrd,u,*=	\va,63-ASM_PGDIR_SHIFT,64-ASM_PGDIR_SHIFT,%r0
-	shld		\pgd,PxD_VALUE_SHIFT,\index
-	extrd,u,*=	\va,63-ASM_PGDIR_SHIFT,64-ASM_PGDIR_SHIFT,%r0
-	copy		\index,\pgd
-	extrd,u,*<>	\va,63-ASM_PGDIR_SHIFT,64-ASM_PGDIR_SHIFT,%r0
-	ldo		ASM_PGD_PMD_OFFSET(\pgd),\pgd
+	shld		\pgd,PxD_VALUE_SHIFT,\pgd
 #endif
 	L2_ptep		\pgd,\pte,\index,\va,\fault
 	.endm
 
-	/* Acquire pa_tlb_lock lock and check page is present. */
-	.macro		tlb_lock	spc,ptp,pte,tmp,tmp1,fault
-#ifdef CONFIG_SMP
+	/* Acquire page_table_lock and check page is present. */
+	.macro		ptl_lock	spc,ptp,pte,tmp,tmp1,fault
+#ifdef CONFIG_TLB_PTLOCK
 98:	cmpib,COND(=),n	0,\spc,2f
-	load_pa_tlb_lock \tmp
+	get_ptl		\tmp
 1:	LDCW		0(\tmp),\tmp1
 	cmpib,COND(=)	0,\tmp1,1b
 	nop
@@ -463,26 +449,26 @@
 3:
 	.endm
 
-	/* Release pa_tlb_lock lock without reloading lock address.
+	/* Release page_table_lock without reloading lock address.
 	   Note that the values in the register spc are limited to
 	   NR_SPACE_IDS (262144). Thus, the stw instruction always
 	   stores a nonzero value even when register spc is 64 bits.
 	   We use an ordered store to ensure all prior accesses are
 	   performed prior to releasing the lock. */
-	.macro		tlb_unlock0	spc,tmp
-#ifdef CONFIG_SMP
+	.macro		ptl_unlock0	spc,tmp
+#ifdef CONFIG_TLB_PTLOCK
 98:	or,COND(=)	%r0,\spc,%r0
 	stw,ma		\spc,0(\tmp)
 99:	ALTERNATIVE(98b, 99b, ALT_COND_NO_SMP, INSN_NOP)
 #endif
 	.endm
 
-	/* Release pa_tlb_lock lock. */
-	.macro		tlb_unlock1	spc,tmp
-#ifdef CONFIG_SMP
-98:	load_pa_tlb_lock \tmp
+	/* Release page_table_lock. */
+	.macro		ptl_unlock1	spc,tmp
+#ifdef CONFIG_TLB_PTLOCK
+98:	get_ptl		\tmp
+	ptl_unlock0	\spc,\tmp
 99:	ALTERNATIVE(98b, 99b, ALT_COND_NO_SMP, INSN_NOP)
-	tlb_unlock0	\spc,\tmp
 #endif
 	.endm
 
@@ -898,19 +884,19 @@ intr_check_sig:
 	 * Only do signals if we are returning to user space
 	 */
 	LDREG	PT_IASQ0(%r16), %r20
-	cmpib,COND(=),n LINUX_GATEWAY_SPACE, %r20, intr_restore /* backward */
+	cmpib,COND(=),n LINUX_GATEWAY_SPACE, %r20, intr_restore /* forward */
 	LDREG	PT_IASQ1(%r16), %r20
-	cmpib,COND(=),n LINUX_GATEWAY_SPACE, %r20, intr_restore /* backward */
-
-	/* NOTE: We need to enable interrupts if we have to deliver
-	 * signals. We used to do this earlier but it caused kernel
-	 * stack overflows. */
-	ssm     PSW_SM_I, %r0
+	cmpib,COND(=),n LINUX_GATEWAY_SPACE, %r20, intr_restore /* forward */
 
 	copy	%r0, %r25			/* long in_syscall = 0 */
 #ifdef CONFIG_64BIT
 	ldo	-16(%r30),%r29			/* Reference param save area */
 #endif
+
+	/* NOTE: We need to enable interrupts if we have to deliver
+	 * signals. We used to do this earlier but it caused kernel
+	 * stack overflows. */
+	ssm	PSW_SM_I, %r0
 
 	BL	do_notify_resume,%r2
 	copy	%r16, %r26			/* struct pt_regs *regs */
@@ -941,14 +927,14 @@ intr_restore:
 	rfi
 	nop
 
-#ifndef CONFIG_PREEMPT
+#ifndef CONFIG_PREEMPTION
 # define intr_do_preempt	intr_restore
-#endif /* !CONFIG_PREEMPT */
+#endif /* !CONFIG_PREEMPTION */
 
 	.import schedule,code
 intr_do_resched:
 	/* Only call schedule on return to userspace. If we're returning
-	 * to kernel space, we may schedule if CONFIG_PREEMPT, otherwise
+	 * to kernel space, we may schedule if CONFIG_PREEMPTION, otherwise
 	 * we jump back to intr_restore.
 	 */
 	LDREG	PT_IASQ0(%r16), %r20
@@ -980,7 +966,7 @@ intr_do_resched:
 	 * and preempt_count is 0. otherwise, we continue on
 	 * our merry way back to the current running task.
 	 */
-#ifdef CONFIG_PREEMPT
+#ifdef CONFIG_PREEMPTION
 	.import preempt_schedule_irq,code
 intr_do_preempt:
 	rsm	PSW_SM_I, %r0		/* disable interrupts */
@@ -996,11 +982,18 @@ intr_do_preempt:
 	bb,<,n	%r20, 31 - PSW_SM_I, intr_restore
 	nop
 
+	/* ssm PSW_SM_I done later in intr_restore */
+#ifdef CONFIG_MLONGCALLS
+	ldil	L%intr_restore, %r2
+	load32	preempt_schedule_irq, %r1
+	bv	%r0(%r1)
+	ldo	R%intr_restore(%r2), %r2
+#else
+	ldil	L%intr_restore, %r1
 	BL	preempt_schedule_irq, %r2
-	nop
-
-	b,n	intr_restore		/* ssm PSW_SM_I done by intr_restore */
-#endif /* CONFIG_PREEMPT */
+	ldo	R%intr_restore(%r1), %r2
+#endif
+#endif /* CONFIG_PREEMPTION */
 
 	/*
 	 * External interrupts.
@@ -1078,23 +1071,26 @@ ENTRY_CFI(intr_save)		/* for os_hpmc */
 	STREG           %r16, PT_ISR(%r29)
 	STREG           %r17, PT_IOR(%r29)
 
-#if 0 && defined(CONFIG_64BIT)
-	/* Revisit when we have 64-bit code above 4Gb */
-	b,n		intr_save2
-
+#if defined(CONFIG_64BIT)
 skip_save_ior:
 	/* We have a itlb miss, and when executing code above 4 Gb on ILP64, we
 	 * need to adjust iasq/iaoq here in the same way we adjusted isr/ior
 	 * above.
 	 */
-	extrd,u,*	%r8,PSW_W_BIT,1,%r1
-	cmpib,COND(=),n	1,%r1,intr_save2
+	bb,COND(>=),n	%r8,PSW_W_BIT,intr_save2
 	LDREG		PT_IASQ0(%r29), %r16
 	LDREG		PT_IAOQ0(%r29), %r17
-	/* adjust iasq/iaoq */
+	/* adjust iasq0/iaoq0 */
 	space_adjust	%r16,%r17,%r1
 	STREG           %r16, PT_IASQ0(%r29)
 	STREG           %r17, PT_IAOQ0(%r29)
+
+	LDREG		PT_IASQ1(%r29), %r16
+	LDREG		PT_IAOQ1(%r29), %r17
+	/* adjust iasq1/iaoq1 */
+	space_adjust	%r16,%r17,%r1
+	STREG           %r16, PT_IASQ1(%r29)
+	STREG           %r17, PT_IAOQ1(%r29)
 #else
 skip_save_ior:
 #endif
@@ -1157,14 +1153,14 @@ dtlb_miss_20w:
 
 	L3_ptep		ptp,pte,t0,va,dtlb_check_alias_20w
 
-	tlb_lock	spc,ptp,pte,t0,t1,dtlb_check_alias_20w
+	ptl_lock	spc,ptp,pte,t0,t1,dtlb_check_alias_20w
 	update_accessed	ptp,pte,t0,t1
 
 	make_insert_tlb	spc,pte,prot,t1
 	
 	idtlbt          pte,prot
 
-	tlb_unlock1	spc,t0
+	ptl_unlock1	spc,t0
 	rfir
 	nop
 
@@ -1183,14 +1179,14 @@ nadtlb_miss_20w:
 
 	L3_ptep		ptp,pte,t0,va,nadtlb_check_alias_20w
 
-	tlb_lock	spc,ptp,pte,t0,t1,nadtlb_check_alias_20w
+	ptl_lock	spc,ptp,pte,t0,t1,nadtlb_check_alias_20w
 	update_accessed	ptp,pte,t0,t1
 
 	make_insert_tlb	spc,pte,prot,t1
 
 	idtlbt          pte,prot
 
-	tlb_unlock1	spc,t0
+	ptl_unlock1	spc,t0
 	rfir
 	nop
 
@@ -1211,7 +1207,7 @@ dtlb_miss_11:
 
 	L2_ptep		ptp,pte,t0,va,dtlb_check_alias_11
 
-	tlb_lock	spc,ptp,pte,t0,t1,dtlb_check_alias_11
+	ptl_lock	spc,ptp,pte,t0,t1,dtlb_check_alias_11
 	update_accessed	ptp,pte,t0,t1
 
 	make_insert_tlb_11	spc,pte,prot
@@ -1224,7 +1220,7 @@ dtlb_miss_11:
 
 	mtsp		t1, %sr1	/* Restore sr1 */
 
-	tlb_unlock1	spc,t0
+	ptl_unlock1	spc,t0
 	rfir
 	nop
 
@@ -1244,7 +1240,7 @@ nadtlb_miss_11:
 
 	L2_ptep		ptp,pte,t0,va,nadtlb_check_alias_11
 
-	tlb_lock	spc,ptp,pte,t0,t1,nadtlb_check_alias_11
+	ptl_lock	spc,ptp,pte,t0,t1,nadtlb_check_alias_11
 	update_accessed	ptp,pte,t0,t1
 
 	make_insert_tlb_11	spc,pte,prot
@@ -1257,7 +1253,7 @@ nadtlb_miss_11:
 
 	mtsp		t1, %sr1	/* Restore sr1 */
 
-	tlb_unlock1	spc,t0
+	ptl_unlock1	spc,t0
 	rfir
 	nop
 
@@ -1277,7 +1273,7 @@ dtlb_miss_20:
 
 	L2_ptep		ptp,pte,t0,va,dtlb_check_alias_20
 
-	tlb_lock	spc,ptp,pte,t0,t1,dtlb_check_alias_20
+	ptl_lock	spc,ptp,pte,t0,t1,dtlb_check_alias_20
 	update_accessed	ptp,pte,t0,t1
 
 	make_insert_tlb	spc,pte,prot,t1
@@ -1286,7 +1282,7 @@ dtlb_miss_20:
 
 	idtlbt          pte,prot
 
-	tlb_unlock1	spc,t0
+	ptl_unlock1	spc,t0
 	rfir
 	nop
 
@@ -1305,7 +1301,7 @@ nadtlb_miss_20:
 
 	L2_ptep		ptp,pte,t0,va,nadtlb_check_alias_20
 
-	tlb_lock	spc,ptp,pte,t0,t1,nadtlb_check_alias_20
+	ptl_lock	spc,ptp,pte,t0,t1,nadtlb_check_alias_20
 	update_accessed	ptp,pte,t0,t1
 
 	make_insert_tlb	spc,pte,prot,t1
@@ -1314,7 +1310,7 @@ nadtlb_miss_20:
 	
 	idtlbt		pte,prot
 
-	tlb_unlock1	spc,t0
+	ptl_unlock1	spc,t0
 	rfir
 	nop
 
@@ -1414,14 +1410,14 @@ itlb_miss_20w:
 
 	L3_ptep		ptp,pte,t0,va,itlb_fault
 
-	tlb_lock	spc,ptp,pte,t0,t1,itlb_fault
+	ptl_lock	spc,ptp,pte,t0,t1,itlb_fault
 	update_accessed	ptp,pte,t0,t1
 
 	make_insert_tlb	spc,pte,prot,t1
 	
 	iitlbt          pte,prot
 
-	tlb_unlock1	spc,t0
+	ptl_unlock1	spc,t0
 	rfir
 	nop
 
@@ -1438,14 +1434,14 @@ naitlb_miss_20w:
 
 	L3_ptep		ptp,pte,t0,va,naitlb_check_alias_20w
 
-	tlb_lock	spc,ptp,pte,t0,t1,naitlb_check_alias_20w
+	ptl_lock	spc,ptp,pte,t0,t1,naitlb_check_alias_20w
 	update_accessed	ptp,pte,t0,t1
 
 	make_insert_tlb	spc,pte,prot,t1
 
 	iitlbt          pte,prot
 
-	tlb_unlock1	spc,t0
+	ptl_unlock1	spc,t0
 	rfir
 	nop
 
@@ -1466,7 +1462,7 @@ itlb_miss_11:
 
 	L2_ptep		ptp,pte,t0,va,itlb_fault
 
-	tlb_lock	spc,ptp,pte,t0,t1,itlb_fault
+	ptl_lock	spc,ptp,pte,t0,t1,itlb_fault
 	update_accessed	ptp,pte,t0,t1
 
 	make_insert_tlb_11	spc,pte,prot
@@ -1479,7 +1475,7 @@ itlb_miss_11:
 
 	mtsp		t1, %sr1	/* Restore sr1 */
 
-	tlb_unlock1	spc,t0
+	ptl_unlock1	spc,t0
 	rfir
 	nop
 
@@ -1490,7 +1486,7 @@ naitlb_miss_11:
 
 	L2_ptep		ptp,pte,t0,va,naitlb_check_alias_11
 
-	tlb_lock	spc,ptp,pte,t0,t1,naitlb_check_alias_11
+	ptl_lock	spc,ptp,pte,t0,t1,naitlb_check_alias_11
 	update_accessed	ptp,pte,t0,t1
 
 	make_insert_tlb_11	spc,pte,prot
@@ -1503,7 +1499,7 @@ naitlb_miss_11:
 
 	mtsp		t1, %sr1	/* Restore sr1 */
 
-	tlb_unlock1	spc,t0
+	ptl_unlock1	spc,t0
 	rfir
 	nop
 
@@ -1524,7 +1520,7 @@ itlb_miss_20:
 
 	L2_ptep		ptp,pte,t0,va,itlb_fault
 
-	tlb_lock	spc,ptp,pte,t0,t1,itlb_fault
+	ptl_lock	spc,ptp,pte,t0,t1,itlb_fault
 	update_accessed	ptp,pte,t0,t1
 
 	make_insert_tlb	spc,pte,prot,t1
@@ -1533,7 +1529,7 @@ itlb_miss_20:
 
 	iitlbt          pte,prot
 
-	tlb_unlock1	spc,t0
+	ptl_unlock1	spc,t0
 	rfir
 	nop
 
@@ -1544,7 +1540,7 @@ naitlb_miss_20:
 
 	L2_ptep		ptp,pte,t0,va,naitlb_check_alias_20
 
-	tlb_lock	spc,ptp,pte,t0,t1,naitlb_check_alias_20
+	ptl_lock	spc,ptp,pte,t0,t1,naitlb_check_alias_20
 	update_accessed	ptp,pte,t0,t1
 
 	make_insert_tlb	spc,pte,prot,t1
@@ -1553,7 +1549,7 @@ naitlb_miss_20:
 
 	iitlbt          pte,prot
 
-	tlb_unlock1	spc,t0
+	ptl_unlock1	spc,t0
 	rfir
 	nop
 
@@ -1576,14 +1572,14 @@ dbit_trap_20w:
 
 	L3_ptep		ptp,pte,t0,va,dbit_fault
 
-	tlb_lock	spc,ptp,pte,t0,t1,dbit_fault
+	ptl_lock	spc,ptp,pte,t0,t1,dbit_fault
 	update_dirty	ptp,pte,t1
 
 	make_insert_tlb	spc,pte,prot,t1
 		
 	idtlbt          pte,prot
 
-	tlb_unlock0	spc,t0
+	ptl_unlock0	spc,t0
 	rfir
 	nop
 #else
@@ -1596,7 +1592,7 @@ dbit_trap_11:
 
 	L2_ptep		ptp,pte,t0,va,dbit_fault
 
-	tlb_lock	spc,ptp,pte,t0,t1,dbit_fault
+	ptl_lock	spc,ptp,pte,t0,t1,dbit_fault
 	update_dirty	ptp,pte,t1
 
 	make_insert_tlb_11	spc,pte,prot
@@ -1609,7 +1605,7 @@ dbit_trap_11:
 
 	mtsp            t1, %sr1     /* Restore sr1 */
 
-	tlb_unlock0	spc,t0
+	ptl_unlock0	spc,t0
 	rfir
 	nop
 
@@ -1620,7 +1616,7 @@ dbit_trap_20:
 
 	L2_ptep		ptp,pte,t0,va,dbit_fault
 
-	tlb_lock	spc,ptp,pte,t0,t1,dbit_fault
+	ptl_lock	spc,ptp,pte,t0,t1,dbit_fault
 	update_dirty	ptp,pte,t1
 
 	make_insert_tlb	spc,pte,prot,t1
@@ -1629,7 +1625,7 @@ dbit_trap_20:
 	
 	idtlbt		pte,prot
 
-	tlb_unlock0	spc,t0
+	ptl_unlock0	spc,t0
 	rfir
 	nop
 #endif
@@ -1917,6 +1913,10 @@ syscall_restore_rfi:
 	extru,= %r19,TIF_BLOCKSTEP_PA_BIT,1,%r0
 	depi	-1,7,1,%r20			   /* T bit */
 
+#ifdef CONFIG_64BIT
+	extru,<> %r19,TIF_32BIT_PA_BIT,1,%r0
+	depi	-1,4,1,%r20			   /* W bit */
+#endif
 	STREG	%r20,TASK_PT_PSW(%r1)
 
 	/* Always store space registers, since sr3 can be changed (e.g. fork) */
@@ -1930,7 +1930,6 @@ syscall_restore_rfi:
 	STREG   %r25,TASK_PT_IASQ0(%r1)
 	STREG   %r25,TASK_PT_IASQ1(%r1)
 
-	/* XXX W bit??? */
 	/* Now if old D bit is clear, it means we didn't save all registers
 	 * on syscall entry, so do that now.  This only happens on TRACEME
 	 * calls, or if someone attached to us while we were on a syscall.

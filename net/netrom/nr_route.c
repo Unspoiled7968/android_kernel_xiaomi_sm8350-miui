@@ -263,7 +263,7 @@ static int __must_check nr_add_node(ax25_address *nr, const char *mnemonic,
 	case 3:
 		re_sort_routes(nr_node, 0, 1);
 		re_sort_routes(nr_node, 1, 2);
-		/* fall through */
+		fallthrough;
 	case 2:
 		re_sort_routes(nr_node, 0, 1);
 	case 1:
@@ -349,7 +349,7 @@ static int nr_del_node(ax25_address *callsign, ax25_address *neighbour, struct n
 				switch (i) {
 				case 0:
 					nr_node->routes[0] = nr_node->routes[1];
-					/* fall through */
+					fallthrough;
 				case 1:
 					nr_node->routes[1] = nr_node->routes[2];
 				case 2:
@@ -474,7 +474,7 @@ static int nr_dec_obs(void)
 				switch (i) {
 				case 0:
 					s->routes[0] = s->routes[1];
-					/* Fallthrough */
+					fallthrough;
 				case 1:
 					s->routes[1] = s->routes[2];
 				case 2:
@@ -521,7 +521,7 @@ void nr_rt_device_down(struct net_device *dev)
 						switch (i) {
 						case 0:
 							t->routes[0] = t->routes[1];
-							/* fall through */
+							fallthrough;
 						case 1:
 							t->routes[1] = t->routes[2];
 						case 2:
@@ -573,8 +573,7 @@ struct net_device *nr_dev_first(void)
 			if (first == NULL || strncmp(dev->name, first->name, 3) < 0)
 				first = dev;
 	}
-	if (first)
-		dev_hold(first);
+	dev_hold(first);
 	rcu_read_unlock();
 
 	return first;
@@ -749,8 +748,14 @@ int nr_route_frame(struct sk_buff *skb, ax25_cb *ax25)
 	unsigned char *dptr;
 	ax25_cb *ax25s;
 	int ret;
-	struct sk_buff *skbn;
+	struct sk_buff *nskb, *oskb;
 
+	/*
+	 * Reject malformed packets early. Check that it contains at least 2
+	 * addresses and 1 byte more for Time-To-Live
+	 */
+	if (skb->len < 2 * sizeof(ax25_address) + 1)
+		return 0;
 
 	nr_src  = (ax25_address *)(skb->data + 0);
 	nr_dest = (ax25_address *)(skb->data + 7);
@@ -802,14 +807,16 @@ int nr_route_frame(struct sk_buff *skb, ax25_cb *ax25)
 	/* We are going to change the netrom headers so we should get our
 	   own skb, we also did not know until now how much header space
 	   we had to reserve... - RXQ */
-	if ((skbn=skb_copy_expand(skb, dev->hard_header_len, 0, GFP_ATOMIC)) == NULL) {
+	nskb = skb_copy_expand(skb, dev->hard_header_len, 0, GFP_ATOMIC);
+
+	if (!nskb) {
 		nr_node_unlock(nr_node);
 		nr_node_put(nr_node);
 		dev_put(dev);
 		return 0;
 	}
-	kfree_skb(skb);
-	skb=skbn;
+	oskb = skb;
+	skb = nskb;
 	skb->data[14]--;
 
 	dptr  = skb_push(skb, 1);
@@ -828,12 +835,16 @@ int nr_route_frame(struct sk_buff *skb, ax25_cb *ax25)
 	nr_node_unlock(nr_node);
 	nr_node_put(nr_node);
 
+	if (ret)
+		kfree_skb(oskb);
+
 	return ret;
 }
 
 #ifdef CONFIG_PROC_FS
 
 static void *nr_node_start(struct seq_file *seq, loff_t *pos)
+	__acquires(&nr_node_list_lock)
 {
 	spin_lock_bh(&nr_node_list_lock);
 	return seq_hlist_start_head(&nr_node_list, *pos);
@@ -845,6 +856,7 @@ static void *nr_node_next(struct seq_file *seq, void *v, loff_t *pos)
 }
 
 static void nr_node_stop(struct seq_file *seq, void *v)
+	__releases(&nr_node_list_lock)
 {
 	spin_unlock_bh(&nr_node_list_lock);
 }
@@ -889,6 +901,7 @@ const struct seq_operations nr_node_seqops = {
 };
 
 static void *nr_neigh_start(struct seq_file *seq, loff_t *pos)
+	__acquires(&nr_neigh_list_lock)
 {
 	spin_lock_bh(&nr_neigh_list_lock);
 	return seq_hlist_start_head(&nr_neigh_list, *pos);
@@ -900,6 +913,7 @@ static void *nr_neigh_next(struct seq_file *seq, void *v, loff_t *pos)
 }
 
 static void nr_neigh_stop(struct seq_file *seq, void *v)
+	__releases(&nr_neigh_list_lock)
 {
 	spin_unlock_bh(&nr_neigh_list_lock);
 }

@@ -28,6 +28,7 @@
 #include <linux/of_irq.h>
 #include <linux/spinlock.h>
 #include <dt-bindings/input/gpio-keys.h>
+#include <trace/hooks/wakeupbypass.h>
 
 struct gpio_button_data {
 	const struct gpio_keys_button *button;
@@ -55,7 +56,7 @@ struct gpio_keys_drvdata {
 	struct input_dev *input;
 	struct mutex disable_lock;
 	unsigned short *keymap;
-	struct gpio_button_data data[0];
+	struct gpio_button_data data[];
 };
 
 /*
@@ -494,10 +495,8 @@ static int gpio_keys_setup_key(struct platform_device *pdev,
 	spin_lock_init(&bdata->lock);
 
 	if (child) {
-		bdata->gpiod = devm_fwnode_get_gpiod_from_child(dev, NULL,
-								child,
-								GPIOD_IN,
-								desc);
+		bdata->gpiod = devm_fwnode_gpiod_get(dev, child,
+						     NULL, GPIOD_IN, desc);
 		if (IS_ERR(bdata->gpiod)) {
 			error = PTR_ERR(bdata->gpiod);
 			if (error == -ENOENT) {
@@ -576,7 +575,6 @@ static int gpio_keys_setup_key(struct platform_device *pdev,
 				IRQ_TYPE_EDGE_RISING : IRQ_TYPE_EDGE_FALLING;
 			break;
 		case EV_ACT_ANY:
-			/* fall through */
 		default:
 			/*
 			 * For other cases, we are OK letting suspend/resume
@@ -961,11 +959,16 @@ static int __maybe_unused gpio_keys_suspend(struct device *dev)
 	struct gpio_keys_drvdata *ddata = dev_get_drvdata(dev);
 	struct input_dev *input = ddata->input;
 	int error;
+	int wakeup_bypass_enabled = 0;
+
+	trace_android_vh_wakeup_bypass(&wakeup_bypass_enabled);
 
 	if (device_may_wakeup(dev)) {
-		error = gpio_keys_enable_wakeup(ddata);
-		if (error)
-			return error;
+		if (!wakeup_bypass_enabled) {
+			error = gpio_keys_enable_wakeup(ddata);
+			if (error)
+				return error;
+		}
 	} else {
 		mutex_lock(&input->mutex);
 		if (input->users)
@@ -981,9 +984,13 @@ static int __maybe_unused gpio_keys_resume(struct device *dev)
 	struct gpio_keys_drvdata *ddata = dev_get_drvdata(dev);
 	struct input_dev *input = ddata->input;
 	int error = 0;
+	int wakeup_bypass_enabled = 0;
+
+	trace_android_vh_wakeup_bypass(&wakeup_bypass_enabled);
 
 	if (device_may_wakeup(dev)) {
-		gpio_keys_disable_wakeup(ddata);
+		if (!wakeup_bypass_enabled)
+			gpio_keys_disable_wakeup(ddata);
 	} else {
 		mutex_lock(&input->mutex);
 		if (input->users)

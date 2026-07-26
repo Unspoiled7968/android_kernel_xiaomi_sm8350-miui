@@ -87,13 +87,6 @@
 
 #undef DEBUG
 
-#ifdef DEBUG
-#define DPRINTK  printk
-#else
-#define DPRINTK(stuff...)
-#endif
-
-
 #define NR_SUPERIOS 3
 static struct superio_struct {	/* For Super-IO chips autodetection */
 	int io;
@@ -118,8 +111,8 @@ static void frob_econtrol(struct parport *pb, unsigned char m,
 	if (m != 0xff)
 		ectr = inb(ECONTROL(pb));
 
-	DPRINTK(KERN_DEBUG "frob_econtrol(%02x,%02x): %02x -> %02x\n",
-		m, v, ectr, (ectr & ~m) ^ v);
+	pr_debug("frob_econtrol(%02x,%02x): %02x -> %02x\n",
+		 m, v, ectr, (ectr & ~m) ^ v);
 
 	outb((ectr & ~m) ^ v, ECONTROL(pb));
 }
@@ -142,7 +135,7 @@ static int change_mode(struct parport *p, int m)
 	unsigned char oecr;
 	int mode;
 
-	DPRINTK(KERN_INFO "parport change_mode ECP-ISA to mode 0x%02x\n", m);
+	pr_debug("parport change_mode ECP-ISA to mode 0x%02x\n", m);
 
 	if (!priv->ecr) {
 		printk(KERN_DEBUG "change_mode: but there's no ECR!\n");
@@ -298,8 +291,8 @@ static size_t parport_pc_epp_read_data(struct parport *port, void *buf,
 			status = inb(STATUS(port));
 			if (status & 0x01) {
 				/* EPP timeout should never occur... */
-				printk(KERN_DEBUG
-"%s: EPP timeout occurred while talking to w91284pic (should not have done)\n", port->name);
+				printk(KERN_DEBUG "%s: EPP timeout occurred while talking to w91284pic (should not have done)\n",
+				       port->name);
 				clear_epp_timeout(port);
 			}
 		}
@@ -727,7 +720,7 @@ static size_t parport_pc_compat_write_block_pio(struct parport *port,
 	r = change_mode(port, ECR_PPF); /* Parallel port FIFO */
 	if (r)
 		printk(KERN_DEBUG "%s: Warning change_mode ECR_PPF failed\n",
-								port->name);
+		       port->name);
 
 	port->physport->ieee1284.phase = IEEE1284_PH_FWD_DATA;
 
@@ -770,9 +763,8 @@ static size_t parport_pc_compat_write_block_pio(struct parport *port,
 				     PARPORT_STATUS_BUSY,
 				     PARPORT_STATUS_BUSY);
 	if (r)
-		printk(KERN_DEBUG
-			"%s: BUSY timeout (%d) in compat_write_block_pio\n",
-			port->name, r);
+		printk(KERN_DEBUG "%s: BUSY timeout (%d) in compat_write_block_pio\n",
+		       port->name, r);
 
 	port->physport->ieee1284.phase = IEEE1284_PH_FWD_IDLE;
 
@@ -810,8 +802,8 @@ static size_t parport_pc_ecp_write_block_pio(struct parport *port,
 					     PARPORT_STATUS_PAPEROUT,
 					     PARPORT_STATUS_PAPEROUT);
 		if (r) {
-			printk(KERN_DEBUG "%s: PError timeout (%d) "
-				"in ecp_write_block_pio\n", port->name, r);
+			printk(KERN_DEBUG "%s: PError timeout (%d) in ecp_write_block_pio\n",
+			       port->name, r);
 		}
 	}
 
@@ -824,7 +816,7 @@ static size_t parport_pc_ecp_write_block_pio(struct parport *port,
 	r = change_mode(port, ECR_ECP); /* ECP FIFO */
 	if (r)
 		printk(KERN_DEBUG "%s: Warning change_mode ECR_ECP failed\n",
-								port->name);
+		       port->name);
 	port->physport->ieee1284.phase = IEEE1284_PH_FWD_DATA;
 
 	/* Write the data to the FIFO. */
@@ -867,8 +859,8 @@ static size_t parport_pc_ecp_write_block_pio(struct parport *port,
 		parport_frob_control(port, PARPORT_CONTROL_INIT, 0);
 		r = parport_wait_peripheral(port, PARPORT_STATUS_PAPEROUT, 0);
 		if (r)
-			printk(KERN_DEBUG "%s: PE,1 timeout (%d) "
-				"in ecp_write_block_pio\n", port->name, r);
+			printk(KERN_DEBUG "%s: PE,1 timeout (%d) in ecp_write_block_pio\n",
+			       port->name, r);
 
 		parport_frob_control(port,
 				      PARPORT_CONTROL_INIT,
@@ -877,17 +869,16 @@ static size_t parport_pc_ecp_write_block_pio(struct parport *port,
 					     PARPORT_STATUS_PAPEROUT,
 					     PARPORT_STATUS_PAPEROUT);
 		if (r)
-			printk(KERN_DEBUG "%s: PE,2 timeout (%d) "
-				"in ecp_write_block_pio\n", port->name, r);
+			printk(KERN_DEBUG "%s: PE,2 timeout (%d) in ecp_write_block_pio\n",
+			       port->name, r);
 	}
 
 	r = parport_wait_peripheral(port,
 				     PARPORT_STATUS_BUSY,
 				     PARPORT_STATUS_BUSY);
 	if (r)
-		printk(KERN_DEBUG
-			"%s: BUSY timeout (%d) in ecp_write_block_pio\n",
-			port->name, r);
+		printk(KERN_DEBUG "%s: BUSY timeout (%d) in ecp_write_block_pio\n",
+		       port->name, r);
 
 	port->physport->ieee1284.phase = IEEE1284_PH_FWD_IDLE;
 
@@ -1611,7 +1602,7 @@ static int parport_ECP_supported(struct parport *pb)
 	if (i <= priv->fifo_depth) {
 		if (verbose_probing)
 			printk(KERN_DEBUG "0x%lx: writeIntrThreshold is %d\n",
-				pb->base, i);
+			       pb->base, i);
 	} else
 		/* Number of bytes we know we can write if we get an
 		   interrupt. */
@@ -1656,7 +1647,7 @@ static int parport_ECP_supported(struct parport *pb)
 		break;
 	default:
 		pr_warn("0x%lx: Unknown implementation ID\n", pb->base);
-		/* Fall through - Assume 1 */
+		fallthrough;	/* Assume 1 */
 	case 1:
 		pword = 1;
 	}
@@ -1664,14 +1655,14 @@ static int parport_ECP_supported(struct parport *pb)
 
 	if (verbose_probing) {
 		printk(KERN_DEBUG "0x%lx: PWord is %d bits\n",
-			pb->base, 8 * pword);
+		       pb->base, 8 * pword);
 
-		printk(KERN_DEBUG "0x%lx: Interrupts are ISA-%s\n", pb->base,
-			config & 0x80 ? "Level" : "Pulses");
+		printk(KERN_DEBUG "0x%lx: Interrupts are ISA-%s\n",
+		       pb->base, config & 0x80 ? "Level" : "Pulses");
 
 		configb = inb(CONFIGB(pb));
 		printk(KERN_DEBUG "0x%lx: ECP port cfgA=0x%02x cfgB=0x%02x\n",
-			pb->base, config, configb);
+		       pb->base, config, configb);
 		printk(KERN_DEBUG "0x%lx: ECP settings irq=", pb->base);
 		if ((configb >> 3) & 0x07)
 			pr_cont("%d", intrline[(configb >> 3) & 0x07]);
@@ -2295,7 +2286,7 @@ static int sio_ite_8872_probe(struct pci_dev *pdev, int autoirq, int autodma,
 	int irq;
 	int i;
 
-	DPRINTK(KERN_DEBUG "sio_ite_8872_probe()\n");
+	pr_debug("sio_ite_8872_probe()\n");
 
 	/* make sure which one chip */
 	for (i = 0; i < 5; i++) {
@@ -2360,11 +2351,9 @@ static int sio_ite_8872_probe(struct pci_dev *pdev, int autoirq, int autodma,
 	pci_write_config_dword(pdev, 0x9c,
 				ite8872set | (ite8872_irq * 0x11111));
 
-	DPRINTK(KERN_DEBUG "ITE887x: The IRQ is %d.\n", ite8872_irq);
-	DPRINTK(KERN_DEBUG "ITE887x: The PARALLEL I/O port is 0x%x.\n",
-		 ite8872_lpt);
-	DPRINTK(KERN_DEBUG "ITE887x: The PARALLEL I/O porthi is 0x%x.\n",
-		 ite8872_lpthi);
+	pr_debug("ITE887x: The IRQ is %d\n", ite8872_irq);
+	pr_debug("ITE887x: The PARALLEL I/O port is 0x%x\n", ite8872_lpt);
+	pr_debug("ITE887x: The PARALLEL I/O porthi is 0x%x\n", ite8872_lpthi);
 
 	/* Let the user (or defaults) steer us away from interrupts */
 	irq = ite8872_irq;
@@ -2451,8 +2440,7 @@ static int sio_via_probe(struct pci_dev *pdev, int autoirq, int autodma,
 		have_epp = 1;
 		break;
 	default:
-		printk(KERN_DEBUG
-			"parport_pc: probing current configuration\n");
+		printk(KERN_DEBUG "parport_pc: probing current configuration\n");
 		siofunc = VIA_FUNCTION_PROBE;
 		break;
 	}
@@ -2488,12 +2476,11 @@ static int sio_via_probe(struct pci_dev *pdev, int autoirq, int autodma,
 	port1 = inb(VIA_CONFIG_DATA) << 2;
 
 	printk(KERN_DEBUG "parport_pc: Current parallel port base: 0x%X\n",
-									port1);
+	       port1);
 	if (port1 == 0x3BC && have_epp) {
 		outb(via->viacfg_parport_base, VIA_CONFIG_INDEX);
 		outb((0x378 >> 2), VIA_CONFIG_DATA);
-		printk(KERN_DEBUG
-			"parport_pc: Parallel port base changed to 0x378\n");
+		printk(KERN_DEBUG "parport_pc: Parallel port base changed to 0x378\n");
 		port1 = 0x378;
 	}
 
@@ -2624,6 +2611,7 @@ enum parport_pc_pci_cards {
 	netmos_9815,
 	netmos_9901,
 	netmos_9865,
+	asix_ax99100,
 	quatech_sppxp100,
 	wch_ch382l,
 	brainboxes_uc146,
@@ -2689,6 +2677,7 @@ static struct parport_pc_pci {
 	/* netmos_9815 */		{ 2, { { 0, 1 }, { 2, 3 }, } },
 	/* netmos_9901 */               { 1, { { 0, -1 }, } },
 	/* netmos_9865 */               { 1, { { 0, -1 }, } },
+	/* asix_ax99100 */		{ 1, { { 0, 1 }, } },
 	/* quatech_sppxp100 */		{ 1, { { 0, 1 }, } },
 	/* wch_ch382l */		{ 1, { { 2, -1 }, } },
 	/* brainboxes_uc146 */	{ 1, { { 3, -1 }, } },
@@ -2779,6 +2768,9 @@ static const struct pci_device_id parport_pc_pci_tbl[] = {
 	  0xA000, 0x1000, 0, 0, netmos_9865 },
 	{ PCI_VENDOR_ID_NETMOS, PCI_DEVICE_ID_NETMOS_9865,
 	  0xA000, 0x2000, 0, 0, netmos_9865 },
+	/* ASIX AX99100 PCIe to Multi I/O Controller */
+	{ PCI_VENDOR_ID_ASIX, PCI_DEVICE_ID_ASIX_AX99100,
+	  0xA000, 0x2000, 0, 0, asix_ax99100 },
 	/* Quatech SPPXP-100 Parallel port PCI ExpressCard */
 	{ PCI_VENDOR_ID_QUATECH, PCI_DEVICE_ID_QUATECH_SPPXP_100,
 	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, quatech_sppxp100 },
@@ -2853,14 +2845,12 @@ static int parport_pc_pci_probe(struct pci_dev *dev,
 		/* TODO: test if sharing interrupts works */
 		irq = dev->irq;
 		if (irq == IRQ_NONE) {
-			printk(KERN_DEBUG
-	"PCI parallel port detected: %04x:%04x, I/O at %#lx(%#lx)\n",
-				id->vendor, id->device, io_lo, io_hi);
+			printk(KERN_DEBUG "PCI parallel port detected: %04x:%04x, I/O at %#lx(%#lx)\n",
+			       id->vendor, id->device, io_lo, io_hi);
 			irq = PARPORT_IRQ_NONE;
 		} else {
-			printk(KERN_DEBUG
-	"PCI parallel port detected: %04x:%04x, I/O at %#lx(%#lx), IRQ %d\n",
-				id->vendor, id->device, io_lo, io_hi, irq);
+			printk(KERN_DEBUG "PCI parallel port detected: %04x:%04x, I/O at %#lx(%#lx), IRQ %d\n",
+			       id->vendor, id->device, io_lo, io_hi, irq);
 		}
 		data->ports[count] =
 			parport_pc_probe_port(io_lo, io_hi, irq,
@@ -3132,8 +3122,8 @@ static int __init parport_parse_dma(const char *dmastr, int *val)
 #ifdef CONFIG_PCI
 static int __init parport_init_mode_setup(char *str)
 {
-	printk(KERN_DEBUG
-	     "parport_pc.c: Specified parameter parport_init_mode=%s\n", str);
+	printk(KERN_DEBUG "parport_pc.c: Specified parameter parport_init_mode=%s\n",
+	       str);
 
 	if (!strcmp(str, "spp"))
 		parport_init_mode = 1;

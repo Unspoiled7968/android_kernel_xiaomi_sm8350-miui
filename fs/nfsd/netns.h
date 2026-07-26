@@ -40,7 +40,7 @@ struct nfsd_net {
 
 	struct lock_manager nfsd4_manager;
 	bool grace_ended;
-	time_t boot_time;
+	time64_t boot_time;
 
 	struct dentry *nfsd_client_dir;
 
@@ -89,8 +89,8 @@ struct nfsd_net {
 	bool in_grace;
 	const struct nfsd4_client_tracking_ops *client_tracking_ops;
 
-	time_t nfsd4_lease;
-	time_t nfsd4_grace;
+	time64_t nfsd4_lease;
+	time64_t nfsd4_grace;
 	bool somebody_reclaimed;
 
 	bool track_reclaim_completes;
@@ -128,6 +128,7 @@ struct nfsd_net {
 	u32		s2s_cp_cl_id;
 	struct idr	s2s_cp_stateids;
 	spinlock_t	s2s_cp_lock;
+	atomic_t	pending_async_copies;
 
 	/*
 	 * Version information
@@ -171,6 +172,8 @@ struct nfsd_net {
 	unsigned int             longest_chain_cachesize;
 
 	struct shrinker		nfsd_reply_cache_shrinker;
+	/* utsname taken from the process that starts the server */
+	char			nfsd_name[UNX_MAXNODENAME+1];
 };
 
 /* Simple check to find out if a given net was properly initialized */

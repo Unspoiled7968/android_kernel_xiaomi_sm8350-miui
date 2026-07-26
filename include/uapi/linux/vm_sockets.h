@@ -17,6 +17,10 @@
 #ifndef _UAPI_VM_SOCKETS_H
 #define _UAPI_VM_SOCKETS_H
 
+#ifndef __KERNEL__
+#include <sys/socket.h>        /* for struct sockaddr and sa_family_t */
+#endif
+
 #include <linux/socket.h>
 
 /* Option name for STREAM socket buffer size.  Use as the option name in
@@ -99,11 +103,13 @@
 
 #define VMADDR_CID_HYPERVISOR 0
 
-/* This CID is specific to VMCI and can be considered reserved (even VMCI
- * doesn't use it anymore, it's a legacy value from an older release).
+/* Use this as the destination CID in an address when referring to the
+ * local communication (loopback).
+ * (This was VMADDR_CID_RESERVED, but even VMCI doesn't use it anymore,
+ * it was a legacy value from an older release).
  */
 
-#define VMADDR_CID_RESERVED 1
+#define VMADDR_CID_LOCAL 1
 
 /* Use this as the destination CID in an address when referring to the host
  * (any process other than the hypervisor).  VMCI relies on it being 2, but

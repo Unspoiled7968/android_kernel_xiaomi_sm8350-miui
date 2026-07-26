@@ -86,8 +86,7 @@ hbh_mt6(const struct sk_buff *skb, struct xt_action_param *par)
 		  ((optinfo->hdrlen == hdrlen) ^
 		   !!(optinfo->invflags & IP6T_OPTS_INV_LEN))));
 
-	ret = (oh != NULL) &&
-	      (!(optinfo->flags & IP6T_OPTS_LEN) ||
+	ret = (!(optinfo->flags & IP6T_OPTS_LEN) ||
 	       ((optinfo->hdrlen == hdrlen) ^
 		!!(optinfo->invflags & IP6T_OPTS_INV_LEN)));
 
@@ -167,6 +166,10 @@ static int hbh_mt6_check(const struct xt_mtchk_param *par)
 
 	if (optsinfo->invflags & ~IP6T_OPTS_INV_MASK) {
 		pr_debug("unknown flags %X\n", optsinfo->invflags);
+		return -EINVAL;
+	}
+	if (optsinfo->optsnr > IP6T_OPTS_OPTSNR) {
+		pr_debug("too many supported opts specified\n");
 		return -EINVAL;
 	}
 

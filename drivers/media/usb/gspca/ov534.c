@@ -14,7 +14,7 @@
  * PS3 Eye camera - brightness, contrast, awb, agc, aec controls
  *                  added by Max Thrun <bear24rw@gmail.com>
  * PS3 Eye camera - FPS range extended by Joseph Howse
- *                  <josephhowse@nummist.com> http://nummist.com
+ *                  <josephhowse@nummist.com> https://nummist.com
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -847,7 +847,7 @@ static void set_frame_rate(struct gspca_dev *gspca_dev)
 		r = rate_1;
 		i = ARRAY_SIZE(rate_1);
 	}
-	while (--i > 0) {
+	while (--i >= 0) {
 		if (sd->frame_rate >= r->fps)
 			break;
 		r++;

@@ -11,6 +11,7 @@ use File::Path qw(mkpath);
 use File::Copy qw(cp);
 use FileHandle;
 use FindBin;
+use IO::Handle;
 
 my $VERSION = "0.2";
 
@@ -30,7 +31,7 @@ my %default = (
     "EMAIL_WHEN_STARTED"	=> 0,
     "NUM_TESTS"			=> 1,
     "TEST_TYPE"			=> "build",
-    "BUILD_TYPE"		=> "randconfig",
+    "BUILD_TYPE"		=> "oldconfig",
     "MAKE_CMD"			=> "make",
     "CLOSE_CONSOLE_SIGNAL"	=> "INT",
     "TIMEOUT"			=> 120,
@@ -81,6 +82,8 @@ my %default = (
     "IGNORE_UNUSED"		=> 0,
 );
 
+my $test_log_start = 0;
+
 my $ktest_config = "ktest.conf";
 my $version;
 my $have_version = 0;
@@ -95,9 +98,11 @@ my $test_type;
 my $build_type;
 my $build_options;
 my $final_post_ktest;
+my $post_ktest_done = 0;
 my $pre_ktest;
 my $post_ktest;
 my $pre_test;
+my $pre_test_die;
 my $post_test;
 my $pre_build;
 my $post_build;
@@ -224,6 +229,7 @@ my $dirname = $FindBin::Bin;
 my $mailto;
 my $mailer;
 my $mail_path;
+my $mail_max_size;
 my $mail_command;
 my $email_on_error;
 my $email_when_finished;
@@ -260,6 +266,7 @@ my %option_map = (
     "MAILTO"			=> \$mailto,
     "MAILER"			=> \$mailer,
     "MAIL_PATH"			=> \$mail_path,
+    "MAIL_MAX_SIZE"		=> \$mail_max_size,
     "MAIL_COMMAND"		=> \$mail_command,
     "EMAIL_ON_ERROR"		=> \$email_on_error,
     "EMAIL_WHEN_FINISHED"	=> \$email_when_finished,
@@ -274,6 +281,7 @@ my %option_map = (
     "PRE_KTEST"			=> \$pre_ktest,
     "POST_KTEST"		=> \$post_ktest,
     "PRE_TEST"			=> \$pre_test,
+    "PRE_TEST_DIE"		=> \$pre_test_die,
     "POST_TEST"			=> \$post_test,
     "BUILD_TYPE"		=> \$build_type,
     "BUILD_OPTIONS"		=> \$build_options,
@@ -509,9 +517,7 @@ EOF
 
 sub _logit {
     if (defined($opt{"LOG_FILE"})) {
-	open(OUT, ">> $opt{LOG_FILE}") or die "Can't write to $opt{LOG_FILE}";
-	print OUT @_;
-	close(OUT);
+	print LOG @_;
     }
 }
 
@@ -757,7 +763,7 @@ sub process_variables {
     # remove the space added in the beginning
     $retval =~ s/ //;
 
-    return "$retval"
+    return "$retval";
 }
 
 sub set_value {
@@ -912,6 +918,12 @@ sub process_expression {
 	}
     }
 
+    if ($val =~ s/^\s*NOT\s+(.*)//) {
+	my $express = $1;
+	my $ret = process_expression($name, $express);
+	return !$ret;
+    }
+
     if ($val =~ /^\s*0\s*$/) {
 	return 0;
     } elsif ($val =~ /^\s*\d+\s*$/) {
@@ -1033,7 +1045,7 @@ sub __read_config {
 	    }
 
 	    if (!$skip && $rest !~ /^\s*$/) {
-		die "$name: $.: Gargbage found after $type\n$_";
+		die "$name: $.: Garbage found after $type\n$_";
 	    }
 
 	    if ($skip && $type eq "TEST_START") {
@@ -1066,7 +1078,7 @@ sub __read_config {
 	    }
 
 	    if ($rest !~ /^\s*$/) {
-		die "$name: $.: Gargbage found after DEFAULTS\n$_";
+		die "$name: $.: Garbage found after DEFAULTS\n$_";
 	    }
 
 	} elsif (/^\s*INCLUDE\s+(\S+)/) {
@@ -1087,7 +1099,7 @@ sub __read_config {
 		    }
 		}
 	    }
-		
+
 	    if ( ! -r $file ) {
 		die "$name: $.: Can't read file $file\n$_";
 	    }
@@ -1157,7 +1169,7 @@ sub __read_config {
 	    # on of these sections that have SKIP defined.
 	    # The save variable can be
 	    # defined multiple times and the new one simply overrides
-	    # the prevous one.
+	    # the previous one.
 	    set_variable($lvalue, $rvalue);
 
 	} else {
@@ -1178,13 +1190,13 @@ sub __read_config {
 }
 
 sub get_test_case {
-	print "What test case would you like to run?\n";
-	print " (build, install or boot)\n";
-	print " Other tests are available but require editing ktest.conf\n";
-	print " (see tools/testing/ktest/sample.conf)\n";
-	my $ans = <STDIN>;
-	chomp $ans;
-	$default{"TEST_TYPE"} = $ans;
+    print "What test case would you like to run?\n";
+    print " (build, install or boot)\n";
+    print " Other tests are available but require editing ktest.conf\n";
+    print " (see tools/testing/ktest/sample.conf)\n";
+    my $ans = <STDIN>;
+    chomp $ans;
+    $default{"TEST_TYPE"} = $ans;
 }
 
 sub read_config {
@@ -1237,7 +1249,7 @@ sub read_config {
 	foreach my $option (keys %not_used) {
 	    print "$option\n";
 	}
-	print "Set IGRNORE_UNUSED = 1 to have ktest ignore unused variables\n";
+	print "Set IGNORE_UNUSED = 1 to have ktest ignore unused variables\n";
 	if (!read_yn "Do you want to continue?") {
 	    exit -1;
 	}
@@ -1280,7 +1292,10 @@ sub __eval_option {
 	# If a variable contains itself, use the default var
 	if (($var eq $name) && defined($opt{$var})) {
 	    $o = $opt{$var};
-	    $retval = "$retval$o";
+	    # Only append if the default doesn't contain itself
+	    if ($o !~ m/\$\{$var\}/) {
+		$retval = "$retval$o";
+	    }
 	} elsif (defined($opt{$o})) {
 	    $o = $opt{$o};
 	    $retval = "$retval$o";
@@ -1348,7 +1363,7 @@ sub eval_option {
 	# Check for recursive evaluations.
 	# 100 deep should be more than enough.
 	if ($r++ > 100) {
-	    die "Over 100 evaluations accurred with $option\n" .
+	    die "Over 100 evaluations occurred with $option\n" .
 		"Check for recursive variables\n";
 	}
 	$prev = $option;
@@ -1463,9 +1478,27 @@ sub get_test_name() {
     return $name;
 }
 
+sub run_post_ktest {
+    my $cmd;
+
+    return if ($post_ktest_done);
+
+    if (defined($final_post_ktest)) {
+	$cmd = $final_post_ktest;
+    } elsif (defined($post_ktest)) {
+	$cmd = $post_ktest;
+    } else {
+	return;
+    }
+
+    my $cp_post_ktest = eval_kernel_version($cmd);
+    run_command $cp_post_ktest;
+    $post_ktest_done = 1;
+}
+
 sub dodie {
 
-    # avoid recusion
+    # avoid recursion
     return if ($in_die);
     $in_die = 1;
 
@@ -1489,18 +1522,42 @@ sub dodie {
 
     if ($email_on_error) {
 	my $name = get_test_name;
-        send_email("KTEST: critical failure for test $i [$name]",
-                "Your test started at $script_start_time has failed with:\n@_\n");
+	my $log_file;
+
+	if (defined($opt{"LOG_FILE"})) {
+	    my $whence = 2; # End of file
+	    my $log_size = tell LOG;
+	    my $size = $log_size - $test_log_start;
+
+	    if (defined($mail_max_size)) {
+		if ($size > $mail_max_size) {
+		    $size = $mail_max_size;
+		}
+	    }
+	    my $pos = - $size;
+	    $log_file = "$tmpdir/log";
+	    open (L, "$opt{LOG_FILE}") or die "Can't open $opt{LOG_FILE} to read)";
+	    open (O, "> $tmpdir/log") or die "Can't open $tmpdir/log\n";
+	    seek(L, $pos, $whence);
+	    while (<L>) {
+		print O;
+	    }
+	    close O;
+	    close L;
+	}
+	send_email("KTEST: critical failure for test $i [$name]",
+	        "Your test started at $script_start_time has failed with:\n@_\n", $log_file);
     }
 
     if ($monitor_cnt) {
-	    # restore terminal settings
-	    system("stty $stty_orig");
+	# restore terminal settings
+	system("stty $stty_orig");
     }
 
     if (defined($post_test)) {
 	run_command $post_test;
     }
+    run_post_ktest;
 
     die @_, "\n";
 }
@@ -1512,7 +1569,7 @@ sub create_pty {
     my $TIOCGPTN = 0x80045430;
 
     sysopen($ptm, "/dev/ptmx", O_RDWR | O_NONBLOCK) or
-	dodie "Cant open /dev/ptmx";
+	dodie "Can't open /dev/ptmx";
 
     # unlockpt()
     $tmp = pack("i", 0);
@@ -1679,81 +1736,81 @@ sub wait_for_monitor {
 }
 
 sub save_logs {
-	my ($result, $basedir) = @_;
-	my @t = localtime;
-	my $date = sprintf "%04d%02d%02d%02d%02d%02d",
-		1900+$t[5],$t[4],$t[3],$t[2],$t[1],$t[0];
+    my ($result, $basedir) = @_;
+    my @t = localtime;
+    my $date = sprintf "%04d%02d%02d%02d%02d%02d",
+	1900+$t[5],$t[4]+1,$t[3],$t[2],$t[1],$t[0];
 
-	my $type = $build_type;
-	if ($type =~ /useconfig/) {
-	    $type = "useconfig";
+    my $type = $build_type;
+    if ($type =~ /useconfig/) {
+	$type = "useconfig";
+    }
+
+    my $dir = "$machine-$test_type-$type-$result-$date";
+
+    $dir = "$basedir/$dir";
+
+    if (!-d $dir) {
+	mkpath($dir) or
+	    dodie "can't create $dir";
+    }
+
+    my %files = (
+	"config" => $output_config,
+	"buildlog" => $buildlog,
+	"dmesg" => $dmesg,
+	"testlog" => $testlog,
+    );
+
+    while (my ($name, $source) = each(%files)) {
+	if (-f "$source") {
+	    cp "$source", "$dir/$name" or
+		dodie "failed to copy $source";
 	}
+    }
 
-	my $dir = "$machine-$test_type-$type-$result-$date";
-
-	$dir = "$basedir/$dir";
-
-	if (!-d $dir) {
-	    mkpath($dir) or
-		dodie "can't create $dir";
-	}
-
-	my %files = (
-		"config" => $output_config,
-		"buildlog" => $buildlog,
-		"dmesg" => $dmesg,
-		"testlog" => $testlog,
-	);
-
-	while (my ($name, $source) = each(%files)) {
-		if (-f "$source") {
-			cp "$source", "$dir/$name" or
-				dodie "failed to copy $source";
-		}
-	}
-
-	doprint "*** Saved info to $dir ***\n";
+    doprint "*** Saved info to $dir ***\n";
 }
 
 sub fail {
 
-	if ($die_on_failure) {
-		dodie @_;
-	}
+    if ($die_on_failure) {
+	dodie @_;
+    }
 
-	doprint "FAILED\n";
+    doprint "FAILED\n";
 
-	my $i = $iteration;
+    my $i = $iteration;
 
-	# no need to reboot for just building.
-	if (!do_not_reboot) {
-	    doprint "REBOOTING\n";
-	    reboot_to_good $sleep_time;
-	}
+    # no need to reboot for just building.
+    if (!do_not_reboot) {
+	doprint "REBOOTING\n";
+	reboot_to_good $sleep_time;
+    }
 
-	my $name = "";
+    my $name = "";
 
-	if (defined($test_name)) {
-	    $name = " ($test_name)";
-	}
+    if (defined($test_name)) {
+	$name = " ($test_name)";
+    }
 
-	print_times;
+    print_times;
 
-	doprint "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n";
-	doprint "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n";
-	doprint "KTEST RESULT: TEST $i$name Failed: ", @_, "\n";
-	doprint "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n";
-	doprint "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n";
+    doprint "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n";
+    doprint "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n";
+    doprint "KTEST RESULT: TEST $i$name Failed: ", @_, "\n";
+    doprint "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n";
+    doprint "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n";
 
-	if (defined($store_failures)) {
-	    save_logs "fail", $store_failures;
-        }
+    if (defined($store_failures)) {
+	save_logs "fail", $store_failures;
+    }
 
-	if (defined($post_test)) {
-		run_command $post_test;
-	}
+    if (defined($post_test)) {
+	run_command $post_test;
+    }
 
-	return 1;
+    return 1;
 }
 
 sub run_command {
@@ -1784,8 +1841,6 @@ sub run_command {
 	(fail "unable to exec $command" and return 0);
 
     if (defined($opt{"LOG_FILE"})) {
-	open(LOG, ">>$opt{LOG_FILE}") or
-	    dodie "failed to write to log";
 	$dolog = 1;
     }
 
@@ -1830,7 +1885,6 @@ sub run_command {
     }
 
     close(CMD);
-    close(LOG) if ($dolog);
     close(RD)  if ($dord);
 
     $end_time = time;
@@ -1954,12 +2008,12 @@ sub get_grub_index {
     } elsif ($reboot_type eq "grub2") {
 	$command = "cat $grub_file";
 	$target = '^\s*menuentry.*' . $grub_menu_qt;
-	$skip = '^\s*menuentry';
+	$skip = '^\s*menuentry\s';
 	$submenu = '^\s*submenu\s';
     } elsif ($reboot_type eq "grub2bls") {
-        $command = $grub_bls_get;
-        $target = '^title=.*' . $grub_menu_qt;
-        $skip = '^title=';
+	$command = $grub_bls_get;
+	$target = '^title=.*' . $grub_menu_qt;
+	$skip = '^title=';
     } else {
 	return;
     }
@@ -2319,6 +2373,11 @@ sub get_version {
     return if ($have_version);
     doprint "$make kernelrelease ... ";
     $version = `$make -s kernelrelease | tail -1`;
+    if (!length($version)) {
+	run_command "$make allnoconfig" or return 0;
+	doprint "$make kernelrelease ... ";
+	$version = `$make -s kernelrelease | tail -1`;
+    }
     chomp($version);
     doprint "$version\n";
     $have_version = 1;
@@ -2380,14 +2439,14 @@ sub check_buildlog {
     my $save_no_reboot = $no_reboot;
     $no_reboot = 1;
 
-    if (-f $warnings_file) {
+    if (defined($warnings_file) && -f $warnings_file) {
 	open(IN, $warnings_file) or
 	    dodie "Error opening $warnings_file";
 
 	while (<IN>) {
 	    if (/$check_build_re/) {
 		my $warning = process_warning_line $_;
-		
+
 		$warnings_list{$warning} = 1;
 	    }
 	}
@@ -2649,7 +2708,7 @@ sub success {
     doprint     "*******************************************\n";
 
     if (defined($store_successes)) {
-        save_logs "success", $store_successes;
+	save_logs "success", $store_successes;
     }
 
     if ($i != $opt{"NUM_TESTS"} && !do_not_reboot) {
@@ -2861,8 +2920,6 @@ sub run_bisect_test {
 
     my $failed = 0;
     my $result;
-    my $output;
-    my $ret;
 
     $in_bisect = 1;
 
@@ -3212,6 +3269,8 @@ sub config_bisect_end {
     doprint "***************************************\n\n";
 }
 
+my $pass = 1;
+
 sub run_config_bisect {
     my ($good, $bad, $last_result) = @_;
     my $reset = "";
@@ -3234,11 +3293,15 @@ sub run_config_bisect {
 
     $ret = run_config_bisect_test $config_bisect_type;
     if ($ret) {
-        doprint "NEW GOOD CONFIG\n";
+	doprint "NEW GOOD CONFIG ($pass)\n";
+	system("cp $output_config $tmpdir/good_config.tmp.$pass");
+	$pass++;
 	# Return 3 for good config
 	return 3;
     } else {
-        doprint "NEW BAD CONFIG\n";
+	doprint "NEW BAD CONFIG ($pass)\n";
+	system("cp $output_config $tmpdir/bad_config.tmp.$pass");
+	$pass++;
 	# Return 4 for bad config
 	return 4;
     }
@@ -3355,7 +3418,7 @@ sub config_bisect {
     } while ($ret == 3 || $ret == 4);
 
     if ($ret == 2) {
-        config_bisect_end "$good_config.tmp", "$bad_config.tmp";
+	config_bisect_end "$good_config.tmp", "$bad_config.tmp";
     }
 
     return $ret if ($ret < 0);
@@ -3535,7 +3598,6 @@ sub read_kconfig {
     my $cont = 0;
     my $line;
 
-
     if (! -f $kconfig) {
 	doprint "file $kconfig does not exist, skipping\n";
 	return;
@@ -3644,7 +3706,7 @@ sub read_depends {
 
     if (! -f $kconfig && $arch =~ /\d$/) {
 	my $orig = $arch;
- 	# some subarchs have numbers, truncate them
+	# some subarchs have numbers, truncate them
 	$arch =~ s/\d*$//;
 	$kconfig = "$builddir/arch/$arch/Kconfig";
 	if (! -f $kconfig) {
@@ -3840,7 +3902,7 @@ sub make_min_config {
     foreach my $config (@config_keys) {
 	my $kconfig = chomp_config $config;
 	if (!defined $depcount{$kconfig}) {
-		$depcount{$kconfig} = 0;
+	    $depcount{$kconfig} = 0;
 	}
     }
 
@@ -3942,13 +4004,13 @@ sub make_min_config {
 	my $failed = 0;
 	build "oldconfig" or $failed = 1;
 	if (!$failed) {
-		start_monitor_and_install or $failed = 1;
+	    start_monitor_and_install or $failed = 1;
 
-		if ($type eq "test" && !$failed) {
-		    do_run_test or $failed = 1;
-		}
+	    if ($type eq "test" && !$failed) {
+		do_run_test or $failed = 1;
+	    }
 
-		end_monitor;
+	    end_monitor;
 	}
 
 	$in_bisect = 0;
@@ -4102,8 +4164,12 @@ if ($#new_configs >= 0) {
     }
 }
 
-if ($opt{"CLEAR_LOG"} && defined($opt{"LOG_FILE"})) {
-    unlink $opt{"LOG_FILE"};
+if (defined($opt{"LOG_FILE"})) {
+    if ($opt{"CLEAR_LOG"}) {
+	unlink $opt{"LOG_FILE"};
+    }
+    open(LOG, ">> $opt{LOG_FILE}") or die "Can't write to $opt{LOG_FILE}";
+    LOG->autoflush(1);
 }
 
 doprint "\n\nSTARTING AUTOMATED TESTS\n\n";
@@ -4148,7 +4214,8 @@ sub __set_test_option {
 
     my $option = "$name\[$i\]";
 
-    if (option_defined($option)) {
+    if (exists($opt{$option})) {
+	return undef if (!option_defined($option));
 	return $opt{$option};
     }
 
@@ -4156,7 +4223,8 @@ sub __set_test_option {
 	if ($i >= $test &&
 	    $i < $test + $repeat_tests{$test}) {
 	    $option = "$name\[$test\]";
-	    if (option_defined($option)) {
+	    if (exists($opt{$option})) {
+		return undef if (!option_defined($option));
 		return $opt{$option};
 	    }
 	}
@@ -4196,7 +4264,7 @@ sub find_mailer {
 }
 
 sub do_send_mail {
-    my ($subject, $message) = @_;
+    my ($subject, $message, $file) = @_;
 
     if (!defined($mail_path)) {
 	# find the mailer
@@ -4206,16 +4274,30 @@ sub do_send_mail {
 	}
     }
 
+    my $header_file = "$tmpdir/header";
+    open (HEAD, ">$header_file") or die "Can not create $header_file\n";
+    print HEAD "To: $mailto\n";
+    print HEAD "Subject: $subject\n\n";
+    print HEAD "$message\n";
+    close HEAD;
+
     if (!defined($mail_command)) {
 	if ($mailer eq "mail" || $mailer eq "mailx") {
-	    $mail_command = "\$MAIL_PATH/\$MAILER -s \'\$SUBJECT\' \$MAILTO <<< \'\$MESSAGE\'";
+	    $mail_command = "cat \$HEADER_FILE \$BODY_FILE | \$MAIL_PATH/\$MAILER -s \'\$SUBJECT\' \$MAILTO";
 	} elsif ($mailer eq "sendmail" ) {
-	    $mail_command =  "echo \'Subject: \$SUBJECT\n\n\$MESSAGE\' | \$MAIL_PATH/\$MAILER -t \$MAILTO";
+	    $mail_command =  "cat \$HEADER_FILE \$BODY_FILE | \$MAIL_PATH/\$MAILER -t \$MAILTO";
 	} else {
 	    die "\nYour mailer: $mailer is not supported.\n";
 	}
     }
 
+    if (defined($file)) {
+	$mail_command =~ s/\$BODY_FILE/$file/g;
+    } else {
+	$mail_command =~ s/\$BODY_FILE//g;
+    }
+
+    $mail_command =~ s/\$HEADER_FILE/$header_file/g;
     $mail_command =~ s/\$MAILER/$mailer/g;
     $mail_command =~ s/\$MAIL_PATH/$mail_path/g;
     $mail_command =~ s/\$MAILTO/$mailto/g;
@@ -4247,9 +4329,10 @@ sub cancel_test {
     }
     if ($email_when_canceled) {
 	my $name = get_test_name;
-        send_email("KTEST: Your [$name] test was cancelled",
-                "Your test started at $script_start_time was cancelled: sig int");
+	send_email("KTEST: Your [$name] test was cancelled",
+	        "Your test started at $script_start_time was cancelled: sig int");
     }
+    run_post_ktest;
     die "\nCaught Sig Int, test interrupted: $!\n"
 }
 
@@ -4296,15 +4379,15 @@ for (my $i = 1; $i <= $opt{"NUM_TESTS"}; $i++) {
 
     # The first test may override the PRE_KTEST option
     if ($i == 1) {
-        if (defined($pre_ktest)) {
-            doprint "\n";
-            run_command $pre_ktest;
-        }
-        if ($email_when_started) {
+	if (defined($pre_ktest)) {
+	    doprint "\n";
+	    run_command $pre_ktest;
+	}
+	if ($email_when_started) {
 	    my $name = get_test_name;
-            send_email("KTEST: Your [$name] test was started",
-                "Your test was started on $script_start_time");
-        }
+	    send_email("KTEST: Your [$name] test was started",
+	        "Your test was started on $script_start_time");
+	}
     }
 
     # Any test can override the POST_KTEST option
@@ -4371,10 +4454,19 @@ for (my $i = 1; $i <= $opt{"NUM_TESTS"}; $i++) {
     }
 
     doprint "\n\n";
+
+    if (defined($opt{"LOG_FILE"})) {
+	$test_log_start = tell(LOG);
+    }
+
     doprint "RUNNING TEST $i of $opt{NUM_TESTS}$name with option $test_type $run_type$installme\n\n";
 
     if (defined($pre_test)) {
-	run_command $pre_test;
+	my $ret = run_command $pre_test;
+	if (!$ret && defined($pre_test_die) &&
+	    $pre_test_die) {
+	    dodie "failed to pre_test\n";
+	}
     }
 
     unlink $dmesg;
@@ -4452,11 +4544,7 @@ for (my $i = 1; $i <= $opt{"NUM_TESTS"}; $i++) {
     success $i;
 }
 
-if (defined($final_post_ktest)) {
-
-    my $cp_final_post_ktest = eval_kernel_version $final_post_ktest;
-    run_command $cp_final_post_ktest;
-}
+run_post_ktest;
 
 if ($opt{"POWEROFF_ON_SUCCESS"}) {
     halt;
@@ -4467,11 +4555,16 @@ if ($opt{"POWEROFF_ON_SUCCESS"}) {
     run_command $switch_to_good;
 }
 
-
 doprint "\n    $successes of $opt{NUM_TESTS} tests were successful\n\n";
 
 if ($email_when_finished) {
     send_email("KTEST: Your test has finished!",
-            "$successes of $opt{NUM_TESTS} tests started at $script_start_time were successful!");
+	    "$successes of $opt{NUM_TESTS} tests started at $script_start_time were successful!");
 }
+
+if (defined($opt{"LOG_FILE"})) {
+    print "\n See $opt{LOG_FILE} for the record of results.\n\n";
+    close LOG;
+}
+
 exit 0;

@@ -35,12 +35,14 @@ struct stm32_dmamux {
 struct stm32_dmamux_data {
 	struct dma_router dmarouter;
 	struct clk *clk;
-	struct reset_control *rst;
 	void __iomem *iomem;
 	u32 dma_requests; /* Number of DMA requests connected to DMAMUX */
 	u32 dmamux_requests; /* Number of DMA requests routed toward DMAs */
 	spinlock_t lock; /* Protects register access */
 	unsigned long *dma_inuse; /* Used DMA channel */
+	u32 ccr[STM32_DMAMUX_MAX_DMA_REQUESTS]; /* Used to backup CCR register
+						 * in suspend
+						 */
 	u32 dma_reqs[]; /* Number of DMA Request per DMA masters.
 			 *  [0] holds number of DMA Masters.
 			 *  To be kept at very end end of this structure
@@ -86,23 +88,25 @@ static void *stm32_dmamux_route_allocate(struct of_phandle_args *dma_spec,
 	struct stm32_dmamux_data *dmamux = platform_get_drvdata(pdev);
 	struct stm32_dmamux *mux;
 	u32 i, min, max;
-	int ret;
+	int ret = -EINVAL;
 	unsigned long flags;
 
 	if (dma_spec->args_count != 3) {
 		dev_err(&pdev->dev, "invalid number of dma mux args\n");
-		return ERR_PTR(-EINVAL);
+		goto err_put_pdev;
 	}
 
 	if (dma_spec->args[0] > dmamux->dmamux_requests) {
 		dev_err(&pdev->dev, "invalid mux request number: %d\n",
 			dma_spec->args[0]);
-		return ERR_PTR(-EINVAL);
+		goto err_put_pdev;
 	}
 
 	mux = kzalloc(sizeof(*mux), GFP_KERNEL);
-	if (!mux)
-		return ERR_PTR(-ENOMEM);
+	if (!mux) {
+		ret = -ENOMEM;
+		goto err_put_pdev;
+	}
 
 	spin_lock_irqsave(&dmamux->lock, flags);
 	mux->chan_id = find_first_zero_bit(dmamux->dma_inuse,
@@ -129,16 +133,15 @@ static void *stm32_dmamux_route_allocate(struct of_phandle_args *dma_spec,
 	dma_spec->np = of_parse_phandle(ofdma->of_node, "dma-masters", i - 1);
 	if (!dma_spec->np) {
 		dev_err(&pdev->dev, "can't get dma master\n");
-		ret = -EINVAL;
 		goto error;
 	}
 
 	/* Set dma request */
 	spin_lock_irqsave(&dmamux->lock, flags);
-	ret = pm_runtime_get_sync(&pdev->dev);
+	ret = pm_runtime_resume_and_get(&pdev->dev);
 	if (ret < 0) {
 		spin_unlock_irqrestore(&dmamux->lock, flags);
-		goto error;
+		goto err_put_dma_spec_np;
 	}
 	spin_unlock_irqrestore(&dmamux->lock, flags);
 
@@ -156,13 +159,20 @@ static void *stm32_dmamux_route_allocate(struct of_phandle_args *dma_spec,
 	dev_dbg(&pdev->dev, "Mapping DMAMUX(%u) to DMA%u(%u)\n",
 		mux->request, mux->master, mux->chan_id);
 
+	put_device(&pdev->dev);
+
 	return mux;
 
+err_put_dma_spec_np:
+	of_node_put(dma_spec->np);
 error:
 	clear_bit(mux->chan_id, dmamux->dma_inuse);
 
 error_chan_id:
 	kfree(mux);
+err_put_pdev:
+	put_device(&pdev->dev);
+
 	return ERR_PTR(ret);
 }
 
@@ -179,6 +189,7 @@ static int stm32_dmamux_probe(struct platform_device *pdev)
 	struct stm32_dmamux_data *stm32_dmamux;
 	struct resource *res;
 	void __iomem *iomem;
+	struct reset_control *rst;
 	int i, count, ret;
 	u32 dma_req;
 
@@ -249,18 +260,25 @@ static int stm32_dmamux_probe(struct platform_device *pdev)
 	spin_lock_init(&stm32_dmamux->lock);
 
 	stm32_dmamux->clk = devm_clk_get(&pdev->dev, NULL);
-	if (IS_ERR(stm32_dmamux->clk)) {
-		ret = PTR_ERR(stm32_dmamux->clk);
-		if (ret == -EPROBE_DEFER)
-			dev_info(&pdev->dev, "Missing controller clock\n");
+	if (IS_ERR(stm32_dmamux->clk))
+		return dev_err_probe(&pdev->dev, PTR_ERR(stm32_dmamux->clk),
+				     "Missing clock controller\n");
+
+	ret = clk_prepare_enable(stm32_dmamux->clk);
+	if (ret < 0) {
+		dev_err(&pdev->dev, "clk_prep_enable error: %d\n", ret);
 		return ret;
 	}
 
-	stm32_dmamux->rst = devm_reset_control_get(&pdev->dev, NULL);
-	if (!IS_ERR(stm32_dmamux->rst)) {
-		reset_control_assert(stm32_dmamux->rst);
+	rst = devm_reset_control_get(&pdev->dev, NULL);
+	if (IS_ERR(rst)) {
+		ret = PTR_ERR(rst);
+		if (ret == -EPROBE_DEFER)
+			goto err_clk;
+	} else {
+		reset_control_assert(rst);
 		udelay(2);
-		reset_control_deassert(stm32_dmamux->rst);
+		reset_control_deassert(rst);
 	}
 
 	stm32_dmamux->iomem = iomem;
@@ -271,14 +289,6 @@ static int stm32_dmamux_probe(struct platform_device *pdev)
 	pm_runtime_set_active(&pdev->dev);
 	pm_runtime_enable(&pdev->dev);
 
-	if (!IS_ERR(stm32_dmamux->clk)) {
-		ret = clk_prepare_enable(stm32_dmamux->clk);
-		if (ret < 0) {
-			dev_err(&pdev->dev, "clk_prep_enable error: %d\n", ret);
-			return ret;
-		}
-	}
-
 	pm_runtime_get_noresume(&pdev->dev);
 
 	/* Reset the dmamux */
@@ -287,8 +297,19 @@ static int stm32_dmamux_probe(struct platform_device *pdev)
 
 	pm_runtime_put(&pdev->dev);
 
-	return of_dma_router_register(node, stm32_dmamux_route_allocate,
+	ret = of_dma_router_register(node, stm32_dmamux_route_allocate,
 				     &stm32_dmamux->dmarouter);
+	if (ret)
+		goto pm_disable;
+
+	return 0;
+
+pm_disable:
+	pm_runtime_disable(&pdev->dev);
+err_clk:
+	clk_disable_unprepare(stm32_dmamux->clk);
+
+	return ret;
 }
 
 #ifdef CONFIG_PM
@@ -318,7 +339,54 @@ static int stm32_dmamux_runtime_resume(struct device *dev)
 }
 #endif
 
+#ifdef CONFIG_PM_SLEEP
+static int stm32_dmamux_suspend(struct device *dev)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+	struct stm32_dmamux_data *stm32_dmamux = platform_get_drvdata(pdev);
+	int i, ret;
+
+	ret = pm_runtime_resume_and_get(dev);
+	if (ret < 0)
+		return ret;
+
+	for (i = 0; i < stm32_dmamux->dma_requests; i++)
+		stm32_dmamux->ccr[i] = stm32_dmamux_read(stm32_dmamux->iomem,
+							 STM32_DMAMUX_CCR(i));
+
+	pm_runtime_put_sync(dev);
+
+	pm_runtime_force_suspend(dev);
+
+	return 0;
+}
+
+static int stm32_dmamux_resume(struct device *dev)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+	struct stm32_dmamux_data *stm32_dmamux = platform_get_drvdata(pdev);
+	int i, ret;
+
+	ret = pm_runtime_force_resume(dev);
+	if (ret < 0)
+		return ret;
+
+	ret = pm_runtime_resume_and_get(dev);
+	if (ret < 0)
+		return ret;
+
+	for (i = 0; i < stm32_dmamux->dma_requests; i++)
+		stm32_dmamux_write(stm32_dmamux->iomem, STM32_DMAMUX_CCR(i),
+				   stm32_dmamux->ccr[i]);
+
+	pm_runtime_put_sync(dev);
+
+	return 0;
+}
+#endif
+
 static const struct dev_pm_ops stm32_dmamux_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(stm32_dmamux_suspend, stm32_dmamux_resume)
 	SET_RUNTIME_PM_OPS(stm32_dmamux_runtime_suspend,
 			   stm32_dmamux_runtime_resume, NULL)
 };

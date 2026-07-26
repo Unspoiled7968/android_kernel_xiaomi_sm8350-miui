@@ -3,6 +3,12 @@
 1. BEST: Make all of your changes to upstream Linux. If appropriate, backport to the stable releases.
    These patches will be merged automatically in the corresponding common kernels. If the patch is already
    in upstream Linux, post a backport of the patch that conforms to the patch requirements below.
+   - Do not send patches upstream that contain only symbol exports. To be considered for upstream Linux,
+additions of `EXPORT_SYMBOL_GPL()` require an in-tree modular driver that uses the symbol -- so include
+the new driver or changes to an existing driver in the same patchset as the export.
+   - When sending patches upstream, the commit message must contain a clear case for why the patch
+is needed and beneficial to the community. Enabling out-of-tree drivers or functionality is not
+not a persuasive case.
 
 2. LESS GOOD: Develop your patches out-of-tree (from an upstream Linux point-of-view). Unless these are
    fixing an Android-specific bug, these are very unlikely to be accepted unless they have been
@@ -26,7 +32,7 @@ Additional requirements are listed below based on patch type
 
 - If the patch is a cherry-pick from Linux mainline with no changes at all
     - tag the patch subject with `UPSTREAM:`.
-    - add upstream commit information with a `(cherry-picked from ...)` line
+    - add upstream commit information with a `(cherry picked from commit ...)` line
     - Example:
         - if the upstream commit message is
 ```
@@ -36,7 +42,7 @@ Additional requirements are listed below based on patch type
 
         Signed-off-by: Fred Jones <fred.jones@foo.org>
 ```
-        - then Joe Smith would upload the patch for the common kernel as
+>- then Joe Smith would upload the patch for the common kernel as
 ```
         UPSTREAM: important patch from upstream
 
@@ -46,14 +52,14 @@ Additional requirements are listed below based on patch type
 
         Bug: 135791357
         Change-Id: I4caaaa566ea080fa148c5e768bb1a0b6f7201c01
-        (cherry-picked from c31e73121f4c1ec41143423ac6ce3ce6dafdcec1)
+        (cherry picked from commit c31e73121f4c1ec41143423ac6ce3ce6dafdcec1)
         Signed-off-by: Joe Smith <joe.smith@foo.org>
 ```
 
 - If the patch requires any changes from the upstream version, tag the patch with `BACKPORT:`
 instead of `UPSTREAM:`.
     - use the same tags as `UPSTREAM:`
-    - add comments about the changes under the `(cherry-picked from ...)` line
+    - add comments about the changes under the `(cherry picked from commit ...)` line
     - Example:
 ```
         BACKPORT: important patch from upstream
@@ -64,8 +70,8 @@ instead of `UPSTREAM:`.
 
         Bug: 135791357
         Change-Id: I4caaaa566ea080fa148c5e768bb1a0b6f7201c01
-        (cherry-picked from c31e73121f4c1ec41143423ac6ce3ce6dafdcec1)
-        [ Resolved minor conflict in drivers/foo/bar.c ]
+        (cherry picked from commit c31e73121f4c1ec41143423ac6ce3ce6dafdcec1)
+        [joe: Resolved minor conflict in drivers/foo/bar.c ]
         Signed-off-by: Joe Smith <joe.smith@foo.org>
 ```
 
@@ -86,7 +92,7 @@ must be a stable maintainer branch (not rebased, so don't use `linux-next` for e
 
         Signed-off-by: Fred Jones <fred.jones@foo.org>
 ```
-        - then Joe Smith would upload the patch for the common kernel as
+>- then Joe Smith would upload the patch for the common kernel as
 ```
         FROMGIT: important patch from upstream
 
@@ -105,6 +111,8 @@ must be a stable maintainer branch (not rebased, so don't use `linux-next` for e
 - If the patch has been submitted to LKML, but not accepted into any maintainer tree
     - tag the patch subject with `FROMLIST:`
     - add a `Link:` tag with a link to the submittal on lore.kernel.org
+    - add a `Bug:` tag with the Android bug (required for patches not accepted into
+a maintainer tree)
     - if changes were required, use `BACKPORT: FROMLIST:`
     - Example:
 ```

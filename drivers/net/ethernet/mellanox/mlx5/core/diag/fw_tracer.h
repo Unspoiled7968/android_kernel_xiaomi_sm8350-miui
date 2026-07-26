@@ -117,6 +117,7 @@ struct tracer_string_format {
 	struct list_head list;
 	u32 timestamp;
 	bool lost;
+	bool invalid_string;
 };
 
 enum mlx5_fw_tracer_ownership_state {
@@ -158,6 +159,7 @@ struct tracer_event {
 		struct tracer_string_event string_event;
 		struct tracer_timestamp_event timestamp_event;
 	};
+	u64 *out;
 };
 
 struct mlx5_ifc_tracer_event_bits {
@@ -191,5 +193,6 @@ void mlx5_fw_tracer_destroy(struct mlx5_fw_tracer *tracer);
 int mlx5_fw_tracer_trigger_core_dump_general(struct mlx5_core_dev *dev);
 int mlx5_fw_tracer_get_saved_traces_objects(struct mlx5_fw_tracer *tracer,
 					    struct devlink_fmsg *fmsg);
+int mlx5_fw_tracer_reload(struct mlx5_fw_tracer *tracer);
 
 #endif

@@ -82,7 +82,7 @@ int __must_check fsl_create_mc_io(struct device *dev,
 	mc_io->portal_phys_addr = mc_portal_phys_addr;
 	mc_io->portal_size = mc_portal_size;
 	if (flags & FSL_MC_IO_ATOMIC_CONTEXT_PORTAL)
-		spin_lock_init(&mc_io->spinlock);
+		raw_spin_lock_init(&mc_io->spinlock);
 	else
 		mutex_init(&mc_io->mutex);
 
@@ -97,12 +97,12 @@ int __must_check fsl_create_mc_io(struct device *dev,
 		return -EBUSY;
 	}
 
-	mc_portal_virt_addr = devm_ioremap_nocache(dev,
+	mc_portal_virt_addr = devm_ioremap(dev,
 						   mc_portal_phys_addr,
 						   mc_portal_size);
 	if (!mc_portal_virt_addr) {
 		dev_err(dev,
-			"devm_ioremap_nocache failed for MC portal %pa\n",
+			"devm_ioremap failed for MC portal %pa\n",
 			&mc_portal_phys_addr);
 		return -ENXIO;
 	}
@@ -214,12 +214,19 @@ int __must_check fsl_mc_portal_allocate(struct fsl_mc_device *mc_dev,
 	if (error < 0)
 		goto error_cleanup_resource;
 
-	dpmcp_dev->consumer_link = device_link_add(&mc_dev->dev,
-						   &dpmcp_dev->dev,
-						   DL_FLAG_AUTOREMOVE_CONSUMER);
-	if (!dpmcp_dev->consumer_link) {
-		error = -EINVAL;
-		goto error_cleanup_mc_io;
+	/* If the DPRC device itself tries to allocate a portal (usually for
+	 * UAPI interaction), don't add a device link between them since the
+	 * DPMCP device is an actual child device of the DPRC and a reverse
+	 * dependency is not allowed.
+	 */
+	if (mc_dev != mc_bus_dev) {
+		dpmcp_dev->consumer_link = device_link_add(&mc_dev->dev,
+							   &dpmcp_dev->dev,
+							   DL_FLAG_AUTOREMOVE_CONSUMER);
+		if (!dpmcp_dev->consumer_link) {
+			error = -EINVAL;
+			goto error_cleanup_mc_io;
+		}
 	}
 
 	*new_mc_io = mc_io;

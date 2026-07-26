@@ -45,7 +45,7 @@ static int nilfs_dat_prepare_entry(struct inode *dat,
 	ret = nilfs_palloc_get_entry_block(dat, req->pr_entry_nr,
 					   create, &req->pr_entry_bh);
 	if (unlikely(ret == -ENOENT)) {
-		nilfs_msg(dat->i_sb, KERN_ERR,
+		nilfs_err(dat->i_sb,
 			  "DAT doesn't have a block to manage vblocknr = %llu",
 			  (unsigned long long)req->pr_entry_nr);
 		/*
@@ -515,6 +515,9 @@ int nilfs_dat_read(struct super_block *sb, size_t entry_size,
 	if (err)
 		goto failed;
 
+	err = nilfs_attach_btree_node_cache(dat);
+	if (err)
+		goto failed;
 	err = nilfs_read_inode_common(dat, raw_inode);
 	if (err)
 		goto failed;

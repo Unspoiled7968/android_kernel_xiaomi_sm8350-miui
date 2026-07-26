@@ -1,8 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * QLogic QLA3xxx NIC HBA Driver
  * Copyright (c)  2003-2006 QLogic Corporation
- *
- * See LICENSE.qla3xxx for copyright and licensing details.
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -1541,7 +1540,7 @@ static void ql_link_state_machine_work(struct work_struct *work)
 		if (test_bit(QL_LINK_MASTER, &qdev->flags))
 			ql_port_start(qdev);
 		qdev->port_link_state = LS_DOWN;
-		/* Fall Through */
+		fallthrough;
 
 	case LS_DOWN:
 		if (curr_link_state == LS_UP) {
@@ -3588,7 +3587,7 @@ static int ql3xxx_set_mac_address(struct net_device *ndev, void *p)
 	return 0;
 }
 
-static void ql3xxx_tx_timeout(struct net_device *ndev)
+static void ql3xxx_tx_timeout(struct net_device *ndev, unsigned int txqueue)
 {
 	struct ql3_adapter *qdev = netdev_priv(ndev);
 

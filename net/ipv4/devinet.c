@@ -273,17 +273,19 @@ static struct in_device *inetdev_init(struct net_device *dev)
 	/* Account for reference dev->ip_ptr (below) */
 	refcount_set(&in_dev->refcnt, 1);
 
-	err = devinet_sysctl_register(in_dev);
-	if (err) {
-		in_dev->dead = 1;
-		neigh_parms_release(&arp_tbl, in_dev->arp_parms);
-		in_dev_put(in_dev);
-		in_dev = NULL;
-		goto out;
+	if (dev != blackhole_netdev) {
+		err = devinet_sysctl_register(in_dev);
+		if (err) {
+			in_dev->dead = 1;
+			neigh_parms_release(&arp_tbl, in_dev->arp_parms);
+			in_dev_put(in_dev);
+			in_dev = NULL;
+			goto out;
+		}
+		ip_mc_init_dev(in_dev);
+		if (dev->flags & IFF_UP)
+			ip_mc_up(in_dev);
 	}
-	ip_mc_init_dev(in_dev);
-	if (dev->flags & IFF_UP)
-		ip_mc_up(in_dev);
 
 	/* we can receive as soon as ip_ptr is set -- do this last */
 	rcu_assign_pointer(dev->ip_ptr, in_dev);
@@ -327,6 +329,18 @@ static void inetdev_destroy(struct in_device *in_dev)
 
 	call_rcu(&in_dev->rcu_head, in_dev_rcu_put);
 }
+
+static int __init inet_blackhole_dev_init(void)
+{
+	struct in_device *in_dev;
+
+	rtnl_lock();
+	in_dev = inetdev_init(blackhole_netdev);
+	rtnl_unlock();
+
+	return PTR_ERR_OR_ZERO(in_dev);
+}
+late_initcall(inet_blackhole_dev_init);
 
 int inet_addr_onlink(struct in_device *in_dev, __be32 a, __be32 b)
 {
@@ -566,10 +580,6 @@ static int inet_set_ifa(struct net_device *dev, struct in_ifaddr *ifa)
 
 	ASSERT_RTNL();
 
-	if (!in_dev) {
-		inet_free_ifa(ifa);
-		return -ENOBUFS;
-	}
 	ipv4_devconf_setall(in_dev);
 	neigh_parms_data_state_setall(in_dev->arp_parms);
 	if (ifa->ifa_dev != in_dev) {
@@ -1150,6 +1160,8 @@ int devinet_ioctl(struct net *net, unsigned int cmd, struct ifreq *ifr)
 
 		if (!ifa) {
 			ret = -ENOBUFS;
+			if (!in_dev)
+				break;
 			ifa = inet_alloc_ifa();
 			if (!ifa)
 				break;
@@ -1244,7 +1256,7 @@ out:
 	return ret;
 }
 
-static int inet_gifconf(struct net_device *dev, char __user *buf, int len, int size)
+int inet_gifconf(struct net_device *dev, char __user *buf, int len, int size)
 {
 	struct in_device *in_dev = __in_dev_get_rtnl(dev);
 	const struct in_ifaddr *ifa;
@@ -1304,10 +1316,11 @@ __be32 inet_select_addr(const struct net_device *dev, __be32 dst, int scope)
 	__be32 addr = 0;
 	unsigned char localnet_scope = RT_SCOPE_HOST;
 	struct in_device *in_dev;
-	struct net *net = dev_net(dev);
+	struct net *net;
 	int master_idx;
 
 	rcu_read_lock();
+	net = dev_net_rcu(dev);
 	in_dev = __in_dev_get_rcu(dev);
 	if (!in_dev)
 		goto no_in_dev;
@@ -1572,11 +1585,11 @@ static int inetdev_event(struct notifier_block *this, unsigned long event,
 			}
 		}
 		ip_mc_up(in_dev);
-		/* fall through */
+		fallthrough;
 	case NETDEV_CHANGEADDR:
 		if (!IN_DEV_ARP_NOTIFY(in_dev))
 			break;
-		/* fall through */
+		fallthrough;
 	case NETDEV_NOTIFY_PEERS:
 		/* Send gratuitous ARP to notify of link change */
 		inetdev_send_gratuitous_arp(dev, in_dev);
@@ -1594,7 +1607,7 @@ static int inetdev_event(struct notifier_block *this, unsigned long event,
 		if (inetdev_valid_mtu(dev->mtu))
 			break;
 		/* disable IP when MTU is not enough */
-		/* fall through */
+		fallthrough;
 	case NETDEV_UNREGISTER:
 		inetdev_destroy(in_dev);
 		break;
@@ -2380,8 +2393,7 @@ static int devinet_conf_ifindex(struct net *net, struct ipv4_devconf *cnf)
 }
 
 static int devinet_conf_proc(struct ctl_table *ctl, int write,
-			     void __user *buffer,
-			     size_t *lenp, loff_t *ppos)
+			     void *buffer, size_t *lenp, loff_t *ppos)
 {
 	int old_value = *(int *)ctl->data;
 	int ret = proc_dointvec(ctl, write, buffer, lenp, ppos);
@@ -2433,8 +2445,7 @@ static int devinet_conf_proc(struct ctl_table *ctl, int write,
 }
 
 static int devinet_sysctl_forward(struct ctl_table *ctl, int write,
-				  void __user *buffer,
-				  size_t *lenp, loff_t *ppos)
+				  void *buffer, size_t *lenp, loff_t *ppos)
 {
 	int *valp = ctl->data;
 	int val = *valp;
@@ -2477,8 +2488,7 @@ static int devinet_sysctl_forward(struct ctl_table *ctl, int write,
 }
 
 static int ipv4_doint_and_flush(struct ctl_table *ctl, int write,
-				void __user *buffer,
-				size_t *lenp, loff_t *ppos)
+				void *buffer, size_t *lenp, loff_t *ppos)
 {
 	int *valp = ctl->data;
 	int val = *valp;
@@ -2683,11 +2693,28 @@ static __net_init int devinet_init_net(struct net *net)
 	tbl[0].extra2 = net;
 #endif
 
-	if ((!IS_ENABLED(CONFIG_SYSCTL) ||
-	     sysctl_devconf_inherit_init_net != 2) &&
-	    !net_eq(net, &init_net)) {
-		memcpy(all, init_net.ipv4.devconf_all, sizeof(ipv4_devconf));
-		memcpy(dflt, init_net.ipv4.devconf_dflt, sizeof(ipv4_devconf_dflt));
+	if (!net_eq(net, &init_net)) {
+		switch (net_inherit_devconf()) {
+		case 3:
+			/* copy from the current netns */
+			memcpy(all, current->nsproxy->net_ns->ipv4.devconf_all,
+			       sizeof(ipv4_devconf));
+			memcpy(dflt,
+			       current->nsproxy->net_ns->ipv4.devconf_dflt,
+			       sizeof(ipv4_devconf_dflt));
+			break;
+		case 0:
+		case 1:
+			/* copy from init_net */
+			memcpy(all, init_net.ipv4.devconf_all,
+			       sizeof(ipv4_devconf));
+			memcpy(dflt, init_net.ipv4.devconf_dflt,
+			       sizeof(ipv4_devconf_dflt));
+			break;
+		case 2:
+			/* use compiled values */
+			break;
+		}
 	}
 
 #ifdef CONFIG_SYSCTL
@@ -2765,8 +2792,6 @@ void __init devinet_init(void)
 		INIT_HLIST_HEAD(&inet_addr_lst[i]);
 
 	register_pernet_subsys(&devinet_ops);
-
-	register_gifconf(PF_INET, inet_gifconf);
 	register_netdevice_notifier(&ip_netdev_notifier);
 
 	queue_delayed_work(system_power_efficient_wq, &check_lifetime_work, 0);

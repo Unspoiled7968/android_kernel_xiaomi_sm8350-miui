@@ -88,6 +88,8 @@ static int mlx5e_gen_ip_tunnel_header_vxlan(char buf[],
 	struct udphdr *udp = (struct udphdr *)(buf);
 	struct vxlanhdr *vxh;
 
+	if (tun_key->tun_flags & TUNNEL_VXLAN_OPT)
+		return -EOPNOTSUPP;
 	vxh = (struct vxlanhdr *)((char *)udp + sizeof(struct udphdr));
 	*ip_proto = IPPROTO_UDP;
 
@@ -135,6 +137,8 @@ static int mlx5e_tc_tun_parse_vxlan(struct mlx5e_priv *priv,
 		 be32_to_cpu(enc_keyid.mask->keyid));
 	MLX5_SET(fte_match_set_misc, misc_v, vxlan_vni,
 		 be32_to_cpu(enc_keyid.key->keyid));
+
+	spec->match_criteria_enable |= MLX5_MATCH_MISC_PARAMETERS;
 
 	return 0;
 }

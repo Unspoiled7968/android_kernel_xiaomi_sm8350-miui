@@ -2,10 +2,14 @@
 # scripts/dtc makefile
 
 # *** Also keep .gitignore in sync when changing ***
-hostprogs-$(CONFIG_DTC) := dtc fdtoverlay
+ifdef CONFIG_DTC
 ifeq ($(DTC_EXT),)
-always		:= $(hostprogs-y)
+hostprogs-always-y	+= dtc fdtoverlay
+else
+hostprogs		+= dtc fdtoverlay
 endif
+endif
+hostprogs-always-$(CHECK_DT_BINDING)	+= dtc
 
 dtc-objs	:= dtc.o flattree.o fstree.o data.o livetree.o treesource.o \
 		   srcpos.o checks.o util.o
@@ -21,14 +25,17 @@ fdtoverlay-objs	:= $(libfdt) fdtoverlay.o util.o
 HOST_EXTRACFLAGS += -I $(srctree)/$(src)/libfdt
 
 ifeq ($(shell pkg-config --exists yaml-0.1 2>/dev/null && echo yes),)
-ifneq ($(CHECK_DTBS),)
+ifneq ($(CHECK_DT_BINDING)$(CHECK_DTBS),)
 $(error dtc needs libyaml for DT schema validation support. \
 	Install the necessary libyaml development package.)
 endif
 HOST_EXTRACFLAGS += -DNO_YAML
 else
 dtc-objs	+= yamltree.o
-HOSTLDLIBS_dtc	:= $(shell pkg-config yaml-0.1 --libs)
+# To include <yaml.h> installed in a non-default path
+HOSTCFLAGS_yamltree.o := $(shell pkg-config --cflags yaml-0.1)
+# To link libyaml installed in a non-default path
+HOSTLDLIBS_dtc	:= $(shell pkg-config --libs yaml-0.1)
 endif
 
 # Generated files need one more search path to include headers in source tree

@@ -1068,7 +1068,7 @@ static void snapshot_merge_next_chunks(struct dm_snapshot *s)
 			DMERR("Read error in exception store: "
 			      "shutting down merge");
 			down_write(&s->lock);
-			s->merge_failed = 1;
+			s->merge_failed = true;
 			up_write(&s->lock);
 		}
 		goto shut;
@@ -1119,7 +1119,8 @@ static void snapshot_merge_next_chunks(struct dm_snapshot *s)
 	for (i = 0; i < linear_chunks; i++)
 		__check_for_conflicting_io(s, old_chunk + i);
 
-	dm_kcopyd_copy(s->kcopyd_client, &src, 1, &dest, 0, merge_callback, s);
+	dm_kcopyd_copy(s->kcopyd_client, &src, 1, &dest, 1 << DM_KCOPYD_SNAP_MERGE,
+		       merge_callback, s);
 	return;
 
 shut:
@@ -1172,7 +1173,7 @@ static void merge_callback(int read_err, unsigned long write_err, void *context)
 
 shut:
 	down_write(&s->lock);
-	s->merge_failed = 1;
+	s->merge_failed = true;
 	b = __release_queued_bios_after_merge(s);
 	up_write(&s->lock);
 	error_bios(b);
@@ -1337,7 +1338,7 @@ static int snapshot_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	INIT_LIST_HEAD(&s->list);
 	spin_lock_init(&s->pe_lock);
 	s->state_bits = 0;
-	s->merge_failed = 0;
+	s->merge_failed = false;
 	s->first_merging_chunk = 0;
 	s->num_merging_chunks = 0;
 	bio_list_init(&s->bios_queued_during_merge);
@@ -1595,7 +1596,7 @@ static void flush_bios(struct bio *bio)
 	while (bio) {
 		n = bio->bi_next;
 		bio->bi_next = NULL;
-		generic_make_request(bio);
+		submit_bio_noacct(bio);
 		bio = n;
 	}
 }
@@ -1615,7 +1616,7 @@ static void retry_origin_bios(struct dm_snapshot *s, struct bio *bio)
 		bio->bi_next = NULL;
 		r = do_origin(s->origin, bio, false);
 		if (r == DM_MAPIO_REMAPPED)
-			generic_make_request(bio);
+			submit_bio_noacct(bio);
 		bio = n;
 	}
 }
@@ -1856,7 +1857,7 @@ static void start_full_bio(struct dm_snap_pending_exception *pe,
 	bio->bi_end_io = full_bio_end_io;
 	bio->bi_private = callback_data;
 
-	generic_make_request(bio);
+	submit_bio_noacct(bio);
 }
 
 static struct dm_snap_pending_exception *

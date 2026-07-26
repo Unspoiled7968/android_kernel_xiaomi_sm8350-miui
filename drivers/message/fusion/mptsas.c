@@ -4205,10 +4205,8 @@ mptsas_find_phyinfo_by_phys_disk_num(MPT_ADAPTER *ioc, u8 phys_disk_num,
 static void
 mptsas_reprobe_lun(struct scsi_device *sdev, void *data)
 {
-	int rc;
-
 	sdev->no_uld_attach = data ? 1 : 0;
-	rc = scsi_device_reprobe(sdev);
+	WARN_ON(scsi_device_reprobe(sdev));
 }
 
 static void
@@ -4326,7 +4324,7 @@ mptsas_hotplug_work(MPT_ADAPTER *ioc, struct fw_event_work *fw_event,
 			}
 		}
 		mpt_findImVolumes(ioc);
-		/* fall through */
+		fallthrough;
 
 	case MPTSAS_ADD_DEVICE:
 		memset(&sas_device, 0, sizeof(struct mptsas_devinfo));

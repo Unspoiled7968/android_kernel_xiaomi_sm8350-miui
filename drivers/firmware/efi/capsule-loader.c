@@ -11,6 +11,7 @@
 #include <linux/module.h>
 #include <linux/miscdevice.h>
 #include <linux/highmem.h>
+#include <linux/io.h>
 #include <linux/slab.h>
 #include <linux/mutex.h>
 #include <linux/efi.h>
@@ -66,7 +67,7 @@ int __efi_capsule_setup_info(struct capsule_info *cap_info)
 	cap_info->pages = temp_page;
 
 	temp_page = krealloc(cap_info->phys,
-			     pages_needed * sizeof(phys_addr_t *),
+			     pages_needed * sizeof(phys_addr_t),
 			     GFP_KERNEL | __GFP_ZERO);
 	if (!temp_page)
 		return -ENOMEM;
@@ -167,7 +168,7 @@ static ssize_t efi_capsule_submit_update(struct capsule_info *cap_info)
 static ssize_t efi_capsule_write(struct file *file, const char __user *buff,
 				 size_t count, loff_t *offp)
 {
-	int ret = 0;
+	int ret;
 	struct capsule_info *cap_info = file->private_data;
 	struct page *page;
 	void *kbuff = NULL;

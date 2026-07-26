@@ -378,8 +378,9 @@ sk_buff *j1939_session_skb_get_by_offset(struct j1939_session *session,
 	skb_queue_walk(&session->skb_queue, do_skb) {
 		do_skcb = j1939_skb_to_cb(do_skb);
 
-		if (offset_start >= do_skcb->offset &&
-		    offset_start < (do_skcb->offset + do_skb->len)) {
+		if ((offset_start >= do_skcb->offset &&
+		     offset_start < (do_skcb->offset + do_skb->len)) ||
+		     (offset_start == 0 && do_skcb->offset == 0 && do_skb->len == 0)) {
 			skb = do_skb;
 		}
 	}
@@ -887,7 +888,7 @@ static int j1939_xtp_txnext_transmiter(struct j1939_session *session)
 				return ret;
 		}
 
-		/* fall through */
+		fallthrough;
 	case J1939_TP_CMD_CTS:
 	case 0xff: /* did some data */
 	case J1939_ETP_CMD_DPO:
@@ -1171,10 +1172,10 @@ static enum hrtimer_restart j1939_tp_txtimer(struct hrtimer *hrtimer)
 		break;
 	case -ENETDOWN:
 		/* In this case we should get a netdev_event(), all active
-		 * sessions will be cleared by
-		 * j1939_cancel_all_active_sessions(). So handle this as an
-		 * error, but let j1939_cancel_all_active_sessions() do the
-		 * cleanup including propagation of the error to user space.
+		 * sessions will be cleared by j1939_cancel_active_session().
+		 * So handle this as an error, but let
+		 * j1939_cancel_active_session() do the cleanup including
+		 * propagation of the error to user space.
 		 */
 		break;
 	case -EOVERFLOW:
@@ -1489,7 +1490,7 @@ static struct j1939_session *j1939_session_new(struct j1939_priv *priv,
 	session->state = J1939_SESSION_NEW;
 
 	skb_queue_head_init(&session->skb_queue);
-	skb_queue_tail(&session->skb_queue, skb);
+	skb_queue_tail(&session->skb_queue, skb_get(skb));
 
 	skcb = j1939_skb_to_cb(skb);
 	memcpy(&session->skcb, skcb, sizeof(session->skcb));
@@ -1554,6 +1555,8 @@ int j1939_session_activate(struct j1939_session *session)
 	if (active) {
 		j1939_session_put(active);
 		ret = -EAGAIN;
+	} else if (priv->ndev->reg_state != NETREG_REGISTERED) {
+		ret = -ENODEV;
 	} else {
 		WARN_ON_ONCE(session->state != J1939_SESSION_NEW);
 		list_add_tail(&session->active_session_list_entry,
@@ -1677,8 +1680,16 @@ static int j1939_xtp_rx_rts_session_active(struct j1939_session *session,
 
 		j1939_session_timers_cancel(session);
 		j1939_session_cancel(session, J1939_XTP_ABORT_BUSY);
-		if (session->transmission)
+		if (session->transmission) {
 			j1939_session_deactivate_activate_next(session);
+		} else if (session->state == J1939_SESSION_WAITING_ABORT) {
+			/* Force deactivation for the receiver.
+			 * If we rely on the timer starting in j1939_session_cancel,
+			 * a second RTS call here will cancel that timer and fail
+			 * to restart it because the state is already WAITING_ABORT.
+			 */
+			j1939_session_deactivate_activate_next(session);
+		}
 
 		return -EBUSY;
 	}
@@ -1823,12 +1834,12 @@ static void j1939_xtp_rx_dat_one(struct j1939_session *session,
 	case J1939_ETP_CMD_DPO:
 		if (skcb->addr.type == J1939_ETP)
 			break;
-		/* fall through */
-	case J1939_TP_CMD_BAM: /* fall through */
+		fallthrough;
+	case J1939_TP_CMD_BAM:
 	case J1939_TP_CMD_CTS: /* fall through */
 		if (skcb->addr.type != J1939_ETP)
 			break;
-		/* fall through */
+		fallthrough;
 	default:
 		netdev_info(priv->ndev, "%s: 0x%p: last %02x\n", __func__,
 			    session, session->last_cmd);
@@ -2026,8 +2037,8 @@ static void j1939_tp_cmd_recv(struct j1939_priv *priv, struct sk_buff *skb)
 	switch (cmd) {
 	case J1939_ETP_CMD_RTS:
 		extd = J1939_ETP;
-		/* fall through */
-	case J1939_TP_CMD_BAM: /* fall through */
+		fallthrough;
+	case J1939_TP_CMD_BAM:
 		if (cmd == J1939_TP_CMD_BAM && !j1939_cb_is_broadcast(skcb)) {
 			netdev_err_once(priv->ndev, "%s: BAM to unicast (%02x), ignoring!\n",
 					__func__, skcb->addr.sa);
@@ -2054,7 +2065,7 @@ static void j1939_tp_cmd_recv(struct j1939_priv *priv, struct sk_buff *skb)
 
 	case J1939_ETP_CMD_CTS:
 		extd = J1939_ETP;
-		/* fall through */
+		fallthrough;
 	case J1939_TP_CMD_CTS:
 		if (skcb->addr.type != extd)
 			return;
@@ -2081,7 +2092,7 @@ static void j1939_tp_cmd_recv(struct j1939_priv *priv, struct sk_buff *skb)
 
 	case J1939_ETP_CMD_EOMA:
 		extd = J1939_ETP;
-		/* fall through */
+		fallthrough;
 	case J1939_TP_CMD_EOMA:
 		if (skcb->addr.type != extd)
 			return;
@@ -2123,14 +2134,14 @@ int j1939_tp_recv(struct j1939_priv *priv, struct sk_buff *skb)
 	switch (skcb->addr.pgn) {
 	case J1939_ETP_PGN_DAT:
 		skcb->addr.type = J1939_ETP;
-		/* fall through */
+		fallthrough;
 	case J1939_TP_PGN_DAT:
 		j1939_xtp_rx_dat(priv, skb);
 		break;
 
 	case J1939_ETP_PGN_CTL:
 		skcb->addr.type = J1939_ETP;
-		/* fall through */
+		fallthrough;
 	case J1939_TP_PGN_CTL:
 		if (skb->len < 8)
 			return 0; /* Don't care. Nothing to extract here */

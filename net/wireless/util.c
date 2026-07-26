@@ -5,7 +5,7 @@
  * Copyright 2007-2009	Johannes Berg <johannes@sipsolutions.net>
  * Copyright 2013-2014  Intel Mobile Communications GmbH
  * Copyright 2017	Intel Deutschland GmbH
- * Copyright (C) 2018-2019 Intel Corporation
+ * Copyright (C) 2018-2020 Intel Corporation
  */
 #include <linux/export.h>
 #include <linux/bitops.h>
@@ -102,12 +102,41 @@ u32 ieee80211_channel_to_freq_khz(int chan, enum nl80211_band band)
 		if (chan < 7)
 			return MHZ_TO_KHZ(56160 + chan * 2160);
 		break;
+	case NL80211_BAND_S1GHZ:
+		return 902000 + chan * 500;
 	default:
 		;
 	}
 	return 0; /* not supported */
 }
 EXPORT_SYMBOL(ieee80211_channel_to_freq_khz);
+
+enum nl80211_chan_width
+ieee80211_s1g_channel_width(const struct ieee80211_channel *chan)
+{
+	if (WARN_ON(!chan || chan->band != NL80211_BAND_S1GHZ))
+		return NL80211_CHAN_WIDTH_20_NOHT;
+
+	/*S1G defines a single allowed channel width per channel.
+	 * Extract that width here.
+	 */
+	if (chan->flags & IEEE80211_CHAN_1MHZ)
+		return NL80211_CHAN_WIDTH_1;
+	else if (chan->flags & IEEE80211_CHAN_2MHZ)
+		return NL80211_CHAN_WIDTH_2;
+	else if (chan->flags & IEEE80211_CHAN_4MHZ)
+		return NL80211_CHAN_WIDTH_4;
+	else if (chan->flags & IEEE80211_CHAN_8MHZ)
+		return NL80211_CHAN_WIDTH_8;
+	else if (chan->flags & IEEE80211_CHAN_16MHZ)
+		return NL80211_CHAN_WIDTH_16;
+
+	pr_err("unknown channel width for channel at %dKHz?\n",
+	       ieee80211_channel_to_khz(chan));
+
+	return NL80211_CHAN_WIDTH_1;
+}
+EXPORT_SYMBOL(ieee80211_s1g_channel_width);
 
 int ieee80211_freq_khz_to_channel(u32 freq)
 {
@@ -198,7 +227,7 @@ static void set_mandatory_flags_band(struct ieee80211_supported_band *sband)
 				sband->bitrates[i].flags |=
 					IEEE80211_RATE_MANDATORY_G;
 				want--;
-				/* fall through */
+				fallthrough;
 			default:
 				sband->bitrates[i].flags |=
 					IEEE80211_RATE_ERP_G;
@@ -211,6 +240,12 @@ static void set_mandatory_flags_band(struct ieee80211_supported_band *sband)
 		/* check for mandatory HT MCS 1..4 */
 		WARN_ON(!sband->ht_cap.ht_supported);
 		WARN_ON((sband->ht_cap.mcs.rx_mask[0] & 0x1e) != 0x1e);
+		break;
+	case NL80211_BAND_S1GHZ:
+		/* Figure 9-589bd: 3 means unsupported, so != 3 means at least
+		 * mandatory is ok.
+		 */
+		WARN_ON((sband->s1g_cap.nss_mcs[0] & 0x3) == 0x3);
 		break;
 	case NUM_NL80211_BANDS:
 	default:
@@ -264,7 +299,9 @@ bool cfg80211_valid_key_idx(struct cfg80211_registered_device *rdev,
 	if (pairwise)
 		max_key_idx = 3;
 	else if (wiphy_ext_feature_isset(&rdev->wiphy,
-				    NL80211_EXT_FEATURE_BEACON_PROTECTION))
+					 NL80211_EXT_FEATURE_BEACON_PROTECTION) ||
+		 wiphy_ext_feature_isset(&rdev->wiphy,
+					 NL80211_EXT_FEATURE_BEACON_PROTECTION_CLIENT))
 		max_key_idx = 7;
 	else if (cfg80211_igtk_cipher_supported(rdev))
 		max_key_idx = 5;
@@ -424,6 +461,11 @@ unsigned int __attribute_const__ ieee80211_hdrlen(__le16 fc)
 {
 	unsigned int hdrlen = 24;
 
+	if (ieee80211_is_ext(fc)) {
+		hdrlen = 4;
+		goto out;
+	}
+
 	if (ieee80211_is_data(fc)) {
 		if (ieee80211_has_a4(fc))
 			hdrlen = 30;
@@ -497,9 +539,9 @@ unsigned int ieee80211_get_mesh_hdrlen(struct ieee80211s_hdr *meshhdr)
 }
 EXPORT_SYMBOL(ieee80211_get_mesh_hdrlen);
 
-int ieee80211_data_to_8023_exthdr_bool(struct sk_buff *skb, struct ethhdr *ehdr,
-				       const u8 *addr, enum nl80211_iftype iftype,
-				       u8 data_offset, bool is_amsdu)
+int ieee80211_data_to_8023_exthdr(struct sk_buff *skb, struct ethhdr *ehdr,
+				  const u8 *addr, enum nl80211_iftype iftype,
+				  u8 data_offset, bool is_amsdu)
 {
 	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *) skb->data;
 	struct {
@@ -604,15 +646,6 @@ int ieee80211_data_to_8023_exthdr_bool(struct sk_buff *skb, struct ethhdr *ehdr,
 	memcpy(ehdr, &tmp, sizeof(tmp));
 
 	return 0;
-}
-EXPORT_SYMBOL_GPL(ieee80211_data_to_8023_exthdr_bool);
-
-int ieee80211_data_to_8023_exthdr(struct sk_buff *skb, struct ethhdr *ehdr,
-				  const u8 *addr, enum nl80211_iftype iftype,
-				  u8 data_offset)
-{
-	return ieee80211_data_to_8023_exthdr_bool(skb, ehdr, addr, iftype,
-						  data_offset, false);
 }
 EXPORT_SYMBOL(ieee80211_data_to_8023_exthdr);
 
@@ -910,7 +943,7 @@ void cfg80211_upload_connect_keys(struct wireless_dev *wdev)
 		}
 	}
 
-	kzfree(wdev->connect_keys);
+	kfree_sensitive(wdev->connect_keys);
 	wdev->connect_keys = NULL;
 }
 
@@ -1051,7 +1084,7 @@ int cfg80211_change_iface(struct cfg80211_registered_device *rdev,
 		case NL80211_IFTYPE_STATION:
 			if (dev->ieee80211_ptr->use_4addr)
 				break;
-			/* fall through */
+			fallthrough;
 		case NL80211_IFTYPE_OCB:
 		case NL80211_IFTYPE_P2P_CLIENT:
 		case NL80211_IFTYPE_ADHOC:
@@ -1198,7 +1231,7 @@ static u32 cfg80211_calculate_bitrate_edmg(struct rate_info *rate)
 
 static u32 cfg80211_calculate_bitrate_vht(struct rate_info *rate)
 {
-	static const u32 base[4][10] = {
+	static const u32 base[4][12] = {
 		{   6500000,
 		   13000000,
 		   19500000,
@@ -1209,7 +1242,9 @@ static u32 cfg80211_calculate_bitrate_vht(struct rate_info *rate)
 		   65000000,
 		   78000000,
 		/* not in the spec, but some devices use this: */
-		   86500000,
+		   86700000,
+		   97500000,
+		  108300000,
 		},
 		{  13500000,
 		   27000000,
@@ -1221,6 +1256,8 @@ static u32 cfg80211_calculate_bitrate_vht(struct rate_info *rate)
 		  135000000,
 		  162000000,
 		  180000000,
+		  202500000,
+		  225000000,
 		},
 		{  29300000,
 		   58500000,
@@ -1232,6 +1269,8 @@ static u32 cfg80211_calculate_bitrate_vht(struct rate_info *rate)
 		  292500000,
 		  351000000,
 		  390000000,
+		  438800000,
+		  487500000,
 		},
 		{  58500000,
 		  117000000,
@@ -1243,12 +1282,14 @@ static u32 cfg80211_calculate_bitrate_vht(struct rate_info *rate)
 		  585000000,
 		  702000000,
 		  780000000,
+		  877500000,
+		  975000000,
 		},
 	};
 	u32 bitrate;
 	int idx;
 
-	if (rate->mcs > 9)
+	if (rate->mcs > 11)
 		goto warn;
 
 	switch (rate->bw) {
@@ -1358,12 +1399,14 @@ static u32 cfg80211_calculate_bitrate_he(struct rate_info *rate)
 	tmp = result;
 	tmp *= SCALE;
 	do_div(tmp, mcs_divisors[rate->mcs]);
-	result = tmp;
 
 	/* and take NSS, DCM into account */
-	result = (result * rate->nss) / 8;
+	tmp *= rate->nss;
+	do_div(tmp, 8);
 	if (rate->he_dcm)
-		result /= 2;
+		do_div(tmp, 2);
+
+	result = tmp;
 
 	return result / 10000;
 }
@@ -2095,10 +2138,10 @@ EXPORT_SYMBOL(cfg80211_send_layer2_update);
 
 int ieee80211_get_vht_max_nss(struct ieee80211_vht_cap *cap,
 			      enum ieee80211_vht_chanwidth bw,
-			      int mcs, bool ext_nss_bw_capable)
+			      int mcs, bool ext_nss_bw_capable,
+			      unsigned int max_vht_nss)
 {
 	u16 map = le16_to_cpu(cap->supp_mcs.rx_mcs_map);
-	int max_vht_nss = 0;
 	int ext_nss_bw;
 	int supp_width;
 	int i, mcs_encoding;
@@ -2106,7 +2149,7 @@ int ieee80211_get_vht_max_nss(struct ieee80211_vht_cap *cap,
 	if (map == 0xffff)
 		return 0;
 
-	if (WARN_ON(mcs > 9))
+	if (WARN_ON(mcs > 9 || max_vht_nss > 8))
 		return 0;
 	if (mcs <= 7)
 		mcs_encoding = 0;
@@ -2115,16 +2158,18 @@ int ieee80211_get_vht_max_nss(struct ieee80211_vht_cap *cap,
 	else
 		mcs_encoding = 2;
 
-	/* find max_vht_nss for the given MCS */
-	for (i = 7; i >= 0; i--) {
-		int supp = (map >> (2 * i)) & 3;
+	if (!max_vht_nss) {
+		/* find max_vht_nss for the given MCS */
+		for (i = 7; i >= 0; i--) {
+			int supp = (map >> (2 * i)) & 3;
 
-		if (supp == 3)
-			continue;
+			if (supp == 3)
+				continue;
 
-		if (supp >= mcs_encoding) {
-			max_vht_nss = i + 1;
-			break;
+			if (supp >= mcs_encoding) {
+				max_vht_nss = i + 1;
+				break;
+			}
 		}
 	}
 

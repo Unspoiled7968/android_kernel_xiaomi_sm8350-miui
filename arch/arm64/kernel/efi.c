@@ -70,7 +70,7 @@ static __init pteval_t create_mapping_protection(efi_memory_desc_t *md)
 }
 
 /* we will fill this structure from the stub, so don't put it in .bss */
-struct screen_info screen_info __section(.data);
+struct screen_info screen_info __section(".data");
 
 int __init efi_create_mapping(struct mm_struct *mm, efi_memory_desc_t *md)
 {
@@ -158,9 +158,8 @@ static int __init arm64_efi_rt_init(void)
 	if (!efi_enabled(EFI_RUNTIME_SERVICES))
 		return 0;
 
-	p = __vmalloc_node_range(THREAD_SIZE, THREAD_ALIGN, VMALLOC_START,
-				 VMALLOC_END, GFP_KERNEL, PAGE_KERNEL, 0,
-				 NUMA_NO_NODE, &&l);
+	p = __vmalloc_node(THREAD_SIZE, THREAD_ALIGN, GFP_KERNEL,
+			   NUMA_NO_NODE, &&l);
 l:	if (!p) {
 		pr_warn("Failed to allocate EFI runtime stack\n");
 		clear_bit(EFI_RUNTIME_SERVICES, &efi.flags);

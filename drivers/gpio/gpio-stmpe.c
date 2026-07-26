@@ -84,7 +84,10 @@ static int stmpe_gpio_get_direction(struct gpio_chip *chip,
 	if (ret < 0)
 		return ret;
 
-	return !(ret & mask);
+	if (ret & mask)
+		return GPIO_LINE_DIRECTION_OUT;
+
+	return GPIO_LINE_DIRECTION_IN;
 }
 
 static int stmpe_gpio_direction_output(struct gpio_chip *chip,
@@ -188,7 +191,7 @@ static void stmpe_gpio_irq_sync_unlock(struct irq_data *d)
 		[REG_IE][CSB] = STMPE_IDX_IEGPIOR_CSB,
 		[REG_IE][MSB] = STMPE_IDX_IEGPIOR_MSB,
 	};
-	int i, j;
+	int ret, i, j;
 
 	/*
 	 * STMPE1600: to be able to get IRQ from pins,
@@ -196,8 +199,16 @@ static void stmpe_gpio_irq_sync_unlock(struct irq_data *d)
 	 * GPSR or GPCR registers
 	 */
 	if (stmpe->partnum == STMPE1600) {
-		stmpe_reg_read(stmpe, stmpe->regs[STMPE_IDX_GPMR_LSB]);
-		stmpe_reg_read(stmpe, stmpe->regs[STMPE_IDX_GPMR_CSB]);
+		ret = stmpe_reg_read(stmpe, stmpe->regs[STMPE_IDX_GPMR_LSB]);
+		if (ret < 0) {
+			dev_err(stmpe->dev, "Failed to read GPMR_LSB: %d\n", ret);
+			goto err;
+		}
+		ret = stmpe_reg_read(stmpe, stmpe->regs[STMPE_IDX_GPMR_CSB]);
+		if (ret < 0) {
+			dev_err(stmpe->dev, "Failed to read GPMR_CSB: %d\n", ret);
+			goto err;
+		}
 	}
 
 	for (i = 0; i < CACHE_NR_REGS; i++) {
@@ -219,6 +230,7 @@ static void stmpe_gpio_irq_sync_unlock(struct irq_data *d)
 		}
 	}
 
+err:
 	mutex_unlock(&stmpe_gpio->irq_lock);
 }
 
@@ -305,7 +317,7 @@ static void stmpe_dbg_show_one(struct seq_file *s,
 			if (ret < 0)
 				return;
 			edge_det = !!(ret & mask);
-			/* fall through */
+			fallthrough;
 		case STMPE1801:
 			rise_reg = stmpe->regs[STMPE_IDX_GPRER_LSB + bank];
 			fall_reg = stmpe->regs[STMPE_IDX_GPFER_LSB + bank];
@@ -318,7 +330,7 @@ static void stmpe_dbg_show_one(struct seq_file *s,
 			if (ret < 0)
 				return;
 			fall = !!(ret & mask);
-			/* fall through */
+			fallthrough;
 		case STMPE801:
 		case STMPE1600:
 			irqen_reg = stmpe->regs[STMPE_IDX_IEGPIOR_LSB + bank];
@@ -497,13 +509,9 @@ static int stmpe_gpio_probe(struct platform_device *pdev)
 	if (ret)
 		goto out_free;
 
-	ret = gpiochip_add_data(&stmpe_gpio->chip, stmpe_gpio);
-	if (ret) {
-		dev_err(&pdev->dev, "unable to add gpiochip: %d\n", ret);
-		goto out_disable;
-	}
-
 	if (irq > 0) {
+		struct gpio_irq_chip *girq;
+
 		ret = devm_request_threaded_irq(&pdev->dev, irq, NULL,
 				stmpe_gpio_irq, IRQF_ONESHOT,
 				"stmpe-gpio", stmpe_gpio);
@@ -511,20 +519,22 @@ static int stmpe_gpio_probe(struct platform_device *pdev)
 			dev_err(&pdev->dev, "unable to get irq: %d\n", ret);
 			goto out_disable;
 		}
-		ret =  gpiochip_irqchip_add_nested(&stmpe_gpio->chip,
-						   &stmpe_gpio_irq_chip,
-						   0,
-						   handle_simple_irq,
-						   IRQ_TYPE_NONE);
-		if (ret) {
-			dev_err(&pdev->dev,
-				"could not connect irqchip to gpiochip\n");
-			goto out_disable;
-		}
 
-		gpiochip_set_nested_irqchip(&stmpe_gpio->chip,
-					    &stmpe_gpio_irq_chip,
-					    irq);
+		girq = &stmpe_gpio->chip.irq;
+		girq->chip = &stmpe_gpio_irq_chip;
+		/* This will let us handle the parent IRQ in the driver */
+		girq->parent_handler = NULL;
+		girq->num_parents = 0;
+		girq->parents = NULL;
+		girq->default_type = IRQ_TYPE_NONE;
+		girq->handler = handle_simple_irq;
+		girq->threaded = true;
+	}
+
+	ret = gpiochip_add_data(&stmpe_gpio->chip, stmpe_gpio);
+	if (ret) {
+		dev_err(&pdev->dev, "unable to add gpiochip: %d\n", ret);
+		goto out_disable;
 	}
 
 	platform_set_drvdata(pdev, stmpe_gpio);

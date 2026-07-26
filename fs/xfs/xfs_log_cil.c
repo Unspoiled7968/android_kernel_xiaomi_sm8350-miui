@@ -37,8 +37,7 @@ xlog_cil_ticket_alloc(
 {
 	struct xlog_ticket *tic;
 
-	tic = xlog_ticket_alloc(log, 0, 1, XFS_TRANSACTION, 0,
-				KM_NOFS);
+	tic = xlog_ticket_alloc(log, 0, 1, XFS_TRANSACTION, 0);
 
 	/*
 	 * set the current reservation to zero so we know to steal the basic
@@ -179,7 +178,7 @@ xlog_cil_alloc_shadow_bufs(
 
 			/*
 			 * We free and allocate here as a realloc would copy
-			 * unecessary data. We don't use kmem_zalloc() for the
+			 * unnecessary data. We don't use kmem_zalloc() for the
 			 * same reason - we don't need to zero the data area in
 			 * the buffer, only the log vector header and the iovec
 			 * storage.
@@ -240,7 +239,7 @@ xfs_cil_prepare_item(
 	 * this CIL context and so we need to pin it. If we are replacing the
 	 * old_lv, then remove the space it accounts for and make it the shadow
 	 * buffer for later freeing. In both cases we are now switching to the
-	 * shadow buffer, so update the the pointer to it appropriately.
+	 * shadow buffer, so update the pointer to it appropriately.
 	 */
 	if (!old_lv) {
 		if (lv->lv_item->li_ops->iop_pin)
@@ -574,10 +573,10 @@ xlog_discard_busy_extents(
  */
 static void
 xlog_cil_committed(
-	struct xfs_cil_ctx	*ctx,
-	bool			abort)
+	struct xfs_cil_ctx	*ctx)
 {
 	struct xfs_mount	*mp = ctx->cil->xc_log->l_mp;
+	bool			abort = XLOG_FORCED_SHUTDOWN(ctx->cil->xc_log);
 
 	/*
 	 * If the I/O failed, we're aborting the commit and already shutdown.
@@ -613,37 +612,38 @@ xlog_cil_committed(
 
 void
 xlog_cil_process_committed(
-	struct list_head	*list,
-	bool			aborted)
+	struct list_head	*list)
 {
 	struct xfs_cil_ctx	*ctx;
 
 	while ((ctx = list_first_entry_or_null(list,
 			struct xfs_cil_ctx, iclog_entry))) {
 		list_del(&ctx->iclog_entry);
-		xlog_cil_committed(ctx, aborted);
+		xlog_cil_committed(ctx);
 	}
 }
 
 /*
- * Push the Committed Item List to the log. If @push_seq flag is zero, then it
- * is a background flush and so we can chose to ignore it. Otherwise, if the
- * current sequence is the same as @push_seq we need to do a flush. If
- * @push_seq is less than the current sequence, then it has already been
+ * Push the Committed Item List to the log.
+ *
+ * If the current sequence is the same as xc_push_seq we need to do a flush. If
+ * xc_push_seq is less than the current sequence, then it has already been
  * flushed and we don't need to do anything - the caller will wait for it to
  * complete if necessary.
  *
- * @push_seq is a value rather than a flag because that allows us to do an
- * unlocked check of the sequence number for a match. Hence we can allows log
- * forces to run racily and not issue pushes for the same sequence twice. If we
- * get a race between multiple pushes for the same sequence they will block on
- * the first one and then abort, hence avoiding needless pushes.
+ * xc_push_seq is checked unlocked against the sequence number for a match.
+ * Hence we can allow log forces to run racily and not issue pushes for the
+ * same sequence twice.  If we get a race between multiple pushes for the same
+ * sequence they will block on the first one and then abort, hence avoiding
+ * needless pushes.
  */
-STATIC int
-xlog_cil_push(
-	struct xlog		*log)
+static void
+xlog_cil_push_work(
+	struct work_struct	*work)
 {
-	struct xfs_cil		*cil = log->l_cilp;
+	struct xfs_cil		*cil =
+		container_of(work, struct xfs_cil, xc_push_work);
+	struct xlog		*log = cil->xc_log;
 	struct xfs_log_vec	*lv;
 	struct xfs_cil_ctx	*ctx;
 	struct xfs_cil_ctx	*new_ctx;
@@ -657,9 +657,6 @@ xlog_cil_push(
 	xfs_lsn_t		commit_lsn;
 	xfs_lsn_t		push_seq;
 
-	if (!cil)
-		return 0;
-
 	new_ctx = kmem_zalloc(sizeof(*new_ctx), KM_NOFS);
 	new_ctx->ticket = xlog_cil_ticket_alloc(log);
 
@@ -671,9 +668,14 @@ xlog_cil_push(
 	ASSERT(push_seq <= ctx->sequence);
 
 	/*
-	 * Wake up any background push waiters now this context is being pushed.
+	 * As we are about to switch to a new, empty CIL context, we no longer
+	 * need to throttle tasks on CIL space overruns. Wake any waiters that
+	 * the hard push throttle may have caught so they can start committing
+	 * to the new context. The ctx->xc_push_lock provides the serialisation
+	 * necessary for safely using the lockless waitqueue_active() check in
+	 * this context.
 	 */
-	if (ctx->space_used >= XLOG_CIL_BLOCKING_SPACE_LIMIT(log))
+	if (waitqueue_active(&cil->xc_push_wait))
 		wake_up_all(&cil->xc_push_wait);
 
 	/*
@@ -688,7 +690,7 @@ xlog_cil_push(
 	}
 
 
-	/* check for a previously pushed seqeunce */
+	/* check for a previously pushed sequence */
 	if (push_seq < cil->xc_ctx->sequence) {
 		spin_unlock(&cil->xc_push_lock);
 		goto out_skip;
@@ -775,7 +777,7 @@ xlog_cil_push(
 	 * that higher sequences will wait for us to write out a commit record
 	 * before they do.
 	 *
-	 * xfs_log_force_lsn requires us to mirror the new sequence into the cil
+	 * xfs_log_force_seq requires us to mirror the new sequence into the cil
 	 * structure atomically with the addition of this sequence to the
 	 * committing list. This also ensures that we can do unlocked checks
 	 * against the current sequence in log forces without risking
@@ -809,7 +811,7 @@ xlog_cil_push(
 	lvhdr.lv_iovecp = &lhdr;
 	lvhdr.lv_next = ctx->lv_chain;
 
-	error = xlog_write(log, &lvhdr, tic, &ctx->start_lsn, NULL, 0);
+	error = xlog_write(log, &lvhdr, tic, &ctx->start_lsn, NULL, 0, true);
 	if (error)
 		goto out_abort_free_ticket;
 
@@ -847,13 +849,14 @@ restart:
 	}
 	spin_unlock(&cil->xc_push_lock);
 
-	/* xfs_log_done always frees the ticket on error. */
-	commit_lsn = xfs_log_done(log->l_mp, tic, &commit_iclog, false);
-	if (commit_lsn == -1)
-		goto out_abort;
+	error = xlog_commit_record(log, tic, &commit_iclog, &commit_lsn);
+	if (error)
+		goto out_abort_free_ticket;
+
+	xfs_log_ticket_ungrant(log, tic);
 
 	spin_lock(&commit_iclog->ic_callback_lock);
-	if (commit_iclog->ic_state & XLOG_STATE_IOERROR) {
+	if (commit_iclog->ic_state == XLOG_STATE_IOERROR) {
 		spin_unlock(&commit_iclog->ic_callback_lock);
 		goto out_abort;
 	}
@@ -873,28 +876,20 @@ restart:
 	spin_unlock(&cil->xc_push_lock);
 
 	/* release the hounds! */
-	return xfs_log_release_iclog(log->l_mp, commit_iclog);
+	xfs_log_release_iclog(commit_iclog);
+	return;
 
 out_skip:
 	up_write(&cil->xc_ctx_lock);
 	xfs_log_ticket_put(new_ctx->ticket);
 	kmem_free(new_ctx);
-	return 0;
+	return;
 
 out_abort_free_ticket:
-	xfs_log_ticket_put(tic);
+	xfs_log_ticket_ungrant(log, tic);
 out_abort:
-	xlog_cil_committed(ctx, true);
-	return -EIO;
-}
-
-static void
-xlog_cil_push_work(
-	struct work_struct	*work)
-{
-	struct xfs_cil		*cil = container_of(work, struct xfs_cil,
-							xc_push_work);
-	xlog_cil_push(cil->xc_log);
+	ASSERT(XLOG_FORCED_SHUTDOWN(log));
+	xlog_cil_committed(ctx);
 }
 
 /*
@@ -917,7 +912,7 @@ xlog_cil_push_background(
 	ASSERT(!list_empty(&cil->xc_cil));
 
 	/*
-	 * don't do a background push if we haven't used up all the
+	 * Don't do a background push if we haven't used up all the
 	 * space available yet.
 	 */
 	if (cil->xc_ctx->space_used < XLOG_CIL_SPACE_LIMIT(log)) {
@@ -941,9 +936,16 @@ xlog_cil_push_background(
 
 	/*
 	 * If we are well over the space limit, throttle the work that is being
-	 * done until the push work on this context has begun.
+	 * done until the push work on this context has begun. Enforce the hard
+	 * throttle on all transaction commits once it has been activated, even
+	 * if the committing transactions have resulted in the space usage
+	 * dipping back down under the hard limit.
+	 *
+	 * The ctx->xc_push_lock provides the serialisation necessary for safely
+	 * using the lockless waitqueue_active() check in this context.
 	 */
-	if (cil->xc_ctx->space_used >= XLOG_CIL_BLOCKING_SPACE_LIMIT(log)) {
+	if (cil->xc_ctx->space_used >= XLOG_CIL_BLOCKING_SPACE_LIMIT(log) ||
+	    waitqueue_active(&cil->xc_push_wait)) {
 		trace_xfs_log_cil_wait(log, cil->xc_ctx->ticket);
 		ASSERT(cil->xc_ctx->space_used < log->l_logsize);
 		xlog_wait(&cil->xc_push_wait, &cil->xc_push_lock);
@@ -1018,16 +1020,14 @@ xlog_cil_empty(
  * allowed again.
  */
 void
-xfs_log_commit_cil(
-	struct xfs_mount	*mp,
+xlog_cil_commit(
+	struct xlog		*log,
 	struct xfs_trans	*tp,
-	xfs_lsn_t		*commit_lsn,
+	xfs_csn_t		*commit_seq,
 	bool			regrant)
 {
-	struct xlog		*log = mp->m_log;
 	struct xfs_cil		*cil = log->l_cilp;
 	struct xfs_log_item	*lip, *next;
-	xfs_lsn_t		xc_commit_lsn;
 
 	/*
 	 * Do all necessary memory allocation before we lock the CIL.
@@ -1041,11 +1041,10 @@ xfs_log_commit_cil(
 
 	xlog_cil_insert_items(log, tp);
 
-	xc_commit_lsn = cil->xc_ctx->sequence;
-	if (commit_lsn)
-		*commit_lsn = xc_commit_lsn;
-
-	xfs_log_done(mp, tp->t_ticket, NULL, regrant);
+	if (regrant && !XLOG_FORCED_SHUTDOWN(log))
+		xfs_log_ticket_regrant(log, tp->t_ticket);
+	else
+		xfs_log_ticket_ungrant(log, tp->t_ticket);
 	tp->t_ticket = NULL;
 	xfs_trans_unreserve_and_mod_sb(tp);
 
@@ -1064,8 +1063,10 @@ xfs_log_commit_cil(
 	list_for_each_entry_safe(lip, next, &tp->t_items, li_trans) {
 		xfs_trans_del_item(lip);
 		if (lip->li_ops->iop_committing)
-			lip->li_ops->iop_committing(lip, xc_commit_lsn);
+			lip->li_ops->iop_committing(lip, cil->xc_ctx->sequence);
 	}
+	if (commit_seq)
+		*commit_seq = cil->xc_ctx->sequence;
 
 	/* xlog_cil_push_background() releases cil->xc_ctx_lock */
 	xlog_cil_push_background(log);
@@ -1082,9 +1083,9 @@ xfs_log_commit_cil(
  * iclog flush is necessary following this call.
  */
 xfs_lsn_t
-xlog_cil_force_lsn(
+xlog_cil_force_seq(
 	struct xlog	*log,
-	xfs_lsn_t	sequence)
+	xfs_csn_t	sequence)
 {
 	struct xfs_cil		*cil = log->l_cilp;
 	struct xfs_cil_ctx	*ctx;
@@ -1190,9 +1191,7 @@ xfs_log_item_in_current_chkpt(
 	 * first checkpoint it is written to. Hence if it is different to the
 	 * current sequence, we're in a new checkpoint.
 	 */
-	if (XFS_LSN_CMP(lip->li_seq, READ_ONCE(cil->xc_current_sequence)) != 0)
-		return false;
-	return true;
+	return lip->li_seq == READ_ONCE(cil->xc_current_sequence);
 }
 
 /*

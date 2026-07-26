@@ -819,7 +819,7 @@ static const struct ethtool_ops ops = {
 };
 
 /* called when a packet did not ack after watchdogtimeout */
-static void hso_net_tx_timeout(struct net_device *net)
+static void hso_net_tx_timeout(struct net_device *net, unsigned int txqueue)
 {
 	struct hso_net *odev = netdev_priv(net);
 
@@ -830,8 +830,7 @@ static void hso_net_tx_timeout(struct net_device *net)
 	dev_warn(&net->dev, "Tx timed out.\n");
 
 	/* Tear the waiting frame off the list */
-	if (odev->mux_bulk_tx_urb &&
-	    (odev->mux_bulk_tx_urb->status == -EINPROGRESS))
+	if (odev->mux_bulk_tx_urb)
 		usb_unlink_urb(odev->mux_bulk_tx_urb);
 
 	/* Update statistics */
@@ -1213,8 +1212,9 @@ static void hso_std_serial_read_bulk_callback(struct urb *urb)
  * This needs to be a tasklet otherwise we will
  * end up recursively calling this function.
  */
-static void hso_unthrottle_tasklet(struct hso_serial *serial)
+static void hso_unthrottle_tasklet(unsigned long data)
 {
+	struct hso_serial *serial = (struct hso_serial *)data;
 	unsigned long flags;
 
 	spin_lock_irqsave(&serial->serial_lock, flags);
@@ -1264,7 +1264,7 @@ static int hso_serial_open(struct tty_struct *tty, struct file *filp)
 		/* Force default termio settings */
 		_hso_serial_set_termios(tty, NULL);
 		tasklet_init(&serial->unthrottle_tasklet,
-			     (void (*)(unsigned long))hso_unthrottle_tasklet,
+			     hso_unthrottle_tasklet,
 			     (unsigned long)serial);
 		result = hso_start_serial_device(serial->parent, GFP_KERNEL);
 		if (result) {
@@ -2462,10 +2462,9 @@ static void hso_create_rfkill(struct hso_device *hso_dev,
 				       &interface_to_usbdev(interface)->dev,
 				       RFKILL_TYPE_WWAN,
 				       &hso_rfkill_ops, hso_dev);
-	if (!hso_net->rfkill) {
-		dev_err(dev, "%s - Out of memory\n", __func__);
+	if (!hso_net->rfkill)
 		return;
-	}
+
 	if (rfkill_register(hso_net->rfkill) < 0) {
 		rfkill_destroy(hso_net->rfkill);
 		hso_net->rfkill = NULL;
@@ -2538,13 +2537,17 @@ static struct hso_device *hso_create_net_device(struct usb_interface *interface,
 	if (!hso_net->mux_bulk_tx_buf)
 		goto err_free_tx_urb;
 
-	add_net_device(hso_dev);
+	result = add_net_device(hso_dev);
+	if (result) {
+		dev_err(&interface->dev, "Failed to add net device\n");
+		goto err_free_tx_buf;
+	}
 
 	/* registering our net device */
 	result = register_netdev(net);
 	if (result) {
 		dev_err(&interface->dev, "Failed to register device\n");
-		goto err_free_tx_buf;
+		goto err_rmv_ndev;
 	}
 
 	hso_log_port(hso_dev);
@@ -2553,8 +2556,9 @@ static struct hso_device *hso_create_net_device(struct usb_interface *interface,
 
 	return hso_dev;
 
-err_free_tx_buf:
+err_rmv_ndev:
 	remove_net_device(hso_dev);
+err_free_tx_buf:
 	kfree(hso_net->mux_bulk_tx_buf);
 err_free_tx_urb:
 	usb_free_urb(hso_net->mux_bulk_tx_urb);
@@ -2672,7 +2676,7 @@ static struct hso_device *hso_create_bulk_serial_device(
 	if (!
 	    (serial->out_endp =
 	     hso_get_ep(interface, USB_ENDPOINT_XFER_BULK, USB_DIR_OUT))) {
-		dev_err(&interface->dev, "Failed to find BULK IN ep\n");
+		dev_err(&interface->dev, "Failed to find BULK OUT ep\n");
 		goto exit2;
 	}
 

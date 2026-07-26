@@ -359,9 +359,8 @@ static void __vlan_vid_del(struct vlan_info *vlan_info,
 	int err;
 
 	err = vlan_kill_rx_filter_info(dev, proto, vid);
-	if (err)
-		pr_warn("failed to kill vid %04x/%d for device %s\n",
-			proto, vid, dev->name);
+	if (err && dev->reg_state != NETREG_UNREGISTERING)
+		netdev_warn(dev, "failed to kill vid %04x/%d\n", proto, vid);
 
 	list_del(&vid_info->list);
 	kfree(vid_info);
@@ -483,10 +482,9 @@ static struct sk_buff *vlan_gro_receive(struct list_head *head,
 
 	type = vhdr->h_vlan_encapsulated_proto;
 
-	rcu_read_lock();
 	ptype = gro_find_receive_by_type(type);
 	if (!ptype)
-		goto out_unlock;
+		goto out;
 
 	flush = 0;
 
@@ -505,8 +503,6 @@ static struct sk_buff *vlan_gro_receive(struct list_head *head,
 	skb_gro_postpull_rcsum(skb, vhdr, sizeof(*vhdr));
 	pp = call_gro_receive(ptype->callbacks.gro_receive, head, skb);
 
-out_unlock:
-	rcu_read_unlock();
 out:
 	skb_gro_flush_final(skb, pp, flush);
 
@@ -520,12 +516,10 @@ static int vlan_gro_complete(struct sk_buff *skb, int nhoff)
 	struct packet_offload *ptype;
 	int err = -ENOENT;
 
-	rcu_read_lock();
 	ptype = gro_find_complete_by_type(type);
 	if (ptype)
 		err = ptype->callbacks.gro_complete(skb, nhoff + sizeof(*vhdr));
 
-	rcu_read_unlock();
 	return err;
 }
 

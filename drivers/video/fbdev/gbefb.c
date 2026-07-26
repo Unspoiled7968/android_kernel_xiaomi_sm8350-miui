@@ -12,6 +12,7 @@
 #include <linux/delay.h>
 #include <linux/platform_device.h>
 #include <linux/dma-mapping.h>
+#include <linux/dma-direct.h>
 #include <linux/errno.h>
 #include <linux/gfp.h>
 #include <linux/fb.h>
@@ -65,7 +66,7 @@ struct gbefb_par {
 static unsigned int gbe_mem_size = CONFIG_FB_GBE_MEM * 1024*1024;
 static void *gbe_mem;
 static dma_addr_t gbe_dma_addr;
-static unsigned long gbe_mem_phys;
+static phys_addr_t gbe_mem_phys;
 
 static struct {
 	uint16_t *cpu;
@@ -1044,7 +1045,7 @@ static int gbefb_mmap(struct fb_info *info,
 	return 0;
 }
 
-static struct fb_ops gbefb_ops = {
+static const struct fb_ops gbefb_ops = {
 	.owner		= THIS_MODULE,
 	.fb_check_var	= gbefb_check_var,
 	.fb_set_par	= gbefb_set_par,
@@ -1189,7 +1190,7 @@ static int gbefb_probe(struct platform_device *p_dev)
 			goto out_release_mem_region;
 		}
 
-		gbe_mem_phys = (unsigned long) gbe_dma_addr;
+		gbe_mem_phys = dma_to_phys(&p_dev->dev, gbe_dma_addr);
 	}
 
 	par = info->par;

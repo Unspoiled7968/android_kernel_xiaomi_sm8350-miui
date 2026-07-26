@@ -13,6 +13,7 @@
 #include <linux/netdevice.h>
 #include <linux/notifier.h>
 #include <linux/export.h>
+#include <linux/indirect_call_wrapper.h>
 
 #include <net/fib_rules.h>
 #include <net/ipv6.h>
@@ -47,9 +48,10 @@ bool fib6_rule_default(const struct fib_rule *rule)
 }
 EXPORT_SYMBOL_GPL(fib6_rule_default);
 
-int fib6_rules_dump(struct net *net, struct notifier_block *nb)
+int fib6_rules_dump(struct net *net, struct notifier_block *nb,
+		    struct netlink_ext_ack *extack)
 {
-	return fib_rules_dump(net, nb, AF_INET6);
+	return fib_rules_dump(net, nb, AF_INET6, extack);
 }
 
 unsigned int fib6_rules_seq_read(struct net *net)
@@ -110,11 +112,13 @@ struct dst_entry *fib6_rule_lookup(struct net *net, struct flowi6 *fl6,
 	} else {
 		struct rt6_info *rt;
 
-		rt = lookup(net, net->ipv6.fib6_local_tbl, fl6, skb, flags);
+		rt = pol_lookup_func(lookup,
+			     net, net->ipv6.fib6_local_tbl, fl6, skb, flags);
 		if (rt != net->ipv6.ip6_null_entry && rt->dst.error != -EAGAIN)
 			return &rt->dst;
 		ip6_rt_put_flags(rt, flags);
-		rt = lookup(net, net->ipv6.fib6_main_tbl, fl6, skb, flags);
+		rt = pol_lookup_func(lookup,
+			     net, net->ipv6.fib6_main_tbl, fl6, skb, flags);
 		if (rt->dst.error != -EAGAIN)
 			return &rt->dst;
 		ip6_rt_put_flags(rt, flags);
@@ -225,7 +229,8 @@ static int __fib6_rule_action(struct fib_rule *rule, struct flowi *flp,
 		goto out;
 	}
 
-	rt = lookup(net, table, flp6, arg->lookup_data, flags);
+	rt = pol_lookup_func(lookup,
+			     net, table, flp6, arg->lookup_data, flags);
 	if (rt != net->ipv6.ip6_null_entry) {
 		struct inet6_dev *idev = ip6_dst_idev(&rt->dst);
 
@@ -255,8 +260,9 @@ out:
 	return err;
 }
 
-static int fib6_rule_action(struct fib_rule *rule, struct flowi *flp,
-			    int flags, struct fib_lookup_arg *arg)
+INDIRECT_CALLABLE_SCOPE int fib6_rule_action(struct fib_rule *rule,
+					     struct flowi *flp, int flags,
+					     struct fib_lookup_arg *arg)
 {
 	if (arg->lookup_ptr == fib6_table_lookup)
 		return fib6_rule_action_alt(rule, flp, flags, arg);
@@ -264,7 +270,9 @@ static int fib6_rule_action(struct fib_rule *rule, struct flowi *flp,
 	return __fib6_rule_action(rule, flp, flags, arg);
 }
 
-static bool fib6_rule_suppress(struct fib_rule *rule, int flags, struct fib_lookup_arg *arg)
+INDIRECT_CALLABLE_SCOPE bool fib6_rule_suppress(struct fib_rule *rule,
+						int flags,
+						struct fib_lookup_arg *arg)
 {
 	struct fib6_result *res = arg->result;
 	struct rt6_info *rt = res->rt6;
@@ -295,7 +303,8 @@ suppress_route:
 	return true;
 }
 
-static int fib6_rule_match(struct fib_rule *rule, struct flowi *fl, int flags)
+INDIRECT_CALLABLE_SCOPE int fib6_rule_match(struct fib_rule *rule,
+					    struct flowi *fl, int flags)
 {
 	struct fib6_rule *r = (struct fib6_rule *) rule;
 	struct flowi6 *fl6 = &fl->u.ip6;
@@ -344,9 +353,9 @@ static int fib6_rule_configure(struct fib_rule *rule, struct sk_buff *skb,
 			       struct nlattr **tb,
 			       struct netlink_ext_ack *extack)
 {
+	struct fib6_rule *rule6 = (struct fib6_rule *)rule;
+	struct net *net = rule->fr_net;
 	int err = -EINVAL;
-	struct net *net = sock_net(skb->sk);
-	struct fib6_rule *rule6 = (struct fib6_rule *) rule;
 
 	if (rule->action == FR_ACT_TO_TBL && !rule->l3mdev) {
 		if (rule->table == RT6_TABLE_UNSPEC) {

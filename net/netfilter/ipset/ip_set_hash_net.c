@@ -47,7 +47,7 @@ struct hash_net4_elem {
 
 /* Common functions */
 
-static inline bool
+static bool
 hash_net4_data_equal(const struct hash_net4_elem *ip1,
 		     const struct hash_net4_elem *ip2,
 		     u32 *multi)
@@ -56,25 +56,25 @@ hash_net4_data_equal(const struct hash_net4_elem *ip1,
 	       ip1->cidr == ip2->cidr;
 }
 
-static inline int
+static int
 hash_net4_do_data_match(const struct hash_net4_elem *elem)
 {
 	return elem->nomatch ? -ENOTEMPTY : 1;
 }
 
-static inline void
+static void
 hash_net4_data_set_flags(struct hash_net4_elem *elem, u32 flags)
 {
 	elem->nomatch = (flags >> 16) & IPSET_FLAG_NOMATCH;
 }
 
-static inline void
+static void
 hash_net4_data_reset_flags(struct hash_net4_elem *elem, u8 *flags)
 {
 	swap(*flags, elem->nomatch);
 }
 
-static inline void
+static void
 hash_net4_data_netmask(struct hash_net4_elem *elem, u8 cidr)
 {
 	elem->ip &= ip_set_netmask(cidr);
@@ -97,7 +97,7 @@ nla_put_failure:
 	return true;
 }
 
-static inline void
+static void
 hash_net4_data_next(struct hash_net4_elem *next,
 		    const struct hash_net4_elem *d)
 {
@@ -135,11 +135,11 @@ static int
 hash_net4_uadt(struct ip_set *set, struct nlattr *tb[],
 	       enum ipset_adt adt, u32 *lineno, u32 flags, bool retried)
 {
-	const struct hash_net4 *h = set->data;
+	struct hash_net4 *h = set->data;
 	ipset_adtfn adtfn = set->variant->adt[adt];
 	struct hash_net4_elem e = { .cidr = HOST_MASK };
 	struct ip_set_ext ext = IP_SET_INIT_UEXT(set);
-	u32 ip = 0, ip_to = 0;
+	u32 ip = 0, ip_to = 0, i = 0;
 	int ret;
 
 	if (tb[IPSET_ATTR_LINENO])
@@ -187,10 +187,16 @@ hash_net4_uadt(struct ip_set *set, struct nlattr *tb[],
 		if (ip + UINT_MAX == ip_to)
 			return -IPSET_ERR_HASH_RANGE;
 	}
+
 	if (retried)
 		ip = ntohl(h->next.ip);
 	do {
+		i++;
 		e.ip = htonl(ip);
+		if (i > IPSET_MAX_RANGE) {
+			hash_net4_data_next(&h->next, &e);
+			return -ERANGE;
+		}
 		ip = ip_set_range_to_cidr(ip, ip_to, &e.cidr);
 		ret = adtfn(set, &e, &ext, &ext, flags);
 		if (ret && !ip_set_eexist(ret, flags))
@@ -212,7 +218,7 @@ struct hash_net6_elem {
 
 /* Common functions */
 
-static inline bool
+static bool
 hash_net6_data_equal(const struct hash_net6_elem *ip1,
 		     const struct hash_net6_elem *ip2,
 		     u32 *multi)
@@ -221,25 +227,25 @@ hash_net6_data_equal(const struct hash_net6_elem *ip1,
 	       ip1->cidr == ip2->cidr;
 }
 
-static inline int
+static int
 hash_net6_do_data_match(const struct hash_net6_elem *elem)
 {
 	return elem->nomatch ? -ENOTEMPTY : 1;
 }
 
-static inline void
+static void
 hash_net6_data_set_flags(struct hash_net6_elem *elem, u32 flags)
 {
 	elem->nomatch = (flags >> 16) & IPSET_FLAG_NOMATCH;
 }
 
-static inline void
+static void
 hash_net6_data_reset_flags(struct hash_net6_elem *elem, u8 *flags)
 {
 	swap(*flags, elem->nomatch);
 }
 
-static inline void
+static void
 hash_net6_data_netmask(struct hash_net6_elem *elem, u8 cidr)
 {
 	ip6_netmask(&elem->ip, cidr);
@@ -262,7 +268,7 @@ nla_put_failure:
 	return true;
 }
 
-static inline void
+static void
 hash_net6_data_next(struct hash_net6_elem *next,
 		    const struct hash_net6_elem *d)
 {

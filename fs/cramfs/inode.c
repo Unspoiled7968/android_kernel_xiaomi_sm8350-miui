@@ -117,9 +117,18 @@ static struct inode *get_cramfs_inode(struct super_block *sb,
 		inode_nohighmem(inode);
 		inode->i_data.a_ops = &cramfs_aops;
 		break;
-	default:
+	case S_IFCHR:
+	case S_IFBLK:
+	case S_IFIFO:
+	case S_IFSOCK:
 		init_special_inode(inode, cramfs_inode->mode,
 				old_decode_dev(cramfs_inode->size));
+		break;
+	default:
+		printk(KERN_DEBUG "CRAMFS: Invalid file type 0%04o for inode %lu.\n",
+		       inode->i_mode, inode->i_ino);
+		iget_failed(inode);
+		return ERR_PTR(-EIO);
 	}
 
 	inode->i_mode = cramfs_inode->mode;
@@ -534,7 +543,7 @@ static int cramfs_read_super(struct super_block *sb, struct fs_context *fc,
 		/* check for wrong endianness */
 		if (super->magic == CRAMFS_MAGIC_WEND) {
 			if (!silent)
-				errorf(fc, "cramfs: wrong endianness");
+				errorfc(fc, "wrong endianness");
 			return -EINVAL;
 		}
 
@@ -546,22 +555,22 @@ static int cramfs_read_super(struct super_block *sb, struct fs_context *fc,
 		mutex_unlock(&read_mutex);
 		if (super->magic != CRAMFS_MAGIC) {
 			if (super->magic == CRAMFS_MAGIC_WEND && !silent)
-				errorf(fc, "cramfs: wrong endianness");
+				errorfc(fc, "wrong endianness");
 			else if (!silent)
-				errorf(fc, "cramfs: wrong magic");
+				errorfc(fc, "wrong magic");
 			return -EINVAL;
 		}
 	}
 
 	/* get feature flags first */
 	if (super->flags & ~CRAMFS_SUPPORTED_FLAGS) {
-		errorf(fc, "cramfs: unsupported filesystem features");
+		errorfc(fc, "unsupported filesystem features");
 		return -EINVAL;
 	}
 
 	/* Check that the root inode is in a sane state */
 	if (!S_ISDIR(super->root.mode)) {
-		errorf(fc, "cramfs: root is not a directory");
+		errorfc(fc, "root is not a directory");
 		return -EINVAL;
 	}
 	/* correct strange, hard-coded permissions of mkcramfs */
@@ -580,12 +589,12 @@ static int cramfs_read_super(struct super_block *sb, struct fs_context *fc,
 	sbi->magic = super->magic;
 	sbi->flags = super->flags;
 	if (root_offset == 0)
-		infof(fc, "cramfs: empty filesystem");
+		infofc(fc, "empty filesystem");
 	else if (!(super->flags & CRAMFS_FLAG_SHIFTED_ROOT_OFFSET) &&
 		 ((root_offset != sizeof(struct cramfs_super)) &&
 		  (root_offset != 512 + sizeof(struct cramfs_super))))
 	{
-		errorf(fc, "cramfs: bad root offset %lu", root_offset);
+		errorfc(fc, "bad root offset %lu", root_offset);
 		return -EINVAL;
 	}
 
@@ -690,8 +699,7 @@ static int cramfs_statfs(struct dentry *dentry, struct kstatfs *buf)
 	buf->f_bavail = 0;
 	buf->f_files = CRAMFS_SB(sb)->files;
 	buf->f_ffree = 0;
-	buf->f_fsid.val[0] = (u32)id;
-	buf->f_fsid.val[1] = (u32)(id >> 32);
+	buf->f_fsid = u64_to_fsid(id);
 	buf->f_namelen = CRAMFS_MAXPATHLEN;
 	return 0;
 }
@@ -1011,3 +1019,4 @@ static void __exit exit_cramfs_fs(void)
 module_init(init_cramfs_fs)
 module_exit(exit_cramfs_fs)
 MODULE_LICENSE("GPL");
+MODULE_IMPORT_NS(ANDROID_GKI_VFS_EXPORT_ONLY);

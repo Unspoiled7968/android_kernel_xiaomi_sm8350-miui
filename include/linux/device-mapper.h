@@ -13,6 +13,7 @@
 #include <linux/dm-ioctl.h>
 #include <linux/math64.h>
 #include <linux/ratelimit.h>
+#include <linux/android_kabi.h>
 
 struct dm_dev;
 struct dm_target;
@@ -140,6 +141,8 @@ typedef long (*dm_dax_direct_access_fn) (struct dm_target *ti, pgoff_t pgoff,
 		long nr_pages, void **kaddr, pfn_t *pfn);
 typedef size_t (*dm_dax_copy_iter_fn)(struct dm_target *ti, pgoff_t pgoff,
 		void *addr, size_t bytes, struct iov_iter *i);
+typedef int (*dm_dax_zero_page_range_fn)(struct dm_target *ti, pgoff_t pgoff,
+		size_t nr_pages);
 #define PAGE_SECTORS (PAGE_SIZE / 512)
 
 void dm_error(const char *message);
@@ -194,6 +197,10 @@ struct target_type {
 	dm_dax_direct_access_fn direct_access;
 	dm_dax_copy_iter_fn dax_copy_from_iter;
 	dm_dax_copy_iter_fn dax_copy_to_iter;
+	dm_dax_zero_page_range_fn dax_zero_page_range;
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
 
 	/* For internal device-mapper use. */
 	struct list_head list;
@@ -243,10 +250,35 @@ struct target_type {
 #define dm_target_passes_integrity(type) ((type)->features & DM_TARGET_PASSES_INTEGRITY)
 
 /*
- * Indicates that a target supports host-managed zoned block devices.
+ * Indicates support for zoned block devices:
+ * - DM_TARGET_ZONED_HM: the target also supports host-managed zoned
+ *   block devices but does not support combining different zoned models.
+ * - DM_TARGET_MIXED_ZONED_MODEL: the target supports combining multiple
+ *   devices with different zoned models.
  */
 #define DM_TARGET_ZONED_HM		0x00000040
 #define dm_target_supports_zoned_hm(type) ((type)->features & DM_TARGET_ZONED_HM)
+
+/*
+ * A target handles REQ_NOWAIT
+ */
+#define DM_TARGET_NOWAIT		0x00000080
+#define dm_target_supports_nowait(type) ((type)->features & DM_TARGET_NOWAIT)
+
+/*
+ * A target supports passing through inline crypto support.
+ */
+#define DM_TARGET_PASSES_CRYPTO		0x00000100
+#define dm_target_passes_crypto(type) ((type)->features & DM_TARGET_PASSES_CRYPTO)
+
+#ifdef CONFIG_BLK_DEV_ZONED
+#define DM_TARGET_MIXED_ZONED_MODEL	0x00000200
+#define dm_target_supports_mixed_zoned_model(type) \
+	((type)->features & DM_TARGET_MIXED_ZONED_MODEL)
+#else
+#define DM_TARGET_MIXED_ZONED_MODEL	0x00000000
+#define dm_target_supports_mixed_zoned_model(type) (false)
+#endif
 
 struct dm_target {
 	struct dm_table *table;
@@ -322,17 +354,8 @@ struct dm_target {
 	 */
 	bool limit_swap_bios:1;
 
-	/*
-	 * Set if inline crypto capabilities from this target's underlying
-	 * device(s) can be exposed via the device-mapper device.
-	 */
-	bool may_passthrough_inline_crypto:1;
-};
-
-/* Each target can link one of these into the table */
-struct dm_target_callbacks {
-	struct list_head list;
-	int (*congested_fn) (struct dm_target_callbacks *, int);
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
 };
 
 void *dm_per_bio_data(struct bio *bio, size_t data_size);
@@ -486,11 +509,6 @@ int dm_table_add_target(struct dm_table *t, const char *type,
 			sector_t start, sector_t len, char *params);
 
 /*
- * Target_ctr should call this if it needs to add any callbacks.
- */
-void dm_table_add_target_callbacks(struct dm_table *t, struct dm_target_callbacks *cb);
-
-/*
  * Target can use this to set the table's type.
  * Can only ever be called from a target's ctr.
  * Useful for "hybrid" target (supports both bio-based
@@ -547,6 +565,11 @@ struct dm_table *dm_swap_table(struct mapped_device *md,
 			       struct dm_table *t);
 
 /*
+ * Table keyslot manager functions
+ */
+void dm_destroy_keyslot_manager(struct blk_keyslot_manager *ksm);
+
+/*
  * A wrapper around vmalloc.
  */
 void *dm_vcalloc(unsigned long nmemb, unsigned long elem_size);
@@ -567,13 +590,8 @@ void *dm_vcalloc(unsigned long nmemb, unsigned long elem_size);
 #define DMINFO(fmt, ...) pr_info(DM_FMT(fmt), ##__VA_ARGS__)
 #define DMINFO_LIMIT(fmt, ...) pr_info_ratelimited(DM_FMT(fmt), ##__VA_ARGS__)
 
-#ifdef CONFIG_DM_DEBUG
-#define DMDEBUG(fmt, ...) printk(KERN_DEBUG DM_FMT(fmt), ##__VA_ARGS__)
+#define DMDEBUG(fmt, ...) pr_debug(DM_FMT(fmt), ##__VA_ARGS__)
 #define DMDEBUG_LIMIT(fmt, ...) pr_debug_ratelimited(DM_FMT(fmt), ##__VA_ARGS__)
-#else
-#define DMDEBUG(fmt, ...) no_printk(fmt, ##__VA_ARGS__)
-#define DMDEBUG_LIMIT(fmt, ...) no_printk(fmt, ##__VA_ARGS__)
-#endif
 
 #define DMEMIT(x...) sz += ((sz >= maxlen) ? \
 			  0 : scnprintf(result + sz, maxlen - sz, x))
@@ -620,9 +638,6 @@ void *dm_vcalloc(unsigned long nmemb, unsigned long elem_size);
  * ceiling(n / size) * size
  */
 #define dm_round_up(n, sz) (dm_div_up((n), (sz)) * (sz))
-
-#define dm_array_too_big(fixed, obj, num) \
-	((num) > (UINT_MAX - (fixed)) / (obj))
 
 /*
  * Sector offset taken relative to the start of the target instead of

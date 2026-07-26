@@ -13,6 +13,7 @@
  */
 
 #include <linux/linkage.h>
+#include <linux/pgtable.h>
 
 #include <asm/processor.h>
 #include <asm/unistd.h>
@@ -21,7 +22,6 @@
 #include <asm/spr_defs.h>
 #include <asm/page.h>
 #include <asm/mmu.h>
-#include <asm/pgtable.h>
 #include <asm/asm-offsets.h>
 
 #define DISABLE_INTERRUPTS(t1,t2)			\
@@ -1167,6 +1167,11 @@ ENTRY(__sys_clone)
 	l.ori	r29,r29,lo(sys_clone)
 	l.j	_fork_save_extra_regs_and_call
 	 l.nop
+
+ENTRY(__sys_clone3)
+	l.movhi	r29,hi(sys_clone3)
+	l.j	_fork_save_extra_regs_and_call
+	 l.ori	r29,r29,lo(sys_clone3)
 
 ENTRY(__sys_fork)
 	l.movhi	r29,hi(sys_fork)

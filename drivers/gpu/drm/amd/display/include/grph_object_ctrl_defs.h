@@ -153,6 +153,10 @@ struct embedded_panel_info {
 	uint32_t drr_enabled;
 	uint32_t min_drr_refresh_rate;
 	bool realtek_eDPToLVDS;
+	uint16_t panel_width_mm;
+	uint16_t panel_height_mm;
+	uint16_t fake_edid_size;
+	const uint8_t *fake_edid;
 };
 
 struct dc_firmware_info {
@@ -178,8 +182,14 @@ struct dc_firmware_info {
 	uint32_t default_engine_clk; /* in KHz */
 	uint32_t dp_phy_ref_clk; /* in KHz - DCE12 only */
 	uint32_t i2c_engine_ref_clk; /* in KHz - DCE12 only */
+	bool oem_i2c_present;
+	uint8_t oem_i2c_obj_id;
 
+};
 
+struct dc_vram_info {
+	unsigned int num_chans;
+	unsigned int dram_channel_width_bytes;
 };
 
 struct step_and_delay_info {

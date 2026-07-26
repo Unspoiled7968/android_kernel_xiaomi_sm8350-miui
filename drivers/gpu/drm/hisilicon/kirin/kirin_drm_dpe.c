@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Hisilicon Hi6220 SoC ADE(Advanced Display Engine)'s crtc&plane driver
  *
@@ -41,22 +42,19 @@
 #include "kirin_drm_drv.h"
 #include "kirin_dpe_reg.h"
 
-#define DPE_WIDTH(width)   ((width) - 1)
+#define DPE_WIDTH(width) ((width) - 1)
 #define DPE_HEIGHT(height) ((height) - 1)
 
-#define GET_FLUX_REQ_IN(max_depth)  ((max_depth) * 50 / 100)
-#define GET_FLUX_REQ_OUT(max_depth)	((max_depth) * 90 / 100)
+#define GET_FLUX_REQ_IN(max_depth) ((max_depth) * 50 / 100)
+#define GET_FLUX_REQ_OUT(max_depth) ((max_depth) * 90 / 100)
 
 #define DEFAULT_DPE_CORE_CLK_07V_RATE (400000000UL)
-#define DPE_MAX_PXL0_CLK_144M         (144000000UL)
+#define DPE_MAX_PXL0_CLK_144M (144000000UL)
 
 #define DPE_UNSUPPORT (800)
-#define RES_4K_PHONE  (3840 * 2160)
+#define RES_4K_PHONE (3840 * 2160)
 
-enum dpe_ovl {
-	DPE_OVL0 = 0,
-	DPE_OVL_NUM
-};
+enum dpe_ovl { DPE_OVL0 = 0, DPE_OVL_NUM };
 
 enum dpe_channel {
 	DPE_CH0 = 0, /* channel 1 for primary plane */
@@ -182,8 +180,7 @@ static u32 dpe_get_format(u32 pixel_format)
 		if (dpe_formats[i].pixel_format == pixel_format)
 			return dpe_formats[i].hw_format;
 
-	DRM_ERROR("Not found pixel format!!fourcc_format= %d\n",
-		  pixel_format);
+	DRM_ERROR("Not found pixel format!!fourcc_format= %d\n", pixel_format);
 	return DPE_UNSUPPORT;
 }
 
@@ -240,7 +237,6 @@ static void dpe_enable_ldi(struct dpe_hw_ctx *ctx)
 
 	dpe_set_reg(ldi_base + LDI_CTRL, 0x1, 1, 0);
 }
-
 
 /* interrupts utils */
 static void dpe_interrupt_mask(struct dpe_hw_ctx *ctx)
@@ -356,7 +352,7 @@ static int dpe_power_up(struct dpe_hw_ctx *ctx)
 {
 	int ret;
 
-	if (ctx->power_on == true)
+	if (ctx->power_on)
 		return 0;
 
 	/*peri clk enable */
@@ -401,14 +397,14 @@ static int dpe_power_up(struct dpe_hw_ctx *ctx)
 }
 
 static void dpe_dpp_init(struct dpe_hw_ctx *ctx, struct drm_display_mode *mode,
-					struct drm_display_mode *adj_mode)
+			 struct drm_display_mode *adj_mode)
 {
 	void __iomem *dpp_base = ctx->base + DPE_DPP_OFFSET;
 
 	writel((DPE_HEIGHT(mode->vdisplay) << 16) | DPE_WIDTH(mode->hdisplay),
-			dpp_base + DPP_IMG_SIZE_BEF_SR);
+	       dpp_base + DPP_IMG_SIZE_BEF_SR);
 	writel((DPE_HEIGHT(mode->vdisplay) << 16) | DPE_WIDTH(mode->hdisplay),
-			dpp_base + DPP_IMG_SIZE_AFT_SR);
+	       dpp_base + DPP_IMG_SIZE_AFT_SR);
 }
 
 static void dpe_ovl_init(struct dpe_hw_ctx *ctx, u32 xres, u32 yres)
@@ -419,12 +415,12 @@ static void dpe_ovl_init(struct dpe_hw_ctx *ctx, u32 xres, u32 yres)
 
 	dpe_set_reg(ovl0_base + OVL6_REG_DEFAULT, 0x1, 32, 0);
 	dpe_set_reg(ovl0_base + OVL6_REG_DEFAULT, 0x0, 32, 0);
-	dpe_set_reg(ovl0_base + OVL_SIZE,
-				(xres - 1) | ((yres - 1) << 16), 32, 0);
+	dpe_set_reg(ovl0_base + OVL_SIZE, (xres - 1) | ((yres - 1) << 16), 32,
+		    0);
 	dpe_set_reg(ovl0_base + OVL_BG_COLOR, 0xFF000000, 32, 0);
 	dpe_set_reg(ovl0_base + OVL_DST_STARTPOS, 0x0, 32, 0);
-	dpe_set_reg(ovl0_base + OVL_DST_ENDPOS,
-				(xres - 1) | ((yres - 1) << 16), 32, 0);
+	dpe_set_reg(ovl0_base + OVL_DST_ENDPOS, (xres - 1) | ((yres - 1) << 16),
+		    32, 0);
 	dpe_set_reg(ovl0_base + OVL_GCFG, 0x10001, 32, 0);
 	dpe_set_reg(mctl_base + MCTL_CTL_MUTEX_ITF, 0x1, 32, 0);
 	dpe_set_reg(mctl_base + MCTL_CTL_MUTEX_DBUF, 0x1, 2, 0);
@@ -447,11 +443,11 @@ static int dpe_mipi_ifbc_get_rect(struct drm_rect *rect)
 
 	if ((rect->x2 % xres_div) > 0)
 		DRM_ERROR("xres(%d) is not division_h(%d) pixel aligned!\n",
-					rect->x2, xres_div);
+			  rect->x2, xres_div);
 
 	if ((rect->y2 % yres_div) > 0)
 		DRM_ERROR("yres(%d) is not division_v(%d) pixel aligned!\n",
-					rect->y2, yres_div);
+			  rect->y2, yres_div);
 
 	rect->x2 /= xres_div;
 	rect->y2 /= yres_div;
@@ -463,18 +459,17 @@ static void dpe_init_ldi_pxl_div(struct dpe_hw_ctx *ctx)
 {
 	void __iomem *ldi_base = ctx->base + DPE_LDI0_OFFSET;
 
-	dpe_set_reg(ldi_base + LDI_PXL0_DIV2_GT_EN, PXL0_DIV2_GT_EN_CLOSE,
-				1, 0);
-	dpe_set_reg(ldi_base + LDI_PXL0_DIV4_GT_EN, PXL0_DIV4_GT_EN_CLOSE,
-				1, 0);
+	dpe_set_reg(ldi_base + LDI_PXL0_DIV2_GT_EN, PXL0_DIV2_GT_EN_CLOSE, 1,
+		    0);
+	dpe_set_reg(ldi_base + LDI_PXL0_DIV4_GT_EN, PXL0_DIV4_GT_EN_CLOSE, 1,
+		    0);
 	dpe_set_reg(ldi_base + LDI_PXL0_GT_EN, 0x1, 1, 0);
 	dpe_set_reg(ldi_base + LDI_PXL0_DSI_GT_EN, PXL0_DSI_GT_EN_1, 2, 0);
 	dpe_set_reg(ldi_base + LDI_PXL0_DIVXCFG, PXL0_DIVCFG_0, 3, 0);
 }
 
-static void dpe_dbuf_init(struct dpe_hw_ctx *ctx,
-			struct drm_display_mode *mode,
-			struct drm_display_mode *adj_mode)
+static void dpe_dbuf_init(struct dpe_hw_ctx *ctx, struct drm_display_mode *mode,
+			  struct drm_display_mode *adj_mode)
 {
 	void __iomem *dbuf_base = ctx->base + DPE_DBUF0_OFFSET;
 
@@ -519,7 +514,7 @@ static void dpe_dbuf_init(struct dpe_hw_ctx *ctx,
 	depth = DBUF0_DEPTH;
 
 	thd_cg_out = (DFS_TIME * adj_mode->clock * 1000UL * mode->hdisplay) /
-		(((hsw + hbp + hfp) + mode->hdisplay) * 6 * 1000000UL);
+		     (((hsw + hbp + hfp) + mode->hdisplay) * 6 * 1000000UL);
 
 	sram_valid_num = thd_cg_out / depth;
 	thd_cg_in = (sram_valid_num + 1) * depth - 1;
@@ -530,9 +525,10 @@ static void dpe_dbuf_init(struct dpe_hw_ctx *ctx,
 	thd_flux_req_befdfs_in = GET_FLUX_REQ_IN(sram_max_mem_depth);
 	thd_flux_req_befdfs_out = GET_FLUX_REQ_OUT(sram_max_mem_depth);
 
-	sram_min_support_depth = dfs_time_min * mode->hdisplay /
-			(1000000 / 60 / (mode->vdisplay + vbp + vfp + vsw)
-			* (DBUF_WIDTH_BIT / 3 / BITS_PER_BYTE));
+	sram_min_support_depth =
+		dfs_time_min * mode->hdisplay /
+		(1000000 / 60 / (mode->vdisplay + vbp + vfp + vsw) *
+		 (DBUF_WIDTH_BIT / 3 / BITS_PER_BYTE));
 
 	thd_flux_req_aftdfs_in = (sram_max_mem_depth - sram_min_support_depth);
 	thd_flux_req_aftdfs_in = thd_flux_req_aftdfs_in / 3;
@@ -548,21 +544,21 @@ static void dpe_dbuf_init(struct dpe_hw_ctx *ctx,
 	writel((thd_cg_out << 16) | thd_cg_in, dbuf_base + DBUF_THD_CG);
 	writel((thd_cg_hold << 16) | thd_wr_wait, dbuf_base + DBUF_THD_OTHER);
 	writel((thd_flux_req_befdfs_out << 16) | thd_flux_req_befdfs_in,
-			dbuf_base + DBUF_THD_FLUX_REQ_BEF);
+	       dbuf_base + DBUF_THD_FLUX_REQ_BEF);
 	writel((thd_flux_req_aftdfs_out << 16) | thd_flux_req_aftdfs_in,
-			dbuf_base + DBUF_THD_FLUX_REQ_AFT);
+	       dbuf_base + DBUF_THD_FLUX_REQ_AFT);
 	writel(thd_dfs_ok, dbuf_base + DBUF_THD_DFS_OK);
 	writel((dfs_ok_mask << 1) | thd_flux_req_sw_en,
-			dbuf_base + DBUF_FLUX_REQ_CTRL);
+	       dbuf_base + DBUF_FLUX_REQ_CTRL);
 
 	writel(0x1, dbuf_base + DBUF_DFS_LP_CTRL);
 }
 
 static void dpe_ldi_init(struct dpe_hw_ctx *ctx, struct drm_display_mode *mode,
-					struct drm_display_mode *adj_mode)
+			 struct drm_display_mode *adj_mode)
 {
 	void __iomem *ldi_base = ctx->base + DPE_LDI0_OFFSET;
-	struct drm_rect rect = {0, 0, 0, 0};
+	struct drm_rect rect = { 0, 0, 0, 0 };
 	u32 hfp, hbp, hsw, vfp, vbp, vsw;
 	u32 vsync_plr = 0;
 	u32 hsync_plr = 0;
@@ -584,14 +580,15 @@ static void dpe_ldi_init(struct dpe_hw_ctx *ctx, struct drm_display_mode *mode,
 	dpe_init_ldi_pxl_div(ctx);
 
 	writel(hfp | ((hbp + DPE_WIDTH(hsw)) << 16),
-		   ldi_base + LDI_DPI0_HRZ_CTRL0);
+	       ldi_base + LDI_DPI0_HRZ_CTRL0);
 	writel(0, ldi_base + LDI_DPI0_HRZ_CTRL1);
 	writel(DPE_WIDTH(rect.x2), ldi_base + LDI_DPI0_HRZ_CTRL2);
 	writel(vfp | (vbp << 16), ldi_base + LDI_VRT_CTRL0);
 	writel(DPE_HEIGHT(vsw), ldi_base + LDI_VRT_CTRL1);
 	writel(DPE_HEIGHT(rect.y2), ldi_base + LDI_VRT_CTRL2);
-	writel(vsync_plr | (hsync_plr << 1) | (pixelclk_plr << 2)
-				| (data_en_plr << 3), ldi_base + LDI_PLR_CTRL);
+	writel(vsync_plr | (hsync_plr << 1) | (pixelclk_plr << 2) |
+		       (data_en_plr << 3),
+	       ldi_base + LDI_PLR_CTRL);
 
 	dpe_set_reg(ldi_base + LDI_CTRL, LCD_RGB888, 2, 3);
 	dpe_set_reg(ldi_base + LDI_CTRL, LCD_RGB, 1, 13);
@@ -604,9 +601,8 @@ static void dpe_ldi_init(struct dpe_hw_ctx *ctx, struct drm_display_mode *mode,
 	dpe_set_reg(ldi_base + LDI_CTRL, 0x0, 1, 0);
 }
 
-static void dpe_init(struct dpe_hw_ctx *ctx,
-				struct drm_display_mode *mode,
-				struct drm_display_mode *adj_mode)
+static void dpe_init(struct dpe_hw_ctx *ctx, struct drm_display_mode *mode,
+		     struct drm_display_mode *adj_mode)
 {
 	dpe_dbuf_init(ctx, mode, adj_mode);
 	dpe_dpp_init(ctx, mode, adj_mode);
@@ -619,7 +615,7 @@ static void dpe_init(struct dpe_hw_ctx *ctx,
 	dpe_ovl_init(ctx, mode->hdisplay, mode->vdisplay);
 	dpe_mctl_unlock(ctx);
 
-//	dpe_enable_ldi(ctx);
+	//	dpe_enable_ldi(ctx);
 
 	ctx->hdisplay = mode->hdisplay;
 	ctx->vdisplay = mode->vdisplay;
@@ -627,8 +623,8 @@ static void dpe_init(struct dpe_hw_ctx *ctx,
 }
 
 static void dpe_ldi_set_mode(struct dpe_hw_ctx *ctx,
-				struct drm_display_mode *mode,
-				struct drm_display_mode *adj_mode)
+			     struct drm_display_mode *mode,
+			     struct drm_display_mode *adj_mode)
 {
 	int ret;
 	u32 clk_Hz;
@@ -652,8 +648,7 @@ static void dpe_ldi_set_mode(struct dpe_hw_ctx *ctx,
 
 	ret = clk_set_rate(ctx->dpe_pxl0_clk, clk_Hz);
 	if (ret)
-		DRM_ERROR("failed to set pixel clk %dHz (%d)\n",
-				clk_Hz, ret);
+		DRM_ERROR("failed to set pixel clk %dHz (%d)\n", clk_Hz, ret);
 
 	adj_mode->clock = clk_get_rate(ctx->dpe_pxl0_clk) / 1000;
 }
@@ -686,7 +681,7 @@ static void dpe_crtc_atomic_enable(struct drm_crtc *crtc,
 	struct dpe_hw_ctx *ctx = kcrtc->hw_ctx;
 	int ret;
 
-	if (kcrtc->enable == true)
+	if (kcrtc->enable)
 		return;
 
 	ret = dpe_power_up(ctx);
@@ -702,7 +697,7 @@ static void dpe_crtc_atomic_disable(struct drm_crtc *crtc,
 {
 	struct kirin_crtc *kcrtc = to_kirin_crtc(crtc);
 
-	if (kcrtc->enable == false)
+	if (!kcrtc->enable)
 		return;
 
 	drm_crtc_vblank_off(crtc);
@@ -749,22 +744,22 @@ static void dpe_crtc_atomic_flush(struct drm_crtc *crtc,
 }
 
 const struct drm_crtc_helper_funcs dpe_crtc_helper_funcs = {
-	.atomic_enable	= dpe_crtc_atomic_enable,
-	.atomic_disable	= dpe_crtc_atomic_disable,
-	.mode_set_nofb	= dpe_crtc_mode_set_nofb,
-	.atomic_begin	= dpe_crtc_atomic_begin,
-	.atomic_flush	= dpe_crtc_atomic_flush,
+	.atomic_enable = dpe_crtc_atomic_enable,
+	.atomic_disable = dpe_crtc_atomic_disable,
+	.mode_set_nofb = dpe_crtc_mode_set_nofb,
+	.atomic_begin = dpe_crtc_atomic_begin,
+	.atomic_flush = dpe_crtc_atomic_flush,
 };
 
 const struct drm_crtc_funcs dpe_crtc_funcs = {
 	.destroy = drm_crtc_cleanup,
-	.set_config	= drm_atomic_helper_set_config,
+	.set_config = drm_atomic_helper_set_config,
 	.page_flip = drm_atomic_helper_page_flip,
 	.reset = drm_atomic_helper_crtc_reset,
-	.atomic_duplicate_state	= drm_atomic_helper_crtc_duplicate_state,
+	.atomic_duplicate_state = drm_atomic_helper_crtc_duplicate_state,
 	.atomic_destroy_state = drm_atomic_helper_crtc_destroy_state,
 	.enable_vblank = dpe_enable_vblank,
-	.disable_vblank	= dpe_disable_vblank,
+	.disable_vblank = dpe_disable_vblank,
 };
 
 static void dpe_unflow_handler(struct dpe_hw_ctx *ctx)
@@ -795,41 +790,39 @@ static void dpe_mctl_sys_config(struct dpe_hw_ctx *ctx, u32 ch)
 {
 	void __iomem *mctl_sys_base = ctx->base + DPE_MCTRL_SYS_OFFSET;
 
-	dpe_set_reg(mctl_sys_base + MCTL_RCH0_OV_OEN + ch * 4,
-				(1 << 1) | 0x100, 32, 0);
+	dpe_set_reg(mctl_sys_base + MCTL_RCH0_OV_OEN + ch * 4, (1 << 1) | 0x100,
+		    32, 0);
 	dpe_set_reg(mctl_sys_base + MCTL_RCH_OV0_SEL, 0x8, 4, 0);
-	dpe_set_reg(mctl_sys_base + MCTL_RCH_OV0_SEL,
-				ch, 4, (DPE_OVL0 + 1) * 4);
+	dpe_set_reg(mctl_sys_base + MCTL_RCH_OV0_SEL, ch, 4,
+		    (DPE_OVL0 + 1) * 4);
 	dpe_set_reg(mctl_sys_base + MCTL_OV0_FLUSH_EN, 0xd, 4, 0);
 	dpe_set_reg(mctl_sys_base + MCTL_RCH0_FLUSH_EN + ch * 4, 0x1, 32, 0);
 }
 
 static void dpe_ovl_config(struct dpe_hw_ctx *ctx, const struct drm_rect *rect,
-						   u32 xres, u32 yres)
+			   u32 xres, u32 yres)
 {
 	void __iomem *ovl0_base = ctx->base + ovl_offset[DPE_OVL0];
 
 	dpe_set_reg(ovl0_base + OVL6_REG_DEFAULT, 0x1, 32, 0);
 	dpe_set_reg(ovl0_base + OVL6_REG_DEFAULT, 0x0, 32, 0);
-	dpe_set_reg(ovl0_base + OVL_SIZE,
-				(xres - 1) | ((yres - 1) << 16), 32, 0);
+	dpe_set_reg(ovl0_base + OVL_SIZE, (xres - 1) | ((yres - 1) << 16), 32,
+		    0);
 	dpe_set_reg(ovl0_base + OVL_BG_COLOR, 0xFF000000, 32, 0);
 	dpe_set_reg(ovl0_base + OVL_DST_STARTPOS, 0x0, 32, 0);
-	dpe_set_reg(ovl0_base + OVL_DST_ENDPOS,
-				(xres - 1) | ((yres - 1) << 16), 32, 0);
+	dpe_set_reg(ovl0_base + OVL_DST_ENDPOS, (xres - 1) | ((yres - 1) << 16),
+		    32, 0);
 	dpe_set_reg(ovl0_base + OVL_GCFG, 0x10001, 32, 0);
-	dpe_set_reg(ovl0_base + OVL_LAYER0_POS,
-				(rect->x1) | ((rect->y1) << 16), 32, 0);
+	dpe_set_reg(ovl0_base + OVL_LAYER0_POS, (rect->x1) | ((rect->y1) << 16),
+		    32, 0);
 	dpe_set_reg(ovl0_base + OVL_LAYER0_SIZE,
-				(rect->x2) | ((rect->y2) << 16), 32, 0);
+		    (rect->x2) | ((rect->y2) << 16), 32, 0);
 	dpe_set_reg(ovl0_base + OVL_LAYER0_ALPHA, 0x00ff40ff, 32, 0);
 	dpe_set_reg(ovl0_base + OVL_LAYER0_CFG, 0x1, 1, 0);
 }
 
-static void dpe_rdma_config(struct dpe_hw_ctx *ctx,
-				const struct drm_rect *rect,
-				u32 display_addr, u32 hal_format,
-				u32 bpp, int ch)
+static void dpe_rdma_config(struct dpe_hw_ctx *ctx, const struct drm_rect *rect,
+			    u32 display_addr, u32 hal_format, u32 bpp, int ch)
 {
 	void __iomem *rdma_base = ctx->base + rdma_offset[ch];
 
@@ -851,7 +844,6 @@ static void dpe_rdma_config(struct dpe_hw_ctx *ctx,
 	h_display = (rect->x2 - rect->x1) + 1;
 	rdma_stride = (h_display * bpp) / DMA_ALIGN_BYTES;
 
-
 	dpe_set_reg(rdma_base + DMA_CH_REG_DEFAULT, 0x1, 32, 0);
 	dpe_set_reg(rdma_base + DMA_CH_REG_DEFAULT, 0x0, 32, 0);
 
@@ -867,9 +859,8 @@ static void dpe_rdma_config(struct dpe_hw_ctx *ctx,
 	dpe_set_reg(rdma_base + DMA_CH_CTL, 0x1, 1, 0);
 }
 
-static void dpe_rdfc_config(struct dpe_hw_ctx *ctx,
-				const struct drm_rect *rect,
-				u32 hal_format, u32 bpp, int ch)
+static void dpe_rdfc_config(struct dpe_hw_ctx *ctx, const struct drm_rect *rect,
+			    u32 hal_format, u32 bpp, int ch)
 {
 	void __iomem *rdfc_base = ctx->base + rdfc_offset[ch];
 
@@ -884,8 +875,8 @@ static void dpe_rdfc_config(struct dpe_hw_ctx *ctx,
 
 	dfc_fmt = dpe_pixel_dfc_format_map[hal_format];
 
-	dpe_set_reg(rdfc_base + DFC_DISP_SIZE,
-				(size_vrt | (size_hrz << 16)), 29, 0);
+	dpe_set_reg(rdfc_base + DFC_DISP_SIZE, (size_vrt | (size_hrz << 16)),
+		    29, 0);
 	dpe_set_reg(rdfc_base + DFC_PIX_IN_NUM, dfc_pix_in_num, 1, 0);
 	dpe_set_reg(rdfc_base + DFC_DISP_FMT, dfc_fmt, 5, 1);
 	dpe_set_reg(rdfc_base + DFC_CTL_CLIP_EN, 0x1, 1, 0);
@@ -921,8 +912,8 @@ static void dpe_smmu_config_off(struct dpe_hw_ctx *ctx, u32 ch)
 static void dpe_update_channel(struct kirin_plane *kplane,
 			       struct drm_framebuffer *fb, int crtc_x,
 			       int crtc_y, unsigned int crtc_w,
-			       unsigned int crtc_h, u32 src_x,
-			       u32 src_y, u32 src_w, u32 src_h)
+			       unsigned int crtc_h, u32 src_x, u32 src_y,
+			       u32 src_w, u32 src_h)
 {
 	struct dpe_hw_ctx *ctx = kplane->hw_ctx;
 	struct drm_gem_cma_object *obj = drm_fb_cma_get_gem_obj(fb, 0);
@@ -973,9 +964,9 @@ static void dpe_plane_atomic_update(struct drm_plane *plane,
 	}
 
 	dpe_update_channel(kplane, state->fb, state->crtc_x, state->crtc_y,
-			   state->crtc_w, state->crtc_h,
-			   state->src_x >> 16, state->src_y >> 16,
-			   state->src_w >> 16, state->src_h >> 16);
+			   state->crtc_w, state->crtc_h, state->src_x >> 16,
+			   state->src_y >> 16, state->src_w >> 16,
+			   state->src_h >> 16);
 }
 
 static int dpe_plane_atomic_check(struct drm_plane *plane,
@@ -1010,8 +1001,7 @@ static int dpe_plane_atomic_check(struct drm_plane *plane,
 		return -EINVAL;
 	}
 
-	if (src_x + src_w > fb->width ||
-	    src_y + src_h > fb->height)
+	if (src_x + src_w > fb->width || src_y + src_h > fb->height)
 		return -EINVAL;
 
 	if (crtc_x < 0 || crtc_y < 0)
@@ -1079,7 +1069,7 @@ static irqreturn_t dpe_irq_handler(int irq, void *data)
 }
 
 static void *dpe_hw_ctx_alloc(struct platform_device *pdev,
-							  struct drm_crtc *crtc)
+			      struct drm_crtc *crtc)
 {
 	struct dpe_hw_ctx *ctx = NULL;
 	struct device *dev = &pdev->dev;
@@ -1139,7 +1129,7 @@ static void *dpe_hw_ctx_alloc(struct platform_device *pdev,
 	ret = clk_set_rate(ctx->dpe_pri_clk, DEFAULT_DPE_CORE_CLK_07V_RATE);
 	if (ret < 0) {
 		DRM_ERROR("dpe_pri_clk clk_set_rate(%lu) failed, error=%d!\n",
-			DEFAULT_DPE_CORE_CLK_07V_RATE, ret);
+			  DEFAULT_DPE_CORE_CLK_07V_RATE, ret);
 		return ERR_PTR(-EINVAL);
 	}
 
@@ -1152,13 +1142,13 @@ static void *dpe_hw_ctx_alloc(struct platform_device *pdev,
 	ret = clk_set_rate(ctx->dpe_pxl0_clk, DPE_MAX_PXL0_CLK_144M);
 	if (ret < 0) {
 		DRM_ERROR("dpe_pxl0_clk clk_set_rate(%lu) failed, error=%d!\n",
-			DPE_MAX_PXL0_CLK_144M, ret);
+			  DPE_MAX_PXL0_CLK_144M, ret);
 		return ERR_PTR(-EINVAL);
 	}
 
 	ctx->crtc = crtc;
-	ret = devm_request_irq(dev, ctx->irq, dpe_irq_handler,
-			       IRQF_SHARED, dev->driver->name, ctx);
+	ret = devm_request_irq(dev, ctx->irq, dpe_irq_handler, IRQF_SHARED,
+			       dev->driver->name, ctx);
 	if (ret)
 		return ERR_PTR(-EIO);
 
@@ -1211,7 +1201,6 @@ static struct drm_driver dpe_driver = {
 };
 
 const struct kirin_drm_data dpe_driver_data = {
-	.register_connects = true,
 	.num_planes = DPE_CH_NUM,
 	.prim_plane = DPE_CH0,
 

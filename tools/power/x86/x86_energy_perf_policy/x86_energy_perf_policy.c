@@ -62,6 +62,7 @@ unsigned char turbo_update_value;
 unsigned char update_hwp_epp;
 unsigned char update_hwp_min;
 unsigned char update_hwp_max;
+unsigned char hwp_limits_done_via_sysfs;
 unsigned char update_hwp_desired;
 unsigned char update_hwp_window;
 unsigned char update_hwp_use_pkg;
@@ -622,6 +623,57 @@ void cmdline(int argc, char **argv)
 	}
 }
 
+/*
+ * Open a file, and exit on failure
+ */
+FILE *fopen_or_die(const char *path, const char *mode)
+{
+	FILE *filep = fopen(path, mode);
+
+	if (!filep)
+		err(1, "%s: open failed", path);
+	return filep;
+}
+
+void err_on_hypervisor(void)
+{
+	FILE *cpuinfo;
+	char *flags, *hypervisor;
+	char *buffer;
+
+	/* On VMs /proc/cpuinfo contains a "flags" entry for hypervisor */
+	cpuinfo = fopen_or_die("/proc/cpuinfo", "r");
+
+	buffer = malloc(4096);
+	if (!buffer) {
+		fclose(cpuinfo);
+		err(-ENOMEM, "buffer malloc fail");
+	}
+
+	if (!fread(buffer, 1024, 1, cpuinfo)) {
+		fclose(cpuinfo);
+		free(buffer);
+		err(1, "Reading /proc/cpuinfo failed");
+	}
+
+	flags = strstr(buffer, "flags");
+	rewind(cpuinfo);
+	fseek(cpuinfo, flags - buffer, SEEK_SET);
+	if (!fgets(buffer, 4096, cpuinfo)) {
+		fclose(cpuinfo);
+		free(buffer);
+		err(1, "Reading /proc/cpuinfo failed");
+	}
+	fclose(cpuinfo);
+
+	hypervisor = strstr(buffer, "hypervisor");
+
+	free(buffer);
+
+	if (hypervisor)
+		err(-1,
+		    "not supported on this virtual machine");
+}
 
 int get_msr(int cpu, int offset, unsigned long long *msr)
 {
@@ -635,8 +687,10 @@ int get_msr(int cpu, int offset, unsigned long long *msr)
 		err(-1, "%s open failed, try chown or chmod +r /dev/cpu/*/msr, or run as root", pathname);
 
 	retval = pread(fd, msr, sizeof(*msr), offset);
-	if (retval != sizeof(*msr))
+	if (retval != sizeof(*msr)) {
+		err_on_hypervisor();
 		err(-1, "%s offset 0x%llx read failed", pathname, (unsigned long long)offset);
+	}
 
 	if (debug > 1)
 		fprintf(stderr, "get_msr(cpu%d, 0x%X, 0x%llX)\n", cpu, offset, *msr);
@@ -809,8 +863,10 @@ int ratio_2_sysfs_khz(int ratio)
 }
 /*
  * If HWP is enabled and cpufreq sysfs attribtes are present,
- * then update sysfs, so that it will not become
- * stale when we write to MSRs.
+ * then update via sysfs. The intel_pstate driver may modify (clip)
+ * this request, say, when HWP_CAP is outside of PLATFORM_INFO limits,
+ * and the driver-chosen value takes precidence.
+ *
  * (intel_pstate's max_perf_pct and min_perf_pct will follow cpufreq,
  *  so we don't have to touch that.)
  */
@@ -864,6 +920,8 @@ int update_sysfs(int cpu)
 
 	if (update_hwp_max)
 		update_cpufreq_scaling_freq(1, cpu, req_update.hwp_max);
+
+	hwp_limits_done_via_sysfs = 1;
 
 	return 0;
 }
@@ -943,10 +1001,10 @@ int update_hwp_request(int cpu)
 	if (debug)
 		print_hwp_request(cpu, &req, "old: ");
 
-	if (update_hwp_min)
+	if (update_hwp_min && !hwp_limits_done_via_sysfs)
 		req.hwp_min = req_update.hwp_min;
 
-	if (update_hwp_max)
+	if (update_hwp_max && !hwp_limits_done_via_sysfs)
 		req.hwp_max = req_update.hwp_max;
 
 	if (update_hwp_desired)
@@ -1024,13 +1082,18 @@ int update_hwp_request_pkg(int pkg)
 
 int enable_hwp_on_cpu(int cpu)
 {
-	unsigned long long msr;
+	unsigned long long old_msr, new_msr;
 
-	get_msr(cpu, MSR_PM_ENABLE, &msr);
-	put_msr(cpu, MSR_PM_ENABLE, 1);
+	get_msr(cpu, MSR_PM_ENABLE, &old_msr);
+
+	if (old_msr & 1)
+		return 0;	/* already enabled */
+
+	new_msr = old_msr | 1;
+	put_msr(cpu, MSR_PM_ENABLE, new_msr);
 
 	if (verbose)
-		printf("cpu%d: MSR_PM_ENABLE old: %d new: %d\n", cpu, (unsigned int) msr, 1);
+		printf("cpu%d: MSR_PM_ENABLE old: %llX new: %llX\n", cpu, old_msr, new_msr);
 
 	return 0;
 }
@@ -1084,18 +1147,6 @@ int update_cpu_msrs(int cpu)
 
 	update_hwp_request(cpu);
 	return 0;
-}
-
-/*
- * Open a file, and exit on failure
- */
-FILE *fopen_or_die(const char *path, const char *mode)
-{
-	FILE *filep = fopen(path, "r");
-
-	if (!filep)
-		err(1, "%s: open failed", path);
-	return filep;
 }
 
 unsigned int get_pkg_num(int cpu)

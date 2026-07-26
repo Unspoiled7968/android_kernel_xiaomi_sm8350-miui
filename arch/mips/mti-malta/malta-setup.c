@@ -16,7 +16,6 @@
 
 #include <asm/dma-coherence.h>
 #include <asm/fw/fw.h>
-#include <asm/mach-malta/malta-dtshim.h>
 #include <asm/mips-cps.h>
 #include <asm/mips-boards/generic.h>
 #include <asm/mips-boards/malta.h>
@@ -48,7 +47,7 @@ static struct resource standard_io_resources[] = {
 		.name = "keyboard",
 		.start = 0x60,
 		.end = 0x6f,
-		.flags = IORESOURCE_IO | IORESOURCE_BUSY
+		.flags = IORESOURCE_IO
 	},
 	{
 		.name = "dma page reg",

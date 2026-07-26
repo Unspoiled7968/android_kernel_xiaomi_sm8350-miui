@@ -20,8 +20,8 @@
  * messages per second (!), whether IR is idle or not.
  */
 #define NUM_URBS	4
-#define NS_PER_BYTE	62500
-#define NS_PER_BIT	(NS_PER_BYTE/8)
+#define US_PER_BYTE	62
+#define US_PER_BIT	(US_PER_BYTE / 8)
 
 struct ttusbir {
 	struct rc_dev *rc;
@@ -32,7 +32,7 @@ struct ttusbir {
 
 	struct led_classdev led;
 	struct urb *bulk_urb;
-	uint8_t bulk_buffer[5];
+	u8 *bulk_buffer;
 	int bulk_out_endp, iso_in_endp;
 	bool led_on, is_led_on;
 	atomic_t led_complete;
@@ -117,13 +117,13 @@ static void ttusbir_process_ir_data(struct ttusbir *tt, uint8_t *buf)
 		switch (v) {
 		case 0xfe:
 			rawir.pulse = false;
-			rawir.duration = NS_PER_BYTE;
+			rawir.duration = US_PER_BYTE;
 			if (ir_raw_event_store_with_filter(tt->rc, &rawir))
 				event = true;
 			break;
 		case 0:
 			rawir.pulse = true;
-			rawir.duration = NS_PER_BYTE;
+			rawir.duration = US_PER_BYTE;
 			if (ir_raw_event_store_with_filter(tt->rc, &rawir))
 				event = true;
 			break;
@@ -137,12 +137,12 @@ static void ttusbir_process_ir_data(struct ttusbir *tt, uint8_t *buf)
 				rawir.pulse = false;
 			}
 
-			rawir.duration = NS_PER_BIT * (8 - b);
+			rawir.duration = US_PER_BIT * (8 - b);
 			if (ir_raw_event_store_with_filter(tt->rc, &rawir))
 				event = true;
 
 			rawir.pulse = !rawir.pulse;
-			rawir.duration = NS_PER_BIT * b;
+			rawir.duration = US_PER_BIT * b;
 			if (ir_raw_event_store_with_filter(tt->rc, &rawir))
 				event = true;
 			break;
@@ -188,13 +188,16 @@ static int ttusbir_probe(struct usb_interface *intf,
 	struct rc_dev *rc;
 	int i, j, ret;
 	int altsetting = -1;
+	u8 *buffer;
 
 	tt = kzalloc(sizeof(*tt), GFP_KERNEL);
+	buffer = kzalloc(5, GFP_KERNEL);
 	rc = rc_allocate_device(RC_DRIVER_IR_RAW);
-	if (!tt || !rc) {
+	if (!tt || !rc || !buffer) {
 		ret = -ENOMEM;
 		goto out;
 	}
+	tt->bulk_buffer = buffer;
 
 	/* find the correct alt setting */
 	for (i = 0; i < intf->num_altsetting && altsetting == -1; i++) {
@@ -283,8 +286,8 @@ static int ttusbir_probe(struct usb_interface *intf,
 	tt->bulk_buffer[3] = 0x01;
 
 	usb_fill_bulk_urb(tt->bulk_urb, tt->udev, usb_sndbulkpipe(tt->udev,
-		tt->bulk_out_endp), tt->bulk_buffer, sizeof(tt->bulk_buffer),
-						ttusbir_bulk_complete, tt);
+			  tt->bulk_out_endp), tt->bulk_buffer, 5,
+			  ttusbir_bulk_complete, tt);
 
 	tt->led.name = "ttusbir:green:power";
 	tt->led.default_trigger = "rc-feedback";
@@ -311,10 +314,10 @@ static int ttusbir_probe(struct usb_interface *intf,
 	rc->max_timeout = 10 * IR_DEFAULT_TIMEOUT;
 
 	/*
-	 * The precision is NS_PER_BIT, but since every 8th bit can be
-	 * overwritten with garbage the accuracy is at best 2 * NS_PER_BIT.
+	 * The precision is US_PER_BIT, but since every 8th bit can be
+	 * overwritten with garbage the accuracy is at best 2 * US_PER_BIT.
 	 */
-	rc->rx_resolution = NS_PER_BIT;
+	rc->rx_resolution = 2 * US_PER_BIT;
 
 	ret = rc_register_device(rc);
 	if (ret) {
@@ -353,6 +356,7 @@ out:
 		kfree(tt);
 	}
 	rc_free_device(rc);
+	kfree(buffer);
 
 	return ret;
 }
@@ -375,6 +379,7 @@ static void ttusbir_disconnect(struct usb_interface *intf)
 	}
 	usb_kill_urb(tt->bulk_urb);
 	usb_free_urb(tt->bulk_urb);
+	kfree(tt->bulk_buffer);
 	usb_set_intfdata(intf, NULL);
 	kfree(tt);
 }

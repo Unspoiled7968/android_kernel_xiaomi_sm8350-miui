@@ -1590,7 +1590,8 @@ he_stop(struct he_dev *he_dev)
 				  he_dev->tbrq_base, he_dev->tbrq_phys);
 
 	if (he_dev->tpdrq_base)
-		dma_free_coherent(&he_dev->pci_dev->dev, CONFIG_TBRQ_SIZE * sizeof(struct he_tbrq),
+		dma_free_coherent(&he_dev->pci_dev->dev,
+				  CONFIG_TPDRQ_SIZE * sizeof(struct he_tpdrq),
 				  he_dev->tpdrq_base, he_dev->tpdrq_phys);
 
 	dma_pool_destroy(he_dev->tpd_pool);
@@ -1944,14 +1945,14 @@ he_tasklet(unsigned long data)
 		switch (type) {
 			case ITYPE_RBRQ_THRESH:
 				HPRINTK("rbrq%d threshold\n", group);
-				/* fall through */
+				fallthrough;
 			case ITYPE_RBRQ_TIMER:
 				if (he_service_rbrq(he_dev, group))
 					he_service_rbpl(he_dev, group);
 				break;
 			case ITYPE_TBRQ_THRESH:
 				HPRINTK("tbrq%d threshold\n", group);
-				/* fall through */
+				fallthrough;
 			case ITYPE_TPD_COMPLETE:
 				he_service_tbrq(he_dev, group);
 				break;
