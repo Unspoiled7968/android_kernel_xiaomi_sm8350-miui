@@ -270,18 +270,11 @@ static int parse_config(struct thermal_zone_device *tz, char *buf_ptr,
 {
 	char *buf, *buf_end, *next_buf, *curr_buf;
 	int count, ret = 0;
-	enum thermal_device_mode mode = THERMAL_DEVICE_ENABLED;
+	enum thermal_device_mode mode = tz->mode;
 
-	if (tz->ops->get_mode) {
-		ret = tz->ops->get_mode(tz, &mode);
-		if (ret)
-			return ret;
-	}
-	if (tz->ops->set_mode) {
-		ret = tz->ops->set_mode(tz, THERMAL_DEVICE_DISABLED);
-		if (ret)
-			return ret;
-	}
+	ret = thermal_zone_device_disable(tz);
+	if (ret)
+		return ret;
 	mutex_lock(&tz->lock);
 	buf = kzalloc(sizeof(char) * (buf_ct + 1), GFP_KERNEL);
 	if (!buf) {
@@ -319,8 +312,8 @@ static int parse_config(struct thermal_zone_device *tz, char *buf_ptr,
 	}
 parse_exit:
 	mutex_unlock(&tz->lock);
-	if (mode == THERMAL_DEVICE_ENABLED && tz->ops->set_mode)
-		tz->ops->set_mode(tz, THERMAL_DEVICE_ENABLED);
+	if (mode == THERMAL_DEVICE_ENABLED)
+		thermal_zone_device_enable(tz);
 	kfree(buf);
 	return ret ? ret : buf_ct;
 }
