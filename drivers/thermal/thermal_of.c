@@ -1119,3 +1119,28 @@ exit_free:
 
 	return -ENOMEM;
 }
+
+#ifdef CONFIG_QTI_THERMAL
+/*
+ * The QTI sensor drivers (tsens, adc-tm) call these from their threshold
+ * interrupts. CAF's of-thermal.c fanned the notification out to every zone
+ * sharing the sensor; the 5.10 zone data has no such sensor->zone list, and
+ * the callers already hand us the zone that owns the sensor, so notify it
+ * directly.
+ */
+void of_thermal_handle_trip(struct device *dev, struct thermal_zone_device *tz)
+{
+	if (tz)
+		thermal_zone_device_update(tz, THERMAL_EVENT_UNSPECIFIED);
+}
+EXPORT_SYMBOL(of_thermal_handle_trip);
+
+void of_thermal_handle_trip_temp(struct device *dev,
+				 struct thermal_zone_device *tz, int trip_temp)
+{
+	if (tz)
+		thermal_zone_device_update_temp(tz, THERMAL_EVENT_UNSPECIFIED,
+						trip_temp);
+}
+EXPORT_SYMBOL(of_thermal_handle_trip_temp);
+#endif /* CONFIG_QTI_THERMAL */

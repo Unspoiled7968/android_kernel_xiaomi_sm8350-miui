@@ -2387,6 +2387,18 @@ static const struct dev_pm_ops arm_smmu_pm_ops = {
 			   arm_smmu_runtime_resume, NULL)
 };
 
+/*
+ * CAF's arm-smmu exported the fault BID/PID/MID of the faulting context bank
+ * for diagnostics (the camera SMMU driver logs them). The mainline driver this
+ * tree now uses has no equivalent plumbing, so report "not available" and let
+ * the caller print the fault without them.
+ */
+int iommu_get_fault_ids(struct iommu_domain *domain, struct iommu_fault_ids *f_ids)
+{
+	return -EINVAL;
+}
+EXPORT_SYMBOL(iommu_get_fault_ids);
+
 static struct platform_driver arm_smmu_driver = {
 	.driver	= {
 		.name			= "arm-smmu",
