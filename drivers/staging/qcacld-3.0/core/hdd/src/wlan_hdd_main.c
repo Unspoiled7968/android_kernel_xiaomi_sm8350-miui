@@ -3843,7 +3843,7 @@ static int hdd_wlan_register_ip6_notifier(struct hdd_context *hdd_ctx)
  */
 static int hdd_wlan_register_pm_qos_notifier(struct hdd_context *hdd_ctx)
 {
-	int ret;
+	int ret = 0;
 
 	/* if gRuntimePM is 1 then feature is enabled without CXPC */
 	if (hdd_ctx->config->runtime_pm != hdd_runtime_pm_dynamic) {
@@ -3874,7 +3874,6 @@ static int hdd_wlan_register_pm_qos_notifier(struct hdd_context *hdd_ctx)
 static void hdd_wlan_unregister_pm_qos_notifier(struct hdd_context *hdd_ctx)
 {
 	void *hif_ctx = cds_get_context(QDF_MODULE_ID_HIF);
-	int ret;
 
 	if (hdd_ctx->config->runtime_pm != hdd_runtime_pm_dynamic) {
 		hdd_debug("Dynamic Runtime PM disabled");
