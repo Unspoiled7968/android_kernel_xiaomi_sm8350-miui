@@ -362,7 +362,7 @@ void __init parse_early_options(char *cmdline);
 #define __nosavedata __section(".data..nosave")
 
 #ifdef CONFIG_QCOM_RTIC
-#define __rticdata  __section(.bss.rtic)
+#define __rticdata  __section(".bss.rtic")
 #endif
 
 #ifdef MODULE
