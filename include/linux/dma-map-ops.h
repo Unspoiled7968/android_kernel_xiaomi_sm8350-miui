@@ -249,6 +249,7 @@ static inline bool dev_is_dma_coherent(struct device *dev)
 {
 	return true;
 }
+#endif /* CONFIG_ARCH_HAS_DMA_COHERENCE_H */
 
 #ifdef CONFIG_DMA_COHERENT_HINT_CACHED
 static inline bool dev_is_dma_coherent_hint_cached(struct device *dev)
@@ -261,7 +262,6 @@ static inline bool dev_is_dma_coherent_hint_cached(struct device *dev)
 	return false;
 }
 #endif
-#endif /* CONFIG_ARCH_HAS_DMA_COHERENCE_H */
 
 void *arch_dma_alloc(struct device *dev, size_t size, dma_addr_t *dma_handle,
 		gfp_t gfp, unsigned long attrs);
