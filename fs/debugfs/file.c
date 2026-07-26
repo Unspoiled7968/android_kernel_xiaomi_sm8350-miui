@@ -24,6 +24,26 @@
 
 #include "internal.h"
 
+/*
+ * debugfs.h wraps the void-returning helpers in macros so that vendor callers
+ * which still test the old return value keep compiling; the definitions below
+ * must see the real names.
+ */
+#undef debugfs_create_u8
+#undef debugfs_create_u16
+#undef debugfs_create_u32
+#undef debugfs_create_u64
+#undef debugfs_create_x8
+#undef debugfs_create_x16
+#undef debugfs_create_x32
+#undef debugfs_create_x64
+#undef debugfs_create_xul
+#undef debugfs_create_size_t
+#undef debugfs_create_atomic_t
+#undef debugfs_create_regset32
+#undef debugfs_create_u32_array
+#undef debugfs_create_file_size
+
 struct poll_table_struct;
 
 static ssize_t default_read_file(struct file *file, char __user *buf,

@@ -30,6 +30,8 @@
 
 #include "internal.h"
 
+#undef debugfs_create_file_size
+
 #define DEBUGFS_DEFAULT_MODE	0700
 
 static struct vfsmount *debugfs_mount;

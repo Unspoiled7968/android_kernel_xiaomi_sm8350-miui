@@ -392,4 +392,46 @@ static inline void debugfs_create_xul(const char *name, umode_t mode,
 		debugfs_create_x64(name, mode, parent, (u64 *)value);
 }
 
+/*
+ * 5.10 made most of the typed helpers return void because they cannot fail.
+ * A lot of vendor code still assigns and error-checks the result, so keep an
+ * assignable value: the parent dentry, which is what the created file lives
+ * under and is neither NULL nor an ERR_PTR when the caller had a valid parent.
+ */
+#define __debugfs_ret_parent(fn, name, mode, parent, ...)		\
+	({								\
+		struct dentry *__dfs_parent = (parent);			\
+		fn(name, mode, __dfs_parent, ##__VA_ARGS__);		\
+		__dfs_parent;						\
+	})
+
+#define debugfs_create_u8(n, m, p, v)					\
+	__debugfs_ret_parent(debugfs_create_u8, n, m, p, v)
+#define debugfs_create_u16(n, m, p, v)					\
+	__debugfs_ret_parent(debugfs_create_u16, n, m, p, v)
+#define debugfs_create_u32(n, m, p, v)					\
+	__debugfs_ret_parent(debugfs_create_u32, n, m, p, v)
+#define debugfs_create_u64(n, m, p, v)					\
+	__debugfs_ret_parent(debugfs_create_u64, n, m, p, v)
+#define debugfs_create_x8(n, m, p, v)					\
+	__debugfs_ret_parent(debugfs_create_x8, n, m, p, v)
+#define debugfs_create_x16(n, m, p, v)					\
+	__debugfs_ret_parent(debugfs_create_x16, n, m, p, v)
+#define debugfs_create_x32(n, m, p, v)					\
+	__debugfs_ret_parent(debugfs_create_x32, n, m, p, v)
+#define debugfs_create_x64(n, m, p, v)					\
+	__debugfs_ret_parent(debugfs_create_x64, n, m, p, v)
+#define debugfs_create_xul(n, m, p, v)					\
+	__debugfs_ret_parent(debugfs_create_xul, n, m, p, v)
+#define debugfs_create_size_t(n, m, p, v)				\
+	__debugfs_ret_parent(debugfs_create_size_t, n, m, p, v)
+#define debugfs_create_atomic_t(n, m, p, v)				\
+	__debugfs_ret_parent(debugfs_create_atomic_t, n, m, p, v)
+#define debugfs_create_regset32(n, m, p, v)				\
+	__debugfs_ret_parent(debugfs_create_regset32, n, m, p, v)
+#define debugfs_create_u32_array(n, m, p, v, e)				\
+	__debugfs_ret_parent(debugfs_create_u32_array, n, m, p, v, e)
+#define debugfs_create_file_size(n, m, p, d, f, sz)			\
+	__debugfs_ret_parent(debugfs_create_file_size, n, m, p, d, f, sz)
+
 #endif
