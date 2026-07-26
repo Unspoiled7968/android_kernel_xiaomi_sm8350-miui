@@ -185,6 +185,11 @@ int kmem_cache_shrink(struct kmem_cache *);
 void * __must_check krealloc(const void *, size_t, gfp_t);
 void kfree(const void *);
 void kfree_sensitive(const void *);
+/*
+ * kzfree() was renamed to kfree_sensitive() in 5.10; keep the old name for
+ * the downstream QC/Xiaomi drivers that still call it.
+ */
+#define kzfree(p)	kfree_sensitive(p)
 size_t __ksize(const void *);
 size_t ksize(const void *);
 

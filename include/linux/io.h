@@ -76,6 +76,14 @@ static inline void __iomem *devm_ioremap_nocache(struct device *dev,
 {
 	return devm_ioremap(dev, offset, size);
 }
+
+/*
+ * ioremap_nocache was removed upstream in 5.6 for the same reason (plain
+ * ioremap is already non-cached); kept for downstream QC/Xiaomi drivers.
+ */
+#ifndef ioremap_nocache
+#define ioremap_nocache(addr, size)	ioremap((addr), (size))
+#endif
 void __iomem *devm_ioremap_wc(struct device *dev, resource_size_t offset,
 				   resource_size_t size);
 void devm_iounmap(struct device *dev, void __iomem *addr);
