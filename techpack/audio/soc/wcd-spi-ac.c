@@ -145,7 +145,7 @@ static ssize_t wcd_spi_ac_status_read(struct file *file,
 	return ret;
 }
 
-static unsigned int wcd_spi_ac_status_poll(struct file *file,
+static __poll_t wcd_spi_ac_status_poll(struct file *file,
 		poll_table *wait)
 {
 	struct wcd_spi_ac_priv *ac;
@@ -174,11 +174,10 @@ static unsigned int wcd_spi_ac_status_poll(struct file *file,
 	return ret;
 }
 
-static const struct file_operations wcd_spi_ac_status_ops = {
-	.owner = THIS_MODULE,
-	.open = wcd_spi_ac_status_open,
-	.read = wcd_spi_ac_status_read,
-	.poll = wcd_spi_ac_status_poll,
+static const struct proc_ops wcd_spi_ac_status_ops = {
+	.proc_open = wcd_spi_ac_status_open,
+	.proc_read = wcd_spi_ac_status_read,
+	.proc_poll = wcd_spi_ac_status_poll,
 };
 
 static int wcd_spi_ac_procfs_init(struct wcd_spi_ac_priv *ac)
