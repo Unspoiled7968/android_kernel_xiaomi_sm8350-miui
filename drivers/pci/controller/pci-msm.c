@@ -5097,7 +5097,7 @@ int msm_pcie_enumerate(u32 rc_idx)
 	}
 
 	ret = devm_of_pci_get_host_bridge_resources(&dev->pdev->dev, 0, 0xff,
-						&res, &iobase);
+						&res, NULL, &iobase);
 	if (ret) {
 		PCIE_ERR(dev,
 			"PCIe: RC%d: failed to get host bridge resources. ret: %d\n",

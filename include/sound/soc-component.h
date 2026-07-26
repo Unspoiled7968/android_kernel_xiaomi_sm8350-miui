@@ -62,6 +62,11 @@ struct snd_compress_ops {
 	int (*get_codec_caps)(struct snd_soc_component *component,
 			      struct snd_compr_stream *stream,
 			      struct snd_compr_codec_caps *codec);
+#ifdef CONFIG_AUDIO_QGKI
+	int (*set_next_track_param)(struct snd_soc_component *component,
+				    struct snd_compr_stream *stream,
+				    union snd_codec_options *codec_options);
+#endif
 };
 
 struct snd_soc_component_driver {

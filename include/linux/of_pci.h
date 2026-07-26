@@ -24,7 +24,9 @@ void of_pci_check_probe_only(void);
  */
 int devm_of_pci_get_host_bridge_resources(struct device *dev,
 			unsigned char busno, unsigned char bus_max,
-			struct list_head *resources, resource_size_t *io_base);
+			struct list_head *resources,
+			struct list_head *ib_resources,
+			resource_size_t *io_base);
 #else
 #ifdef CONFIG_PCI_QTI
 static inline struct device_node *of_pci_find_child_device(struct pci_dev *dev)

@@ -1292,7 +1292,7 @@ __releases(hlist_lock)
 }
 NOKPROBE_SYMBOL(kretprobe_table_unlock);
 
-static struct kprobe kprobe_busy = {
+struct kprobe kprobe_busy = {
 	.addr = (void *) get_kprobe,
 };
 

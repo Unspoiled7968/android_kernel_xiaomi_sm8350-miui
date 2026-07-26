@@ -67,8 +67,8 @@ struct section_stat {
 };
 
 enum memory_states {
-	MEMORY_ONLINE,
-	MEMORY_OFFLINE,
+	MEM_OFFLINE_ONLINE,
+	MEM_OFFLINE_OFFLINE,
 	MAX_STATE,
 };
 
@@ -134,6 +134,7 @@ static void clear_pgtable_mapping(phys_addr_t start, phys_addr_t end)
 	unsigned long virt = (unsigned long)phys_to_virt(start);
 	unsigned long addr_end = virt + size;
 	pgd_t *pgd;
+	p4d_t *p4d;
 	pud_t *pud;
 	pmd_t *pmd;
 
@@ -142,7 +143,8 @@ static void clear_pgtable_mapping(phys_addr_t start, phys_addr_t end)
 	while (virt < addr_end) {
 
 		/* Check if we have PUD section mapping */
-		pud = pud_offset(pgd, virt);
+		p4d = p4d_offset(pgd, virt);
+		pud = pud_offset(p4d, virt);
 		if (pud_sect(*pud)) {
 			pud_clear(pud);
 			virt += PUD_SIZE;
@@ -213,7 +215,7 @@ static void record_stat(unsigned long sec, ktime_t delay, int mode)
 	mem_info[blk_nr].resident_since = now;
 
 	/* since other state has gone inactive, update the stats */
-	mode = mode ? MEMORY_ONLINE : MEMORY_OFFLINE;
+	mode = mode ? MEM_OFFLINE_ONLINE : MEM_OFFLINE_OFFLINE;
 	blk_nr = (sec - start_section_nr + mode * total_sec) /
 				sections_per_block;
 	delta = ktime_sub(now, mem_info[blk_nr].resident_since);
@@ -346,7 +348,7 @@ static bool need_to_send_remote_request(struct memory_notify *mn,
 	 * For MEM_ONLINE, don't send the request if there is already one
 	 * online block in the segment.
 	 */
-	if (request == MEMORY_OFFLINE || request == MEMORY_ONLINE) {
+	if (request == MEM_OFFLINE_OFFLINE || request == MEM_OFFLINE_ONLINE) {
 		for (i = base_sec_nr;
 		     i < (base_sec_nr + sections_per_segment);
 		     i += sections_per_block) {
@@ -354,7 +356,7 @@ static bool need_to_send_remote_request(struct memory_notify *mn,
 			/* current operating block */
 			if (idx == cur_idx)
 				continue;
-			if (mem_sec_state[idx] == MEMORY_ONLINE)
+			if (mem_sec_state[idx] == MEM_OFFLINE_ONLINE)
 				goto out;
 		}
 		return true;
@@ -387,7 +389,7 @@ static int mem_change_refresh_state(struct memory_notify *mn,
 {
 	int start = SECTION_ALIGN_DOWN(mn->start_pfn);
 	unsigned long sec_nr = pfn_to_section_nr(start);
-	bool online = (state == MEMORY_ONLINE) ? true : false;
+	bool online = (state == MEM_OFFLINE_ONLINE) ? true : false;
 	unsigned long idx = (sec_nr - start_section_nr) / sections_per_block;
 	int ret, count;
 
@@ -574,7 +576,7 @@ static unsigned long get_anon_movable_pages(
 		if (!ret) {
 			list_add_tail(&page->lru, list);
 			inc_node_page_state(page, NR_ISOLATED_ANON +
-					page_is_file_cache(page));
+					page_is_file_lru(page));
 			++fc->nr_migrate_pages;
 		}
 
@@ -693,11 +695,11 @@ static int mem_event_callback(struct notifier_block *self,
 	case MEM_GOING_ONLINE:
 		pr_debug("mem-offline: MEM_GOING_ONLINE : start = 0x%llx end = 0x%llx\n",
 				start_addr, end_addr);
-		++mem_info[(sec_nr - start_section_nr + MEMORY_ONLINE *
+		++mem_info[(sec_nr - start_section_nr + MEM_OFFLINE_ONLINE *
 			   idx) / sections_per_block].fail_count;
 		cur = ktime_get();
 
-		if (mem_change_refresh_state(mn, MEMORY_ONLINE))
+		if (mem_change_refresh_state(mn, MEM_OFFLINE_ONLINE))
 			return NOTIFY_BAD;
 
 		if (!debug_pagealloc_enabled()) {
@@ -709,7 +711,7 @@ static int mem_event_callback(struct notifier_block *self,
 	case MEM_ONLINE:
 		update_totalram_snapshot();
 		delay = ktime_ms_delta(ktime_get(), cur);
-		record_stat(sec_nr, delay, MEMORY_ONLINE);
+		record_stat(sec_nr, delay, MEM_OFFLINE_ONLINE);
 		cur = 0;
 		pr_info("mem-offline: Onlined memory block mem%pK\n",
 			(void *)sec_nr);
@@ -718,7 +720,7 @@ static int mem_event_callback(struct notifier_block *self,
 		update_totalram_snapshot();
 		pr_debug("mem-offline: MEM_GOING_OFFLINE : start = 0x%llx end = 0x%llx\n",
 				start_addr, end_addr);
-		++mem_info[(sec_nr - start_section_nr + MEMORY_OFFLINE *
+		++mem_info[(sec_nr - start_section_nr + MEM_OFFLINE_OFFLINE *
 			   idx) / sections_per_block].fail_count;
 		has_pend_offline_req = true;
 		cancel_work_sync(&fill_movable_zone_work);
@@ -729,14 +731,14 @@ static int mem_event_callback(struct notifier_block *self,
 			/* Clear kernel page-tables */
 			clear_pgtable_mapping(start_addr, end_addr);
 		}
-		mem_change_refresh_state(mn, MEMORY_OFFLINE);
+		mem_change_refresh_state(mn, MEM_OFFLINE_OFFLINE);
 		/*
 		 * Notifying that something went bad at this stage won't
 		 * help since this is the last stage of memory hotplug.
 		 */
 
 		delay = ktime_ms_delta(ktime_get(), cur);
-		record_stat(sec_nr, delay, MEMORY_OFFLINE);
+		record_stat(sec_nr, delay, MEM_OFFLINE_OFFLINE);
 		cur = 0;
 		has_pend_offline_req = false;
 		pr_info("mem-offline: Offlined memory block mem%pK\n",
@@ -745,7 +747,7 @@ static int mem_event_callback(struct notifier_block *self,
 	case MEM_CANCEL_ONLINE:
 		pr_info("mem-offline: MEM_CANCEL_ONLINE: start = 0x%llx end = 0x%llx\n",
 				start_addr, end_addr);
-		mem_change_refresh_state(mn, MEMORY_OFFLINE);
+		mem_change_refresh_state(mn, MEM_OFFLINE_OFFLINE);
 		break;
 	default:
 		break;
@@ -853,7 +855,8 @@ static int mem_online_remaining_blocks(void)
 		}
 		nid = memory_add_physaddr_to_nid(phys_addr);
 		if (add_memory(nid, phys_addr,
-				 MIN_MEMORY_BLOCK_SIZE * sections_per_block)) {
+				 MIN_MEMORY_BLOCK_SIZE * sections_per_block,
+				 MHP_NONE)) {
 			pr_warn("mem-offline: Adding memory block mem%lu failed\n",
 								memblock);
 			fail = 1;
@@ -883,8 +886,8 @@ static unsigned int print_blk_residency_percentage(char *buf, size_t sz,
 
 	for (i = 0; i <= tot_blks; i++) {
 		percent = (int)ktime_divns(total_time[i + mode * idx] * 100,
-			ktime_add(total_time[i + MEMORY_ONLINE * idx],
-					total_time[i + MEMORY_OFFLINE * idx]));
+			ktime_add(total_time[i + MEM_OFFLINE_ONLINE * idx],
+					total_time[i + MEM_OFFLINE_OFFLINE * idx]));
 
 		c += scnprintf(buf + c, sz - c, "%d%%\t\t", percent);
 	}
@@ -984,7 +987,7 @@ static ssize_t show_mem_stats(struct kobject *kobj,
 	c += scnprintf(buf + c, sz - c, "\tState:\t\t");
 	for (i = 0; i <= tot_blks; i++) {
 		c += scnprintf(buf + c, sz - c, "%s\t\t",
-			mem_sec_state[i] == MEMORY_ONLINE ?
+			mem_sec_state[i] == MEM_OFFLINE_ONLINE ?
 			"Online" : "Offline");
 	}
 	c += scnprintf(buf + c, sz - c, "\n");
@@ -992,36 +995,36 @@ static ssize_t show_mem_stats(struct kobject *kobj,
 	c += scnprintf(buf + c, sz - c, "\n");
 	c += scnprintf(buf + c, sz - c, "\tOnline time:\t");
 	c += print_blk_residency_times(buf + c, sz - c,
-			tot_blks, total_time, MEMORY_ONLINE);
+			tot_blks, total_time, MEM_OFFLINE_ONLINE);
 
 
 	c += scnprintf(buf + c, sz - c, "\n");
 	c += scnprintf(buf + c, sz - c, "\tOffline time:\t");
 	c += print_blk_residency_times(buf + c, sz - c,
-			tot_blks, total_time, MEMORY_OFFLINE);
+			tot_blks, total_time, MEM_OFFLINE_OFFLINE);
 
 	c += scnprintf(buf + c, sz, "\n");
 
 	c += scnprintf(buf + c, sz, "\n");
 	c += scnprintf(buf + c, sz, "\tOnline %%:\t");
 	c += print_blk_residency_percentage(buf + c, sz - c,
-			tot_blks, total_time, MEMORY_ONLINE);
+			tot_blks, total_time, MEM_OFFLINE_ONLINE);
 
 	c += scnprintf(buf + c, sz, "\n");
 	c += scnprintf(buf + c, sz, "\tOffline %%:\t");
 	c += print_blk_residency_percentage(buf + c, sz - c,
-			tot_blks, total_time, MEMORY_OFFLINE);
+			tot_blks, total_time, MEM_OFFLINE_OFFLINE);
 	c += scnprintf(buf + c, sz, "\n");
 	c += scnprintf(buf + c, sz, "\n");
 
 	for (i = 0; i <= tot_blks; i++)
 		total = ktime_add(total,
-			ktime_add(total_time[i + MEMORY_ONLINE * idx],
-					total_time[i + MEMORY_OFFLINE * idx]));
+			ktime_add(total_time[i + MEM_OFFLINE_ONLINE * idx],
+					total_time[i + MEM_OFFLINE_OFFLINE * idx]));
 
 	for (i = 0; i <= tot_blks; i++)
 		total_online =  ktime_add(total_online,
-				total_time[i + MEMORY_ONLINE * idx]);
+				total_time[i + MEM_OFFLINE_ONLINE * idx]);
 
 	total_offline = ktime_sub(total, total_online);
 
@@ -1182,7 +1185,7 @@ static int mem_offline_driver_probe(struct platform_device *pdev)
 
 	/* we assume that hardware state of mem blocks are online after boot */
 	for (i = 0; i < total_blks; i++)
-		mem_sec_state[i] = MEMORY_ONLINE;
+		mem_sec_state[i] = MEM_OFFLINE_ONLINE;
 
 	if (mem_sysfs_init()) {
 		ret = -ENODEV;

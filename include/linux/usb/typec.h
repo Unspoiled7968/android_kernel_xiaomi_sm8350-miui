@@ -231,23 +231,6 @@ enum usb_pd_svdm_ver {
 	SVDM_VER_MAX = SVDM_VER_2_0,
 };
 
-/**
- * struct typec_operations - USB Type-C Port Operations
- * @try_role: Set data role preference for DRP port
- * @dr_set: Set Data Role
- * @pr_set: Set Power Role
- * @vconn_set: Source VCONN
- * @port_type_set: Set port type
- */
-struct typec_operations {
-	int (*try_role)(struct typec_port *port, int role);
-	int (*dr_set)(struct typec_port *port, enum typec_data_role role);
-	int (*pr_set)(struct typec_port *port, enum typec_role role);
-	int (*vconn_set)(struct typec_port *port, enum typec_role role);
-	int (*port_type_set)(struct typec_port *port,
-			     enum typec_port_type type);
-};
-
 /*
  * struct typec_capability - USB Type-C Port Capabilities
  * @type: Supported power role of the port
