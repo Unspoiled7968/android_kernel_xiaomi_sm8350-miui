@@ -122,13 +122,6 @@ static void step_forward(struct page_vma_mapped_walk *pvmw, unsigned long size)
 		pvmw->address = ULONG_MAX;
 }
 
-static void step_forward(struct page_vma_mapped_walk *pvmw, unsigned long size)
-{
-	pvmw->address = (pvmw->address + size) & ~(size - 1);
-	if (!pvmw->address)
-		pvmw->address = ULONG_MAX;
-}
-
 /**
  * page_vma_mapped_walk - check if @pvmw->page is mapped in @pvmw->vma at
  * @pvmw->address

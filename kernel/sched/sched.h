@@ -1570,9 +1570,6 @@ init_numa_balancing(unsigned long clone_flags, struct task_struct *p)
 }
 #endif /* CONFIG_NUMA_BALANCING */
 
-extern int migrate_swap(struct task_struct *p, struct task_struct *t,
-			int cpu, int scpu);
-
 #ifdef CONFIG_SMP
 
 extern int migrate_swap(struct task_struct *p, struct task_struct *t,

@@ -43,6 +43,7 @@
 #include "internal.h"
 #include "pgalloc-track.h"
 
+#ifndef CONFIG_ENABLE_VMALLOC_SAVING
 bool is_vmalloc_addr(const void *x)
 {
 	unsigned long addr = (unsigned long)x;
@@ -50,6 +51,7 @@ bool is_vmalloc_addr(const void *x)
 	return addr >= VMALLOC_START && addr < VMALLOC_END;
 }
 EXPORT_SYMBOL(is_vmalloc_addr);
+#endif
 
 struct vfree_deferred {
 	struct llist_head list;

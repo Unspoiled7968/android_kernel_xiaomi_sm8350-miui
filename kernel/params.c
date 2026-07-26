@@ -261,24 +261,6 @@ int param_set_uint_minmax(const char *val, const struct kernel_param *kp,
 }
 EXPORT_SYMBOL_GPL(param_set_uint_minmax);
 
-int param_set_uint_minmax(const char *val, const struct kernel_param *kp,
-		unsigned int min, unsigned int max)
-{
-	unsigned int num;
-	int ret;
-
-	if (!val)
-		return -EINVAL;
-	ret = kstrtouint(val, 0, &num);
-	if (ret)
-		return ret;
-	if (num < min || num > max)
-		return -EINVAL;
-	*((unsigned int *)kp->arg) = num;
-	return 0;
-}
-EXPORT_SYMBOL_GPL(param_set_uint_minmax);
-
 int param_set_charp(const char *val, const struct kernel_param *kp)
 {
 	if (strlen(val) > 1024) {
