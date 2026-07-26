@@ -553,6 +553,7 @@ static int lt9611_parse_dt_modes(struct device_node *np,
 	u32 v_front_porch, v_pulse_width, v_back_porch;
 	bool h_active_high, v_active_high;
 	u32 flags = 0;
+	u32 h_active = 0, v_active = 0;
 
 	root_node = of_get_child_by_name(np, "lt,customize-modes");
 	if (!root_node) {
@@ -572,8 +573,8 @@ static int lt9611_parse_dt_modes(struct device_node *np,
 			continue;
 		}
 
-		rc = of_property_read_u32(node, "lt,mode-h-active",
-						&mode->hdisplay);
+		rc = of_property_read_u32(node, "lt,mode-h-active", &h_active);
+		mode->hdisplay = h_active;
 		if (rc) {
 			pr_err("failed to read h-active, rc=%d\n", rc);
 			goto fail;
@@ -603,8 +604,8 @@ static int lt9611_parse_dt_modes(struct device_node *np,
 		h_active_high = of_property_read_bool(node,
 						"lt,mode-h-active-high");
 
-		rc = of_property_read_u32(node, "lt,mode-v-active",
-						&mode->vdisplay);
+		rc = of_property_read_u32(node, "lt,mode-v-active", &v_active);
+		mode->vdisplay = v_active;
 		if (rc) {
 			pr_err("failed to read v-active, rc=%d\n", rc);
 			goto fail;
@@ -979,7 +980,7 @@ static int lt9611_config_vreg(struct device *dev,
 			curr_vreg = &in_vreg[i];
 			curr_vreg->vreg = regulator_get(dev,
 					curr_vreg->vreg_name);
-			rc = PTR_RET(curr_vreg->vreg);
+			rc = PTR_ERR_OR_ZERO(curr_vreg->vreg);
 			if (rc) {
 				pr_err("%s get failed. rc=%d\n",
 						curr_vreg->vreg_name, rc);
@@ -1191,7 +1192,7 @@ static int lt9611_enable_vreg(struct lt9611 *pdata, int enable)
 			gpio_set_value(pdata->hdmi_1p2_en, 1);
 
 		for (i = 0; i < num_vreg; i++) {
-			rc = PTR_RET(in_vreg[i].vreg);
+			rc = PTR_ERR_OR_ZERO(in_vreg[i].vreg);
 			if (rc) {
 				pr_err("%s regulator error. rc=%d\n",
 						in_vreg[i].vreg_name, rc);

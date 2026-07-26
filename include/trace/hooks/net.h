@@ -21,14 +21,29 @@ struct list_head;
 /* struct list_head */
 #include <linux/types.h>
 #endif /* __GENKSYMS__ */
+struct nf_conn;	/* needed for CRC preservation */
+struct sock;	/* needed for CRC preservation */
+
 DECLARE_HOOK(android_vh_ptype_head,
 	TP_PROTO(const struct packet_type *pt, struct list_head *vendor_pt),
 	TP_ARGS(pt, vendor_pt));
 DECLARE_HOOK(android_vh_kfree_skb,
 	TP_PROTO(struct sk_buff *skb), TP_ARGS(skb));
 
-struct nf_conn;	/* needed for CRC preservation */
-struct sock;	/* needed for CRC preservation */
+/*
+ * Downstream restricted hooks: still exported by
+ * drivers/android/vendor_hooks.c and called from net/core/sock.c and
+ * net/netfilter/nf_conntrack_core.c.
+ */
+DECLARE_RESTRICTED_HOOK(android_rvh_sk_alloc,
+	TP_PROTO(struct sock *sock), TP_ARGS(sock), 1);
+DECLARE_RESTRICTED_HOOK(android_rvh_sk_free,
+	TP_PROTO(struct sock *sock), TP_ARGS(sock), 1);
+DECLARE_RESTRICTED_HOOK(android_rvh_nf_conn_alloc,
+	TP_PROTO(struct nf_conn *nf_conn), TP_ARGS(nf_conn), 1);
+DECLARE_RESTRICTED_HOOK(android_rvh_nf_conn_free,
+	TP_PROTO(struct nf_conn *nf_conn), TP_ARGS(nf_conn), 1);
+
 
 /* macro versions of hooks are no longer required */
 
