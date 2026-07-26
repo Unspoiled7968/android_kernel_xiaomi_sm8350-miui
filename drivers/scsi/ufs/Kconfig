@@ -46,31 +46,13 @@ config SCSI_UFSHCD
 	  The module will be called ufshcd.
 
 	  To compile this driver as a module, choose M here and read
-	  <file:Documentation/scsi/ufs.txt>.
-	  However, do not compile this as a module if your root file system
-	  (the one containing the directory /) is located on a UFS device.
-
-config SCSI_UFSHCD_QTI
-	tristate "Universal Flash Storage Controller Driver Core QTI"
-	depends on SCSI && SCSI_DMA && QGKI && SCSI_UFSHCD
-	select PM_DEVFREQ
-	select DEVFREQ_GOV_SIMPLE_ONDEMAND
-	select NLS
-	help
-	This selects the support for QTI UFS devices in Linux, say Y and make
-	  sure that you know the name of your UFS host adapter (the card
-	  inside your computer that "speaks" the UFS protocol, also
-	  called UFS Host Controller), because you will be asked for it.
-	  The module will be called ufshcd-qti.
-
-	  To compile this driver as a module, choose M here and read
-	  <file:Documentation/scsi/ufs.txt>.
+	  <file:Documentation/scsi/ufs.rst>.
 	  However, do not compile this as a module if your root file system
 	  (the one containing the directory /) is located on a UFS device.
 
 config UFS_DBG
 	bool "Universal Flash Storage Debug Mode"
-	depends on (SCSI_UFSHCD || SCSI_UFSHCD_QTI)
+	depends on SCSI_UFSHCD
 	help
 	This selects the debug mode for ufs vendor driver.
 	  Enables tracing for QTI ufs driver.
@@ -100,7 +82,8 @@ config SCSI_UFS_DWC_TC_PCI
 
 config SCSI_UFSHCD_PLATFORM
 	tristate "Platform bus based UFS Controller support"
-	depends on (SCSI_UFSHCD || SCSI_UFSHCD_QTI)
+	depends on SCSI_UFSHCD
+	depends on HAS_IOMEM
 	help
 	This selects the UFS host controller support. Select this if
 	you have an UFS controller on Platform bus.
@@ -127,7 +110,8 @@ config SCSI_UFS_DWC_TC_PLATFORM
 
 config SCSI_UFS_QCOM
 	tristate "QCOM specific hooks to UFS controller platform driver"
-	depends on SCSI_UFSHCD_PLATFORM && ARCH_QCOM && PHY_QCOM_UFS
+	depends on SCSI_UFSHCD_PLATFORM && ARCH_QCOM
+	select QCOM_SCM
 	select RESET_CONTROLLER
 	help
 	  This selects the QCOM specific additions to UFSHCD platform driver.
@@ -142,6 +126,7 @@ config SCSI_UFS_MEDIATEK
 	tristate "Mediatek specific hooks to UFS controller platform driver"
 	depends on SCSI_UFSHCD_PLATFORM && ARCH_MEDIATEK
 	select PHY_MTK_UFS
+	select RESET_TI_SYSCON
 	help
 	  This selects the Mediatek specific additions to UFSHCD platform driver.
 	  UFS host on Mediatek needs some vendor specific configuration before
@@ -161,9 +146,19 @@ config SCSI_UFS_HISI
 	  Select this if you have UFS controller on Hisilicon chipset.
 	  If unsure, say N.
 
+config SCSI_UFS_TI_J721E
+	tristate "TI glue layer for Cadence UFS Controller"
+	depends on OF && HAS_IOMEM && (ARCH_K3 || COMPILE_TEST)
+	help
+	  This selects driver for TI glue layer for Cadence UFS Host
+	  Controller IP.
+
+	  Selects this if you have TI platform with UFS controller.
+	  If unsure, say N.
+
 config SCSI_UFS_BSG
 	bool "Universal Flash Storage BSG device node"
-	depends on (SCSI_UFSHCD || SCSI_UFSHCD_QTI)
+	depends on SCSI_UFSHCD
 	select BLK_DEV_BSGLIB
 	help
 	  Universal Flash Storage (UFS) is SCSI transport specification for
@@ -178,6 +173,17 @@ config SCSI_UFS_BSG
 	  that supports UFS devices.
 
 	  Select this if you need a bsg device node for your UFS controller.
+	  If unsure, say N.
+
+config SCSI_UFS_EXYNOS
+	tristate "EXYNOS specific hooks to UFS controller platform driver"
+	depends on SCSI_UFSHCD_PLATFORM && (ARCH_EXYNOS || COMPILE_TEST)
+	help
+	  This selects the EXYNOS specific additions to UFSHCD platform driver.
+	  UFS host on EXYNOS includes HCI and UNIPRO layer, and associates with
+	  UFS-PHY driver.
+
+	  Select this if you have UFS host controller on EXYNOS chipset.
 	  If unsure, say N.
 
 config SCSI_UFS_CRYPTO
@@ -196,3 +202,12 @@ config SCSI_UFS_CRYPTO_QTI
 	 Enable Vendor Crypto Engine Support in UFS
 	 Enabling this allows kernel to use UFS crypto operations defined
 	 and implemented by QTI.
+
+config SCSI_UFS_HPB
+	bool "Support UFS Host Performance Booster"
+	depends on SCSI_UFSHCD
+	help
+	  The UFS HPB feature improves random read performance. It caches
+	  L2P (logical to physical) map of UFS to host DRAM. The driver uses HPB
+	  read command by piggybacking physical page number for bypassing FTL (flash
+	  translation layer)'s L2P address translation.

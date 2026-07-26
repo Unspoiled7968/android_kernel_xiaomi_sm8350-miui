@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (c) 2013-2020, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef UFS_QCOM_H_
@@ -9,10 +10,9 @@
 #include <linux/reset.h>
 #include <linux/phy/phy.h>
 #include <linux/pm_qos.h>
+#include <linux/nvmem-consumer.h>
 #include "ufshcd.h"
-#ifdef CONFIG_SCSI_UFSHCD_QTI
 #include "unipro.h"
-#endif
 
 #define MAX_UFS_QCOM_HOSTS	2
 #define MAX_U32                 (~(u32)0)
@@ -33,6 +33,8 @@
 #define UFS_VENDOR_MICRON	0x12C
 
 /* vendor specific pre-defined parameters */
+#define UFS_HS_G4	4		/* HS Gear 4 */
+
 #define SLOW 1
 #define FAST 2
 
@@ -52,6 +54,9 @@
 #define UFS_QCOM_LIMIT_HS_RATE		PA_HS_MODE_B
 #define UFS_QCOM_LIMIT_DESIRED_MODE	FAST
 #define UFS_QCOM_LIMIT_PHY_SUBMODE	UFS_QCOM_PHY_SUBMODE_G4
+#define UFS_QCOM_DEFAULT_TURBO_FREQ     300000000
+#define UFS_QCOM_DEFAULT_TURBO_L1_FREQ  300000000
+#define UFS_NOM_THRES_FREQ	300000000
 
 /* default value of auto suspend is 3 seconds */
 #define UFS_QCOM_AUTO_SUSPEND_DELAY	3000
@@ -64,8 +69,10 @@ enum {
 	REG_UFS_TX_SYMBOL_CLK_NS_US         = 0xC4,
 	REG_UFS_LOCAL_PORT_ID_REG           = 0xC8,
 	REG_UFS_PA_ERR_CODE                 = 0xCC,
-	REG_UFS_RETRY_TIMER_REG             = 0xD0,
-	REG_UFS_PA_LINK_STARTUP_TIMER       = 0xD8,
+	/* On older UFS revisions, this register is called "RETRY_TIMER_REG" */
+	REG_UFS_PARAM0                      = 0xD0,
+	/* On older UFS revisions, this register is called "REG_UFS_PA_LINK_STARTUP_TIMER" */
+	REG_UFS_CFG0                        = 0xD8,
 	REG_UFS_CFG1                        = 0xDC,
 	REG_UFS_CFG2                        = 0xE0,
 	REG_UFS_HW_VERSION                  = 0xE4,
@@ -100,8 +107,20 @@ enum {
 	UFS_UFS_DBG_RD_EDTL_RAM			= 0x1900,
 };
 
+/* QCOM UFS host controller vendor specific H8 count registers */
+enum {
+	REG_UFS_HW_H8_ENTER_CNT				= 0x2700,
+	REG_UFS_SW_H8_ENTER_CNT				= 0x2704,
+	REG_UFS_SW_AFTER_HW_H8_ENTER_CNT	= 0x2708,
+	REG_UFS_HW_H8_EXIT_CNT				= 0x270C,
+	REG_UFS_SW_H8_EXIT_CNT				= 0x2710,
+};
+
 #define UFS_CNTLR_2_x_x_VEN_REGS_OFFSET(x)	(0x000 + x)
 #define UFS_CNTLR_3_x_x_VEN_REGS_OFFSET(x)	(0x400 + x)
+
+/* bit definitions for REG_UFS_CFG0 register */
+#define QUNIPRO_G4_SEL		BIT(5)
 
 /* bit definitions for REG_UFS_CFG1 register */
 #define QUNIPRO_SEL		0x1
@@ -184,8 +203,14 @@ enum ufs_qcom_phy_init_type {
 
 #define PA_VS_CLK_CFG_REG	0x9004
 #define PA_VS_CLK_CFG_REG_MASK	0x1FF
+#define PA_VS_CLK_CFG_REG_MASK1 0xFF
+
 #define DME_VS_CORE_CLK_CTRL_MAX_CORE_CLK_1US_CYCLES_MASK_V4	0xFFF
 #define DME_VS_CORE_CLK_CTRL_MAX_CORE_CLK_1US_CYCLES_OFFSET_V4	0x10
+
+#define PA_VS_CLK_CFG_REG_MASK_TURBO 0x100
+#define ATTR_HW_CGC_EN_TURBO 0x100
+#define ATTR_HW_CGC_EN_NON_TURBO 0x000
 
 #define PA_VS_CORE_CLK_40NS_CYCLES	0x9007
 #define PA_VS_CORE_CLK_40NS_CYCLES_MASK	0xF
@@ -200,6 +225,23 @@ enum ufs_qcom_phy_init_type {
 #define DME_VS_CORE_CLK_CTRL_MAX_CORE_CLK_1US_CYCLES_MASK	0xFF
 #define DME_VS_CORE_CLK_CTRL_CORE_CLK_DIV_EN_BIT		BIT(8)
 #define DME_VS_CORE_CLK_CTRL_DME_HW_CGC_EN			BIT(9)
+
+#define TEST_BUS_CTRL_2_HCI_SEL_TURBO_MASK 0x010
+#define TEST_BUS_CTRL_2_HCI_SEL_TURBO 0x010
+#define TEST_BUS_CTRL_2_HCI_SEL_NONTURBO 0x000
+
+/* Device Quirks */
+/*
+ * Some ufs devices may need more time to be in hibern8 before exiting.
+ * Enable this quirk to give it an additional 100us.
+ */
+#define UFS_DEVICE_QUIRK_PA_HIBER8TIME          (1 << 15)
+
+/*
+ * Some ufs device vendors need a different TSync length.
+ * Enable this quirk to give an additional TX_HS_SYNC_LENGTH.
+ */
+#define UFS_DEVICE_QUIRK_PA_TX_HSG1_SYNC_LENGTH (1 << 16)
 
 static inline void
 ufs_qcom_get_controller_revision(struct ufs_hba *hba,
@@ -287,6 +329,7 @@ struct qos_cpu_group {
 	struct work_struct vwork;
 	struct ufs_qcom_host *host;
 	unsigned int curr_vote;
+	bool perf_core;
 };
 
 struct ufs_qcom_qos_req {
@@ -300,6 +343,17 @@ enum constraint {
 	QOS_PERF,
 	QOS_POWER,
 	QOS_MAX,
+};
+
+enum ufs_qcom_therm_lvl {
+	UFS_QCOM_LVL_NO_THERM, /* No thermal mitigation */
+	UFS_QCOM_LVL_AGGR_THERM, /* Aggressive thermal mitigation */
+	UFS_QCOM_LVL_MAX_THERM, /* Max thermal mitigation */
+};
+
+struct ufs_qcom_thermal {
+	struct thermal_cooling_device *tcd;
+	unsigned long curr_state;
 };
 
 struct ufs_qcom_host {
@@ -343,6 +397,20 @@ struct ufs_qcom_host {
 	void __iomem *dev_ref_clk_ctrl_mmio;
 	bool is_dev_ref_clk_enabled;
 	struct ufs_hw_version hw_ver;
+#ifdef CONFIG_SCSI_UFS_CRYPTO
+	void __iomem *ice_mmio;
+	/*
+	 * Opaque handle returned by crypto_qti_init_crypto(). The QTI common
+	 * ICE library on this kernel keeps the ICE/HWKM mmio bases in this
+	 * private object and expects it back on every crypto_qti_* call.
+	 */
+	void *ice_priv;
+#endif
+#if IS_ENABLED(CONFIG_QTI_HW_KEY_MANAGER)
+	void __iomem *ice_hwkm_mmio;
+#endif
+
+	bool reset_in_progress;
 	u32 dev_ref_clk_en_mask;
 
 	/* Bitmask for enabling debug prints */
@@ -361,22 +429,71 @@ struct ufs_qcom_host {
 	int limit_rx_pwm_gear;
 	int limit_rate;
 	int limit_phy_submode;
+	int ufs_dev_types;
+	bool ufs_dev_revert;
 
 	bool disable_lpm;
 	struct qcom_bus_scale_data *qbsd;
 	struct ufs_vreg *vddp_ref_clk;
 	struct ufs_vreg *vccq_parent;
 	bool work_pending;
+	bool bypass_g4_cfgready;
+	bool is_dt_pm_level_read;
 	bool is_phy_pwr_on;
 	/* Protect the usage of is_phy_pwr_on against racing */
 	struct mutex phy_mutex;
-	bool err_occurred;
+	struct ufs_qcom_qos_req *ufs_qos;
+	struct ufs_qcom_thermal uqt;
 	/* FlashPVL entries */
+	bool err_occurred;
+	bool crash_on_err;
 	atomic_t scale_up;
 	atomic_t clks_on;
-	struct ufs_qcom_qos_req *ufs_qos;
-	bool bypass_g4_cfgready;
-	bool is_dt_pm_level_read;
+	unsigned long load_delay_ms;
+#define NUM_REQS_HIGH_THRESH 64
+#define NUM_REQS_LOW_THRESH 32
+	atomic_t num_reqs_threshold;
+	bool cur_freq_vote;
+	struct delayed_work fwork;
+	struct workqueue_struct *fworkq;
+	struct mutex cpufreq_lock;
+	bool cpufreq_dis;
+	bool active;
+	unsigned int min_cpu_scale_freq;
+	unsigned int max_cpu_scale_freq;
+	int config_cpu;
+	void *ufs_ipc_log_ctx;
+	bool dbg_en;
+	struct nvmem_cell *nvmem_cell;
+
+	/* Multi level clk scaling Support */
+	bool ml_scale_sup;
+	bool is_turbo_enabled;
+	/* threshold count to scale down from turbo to NOM */
+	u32 turbo_down_thres_cnt;
+	/* turbo freq for UFS clocks read from DT */
+	u32 axi_turbo_clk_freq;
+	u32 axi_turbo_l1_clk_freq;
+	u32 ice_turbo_clk_freq;
+	u32 ice_turbo_l1_clk_freq;
+	u32 unipro_turbo_clk_freq;
+	u32 unipro_turbo_l1_clk_freq;
+	bool turbo_unipro_attr_applied;
+	/* some target need additional setting to support turbo mode*/
+	bool turbo_additional_conf_req;
+	/* current UFS clocks freq */
+	u32 curr_axi_freq;
+	u32 curr_ice_freq;
+	u32 curr_unipro_freq;
+	/* Indicates curr and next clk mode */
+	u32 clk_next_mode;
+	u32 clk_curr_mode;
+	bool is_clk_scale_enabled;
+	atomic_t hi_pri_en;
+	atomic_t therm_mitigation;
+	cpumask_t perf_mask;
+	cpumask_t def_mask;
+	bool irq_affinity_support;
 };
 
 static inline u32
@@ -492,5 +609,34 @@ struct ufs_ioctl_query_data {
 	 */
 	__u8 buffer[0];
 };
+
+/* ufs-qcom-ice.c */
+
+#ifdef CONFIG_SCSI_UFS_CRYPTO
+int ufs_qcom_ice_init(struct ufs_qcom_host *host);
+int ufs_qcom_ice_enable(struct ufs_qcom_host *host);
+int ufs_qcom_ice_resume(struct ufs_qcom_host *host);
+int ufs_qcom_ice_program_key(struct ufs_hba *hba,
+			     const union ufs_crypto_cfg_entry *cfg, int slot);
+void ufs_qcom_ice_disable(struct ufs_qcom_host *host);
+#else
+static inline int ufs_qcom_ice_init(struct ufs_qcom_host *host)
+{
+	return 0;
+}
+static inline int ufs_qcom_ice_enable(struct ufs_qcom_host *host)
+{
+	return 0;
+}
+static inline int ufs_qcom_ice_resume(struct ufs_qcom_host *host)
+{
+	return 0;
+}
+static inline void ufs_qcom_ice_disable(struct ufs_qcom_host *host)
+{
+	return 0;
+}
+#define ufs_qcom_ice_program_key NULL
+#endif /* !CONFIG_SCSI_UFS_CRYPTO */
 
 #endif /* UFS_QCOM_H_ */

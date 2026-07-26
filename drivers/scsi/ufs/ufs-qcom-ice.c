@@ -2,17 +2,31 @@
 /*
  * Qualcomm ICE (Inline Crypto Engine) support.
  *
- * Copyright (c) 2014-2019, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2014-2019,2021 The Linux Foundation. All rights reserved.
  * Copyright 2019 Google LLC
  */
 
 #include <linux/platform_device.h>
 #include <linux/qcom_scm.h>
+#include <linux/qtee_shmbridge.h>
 
 #include "ufshcd-crypto.h"
+#include <linux/crypto-qti-common.h>
 #include "ufs-qcom.h"
 
 #define AES_256_XTS_KEY_SIZE			64
+
+/*
+ * The QTI SCM ABI in this tree does not export enum qcom_scm_ice_cipher nor the
+ * crypto engine ids (they live in the newer crypto-qti-common.h), so define the
+ * two values used here locally.
+ */
+#ifndef QCOM_SCM_ICE_CIPHER_AES_256_XTS
+#define QCOM_SCM_ICE_CIPHER_AES_256_XTS		3
+#endif
+#ifndef UFS_CE
+#define UFS_CE					10
+#endif
 
 /* QCOM ICE registers */
 
@@ -97,33 +111,76 @@ int ufs_qcom_ice_init(struct ufs_qcom_host *host)
 	struct ufs_hba *hba = host->hba;
 	struct device *dev = hba->dev;
 	struct platform_device *pdev = to_platform_device(dev);
-	struct resource *res;
+	struct resource *ice_base_res;
+#if IS_ENABLED(CONFIG_QTI_HW_KEY_MANAGER)
+	struct resource *ice_hwkm_res;
+#endif
 	int err;
 
 	if (!(ufshcd_readl(hba, REG_CONTROLLER_CAPABILITIES) &
 	      MASK_CRYPTO_SUPPORT))
 		return 0;
 
-	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "ice");
-	if (!res) {
+	ice_base_res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "ufs_ice");
+	if (!ice_base_res) {
 		dev_warn(dev, "ICE registers not found\n");
 		goto disable;
 	}
 
-	if (!qcom_scm_ice_available()) {
-		dev_warn(dev, "ICE SCM interface not found\n");
+	/*
+	 * This tree carries the older QTI SCM ABI which has no
+	 * qcom_scm_ice_available(); the ICE key operations here go through
+	 * qcom_scm_config_set_ice_key()/qcom_scm_clear_ice_key(), so just make
+	 * sure SCM itself came up.
+	 */
+	if (!qcom_scm_is_available()) {
+		dev_warn(dev, "SCM interface not available\n");
 		goto disable;
 	}
 
-	host->ice_mmio = devm_ioremap_resource(dev, res);
+	host->ice_mmio = devm_ioremap_resource(dev, ice_base_res);
 	if (IS_ERR(host->ice_mmio)) {
 		err = PTR_ERR(host->ice_mmio);
 		dev_err(dev, "Failed to map ICE registers; err=%d\n", err);
 		return err;
 	}
 
+#if IS_ENABLED(CONFIG_QTI_HW_KEY_MANAGER)
+	ice_hwkm_res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "ufs_ice_hwkm");
+	if (!ice_hwkm_res) {
+		dev_warn(dev, "ICE HWKM registers not found\n");
+		goto disable;
+	}
+	host->ice_hwkm_mmio = devm_ioremap_resource(dev, ice_hwkm_res);
+	if (IS_ERR(host->ice_hwkm_mmio)) {
+		err = PTR_ERR(host->ice_hwkm_mmio);
+		dev_err(dev, "Failed to map ICE HWKM registers; err=%d\n", err);
+		return err;
+	}
+#endif
+
 	if (!qcom_ice_supported(host))
 		goto disable;
+
+#if IS_ENABLED(CONFIG_SCSI_UFS_CRYPTO_QTI)
+	/*
+	 * The QTI common ICE library owns the keyslot programming path when
+	 * CONFIG_SCSI_UFS_CRYPTO_QTI is selected (UFSHCD_QUIRK_CUSTOM_KEYSLOT_MANAGER).
+	 * It keeps the ICE/HWKM mmio bases in an opaque private object which has
+	 * to be created here and handed back on every call.
+	 */
+	err = crypto_qti_init_crypto(dev, host->ice_mmio,
+#if IS_ENABLED(CONFIG_QTI_HW_KEY_MANAGER)
+				     host->ice_hwkm_mmio,
+#else
+				     NULL,
+#endif
+				     &host->ice_priv);
+	if (err) {
+		dev_warn(dev, "crypto_qti_init_crypto() failed, err=%d\n", err);
+		goto disable;
+	}
+#endif
 
 	return 0;
 
@@ -163,9 +220,30 @@ int ufs_qcom_ice_enable(struct ufs_qcom_host *host)
 {
 	if (!(host->hba->caps & UFSHCD_CAP_CRYPTO))
 		return 0;
+
+#if IS_ENABLED(CONFIG_SCSI_UFS_CRYPTO_QTI)
+	if (host->hba->quirks & UFSHCD_QUIRK_CUSTOM_KEYSLOT_MANAGER)
+		/*
+		 * Same low-power/optimization/BIST sequence as below, plus the
+		 * non-secure IRQ unmask and the HWKM platform bring-up that the
+		 * QTI common ICE library owns.
+		 */
+		return crypto_qti_enable(host->ice_priv);
+#endif
+
 	qcom_ice_low_power_mode_enable(host);
 	qcom_ice_optimization_enable(host);
 	return ufs_qcom_ice_resume(host);
+}
+
+void ufs_qcom_ice_disable(struct ufs_qcom_host *host)
+{
+	if (!(host->hba->caps & UFSHCD_CAP_CRYPTO))
+		return;
+#if IS_ENABLED(CONFIG_SCSI_UFS_CRYPTO_QTI)
+	if (host->hba->quirks & UFSHCD_QUIRK_CUSTOM_KEYSLOT_MANAGER)
+		crypto_qti_disable(host->ice_priv);
+#endif
 }
 
 /* Poll until all BIST bits are reset */
@@ -214,9 +292,10 @@ int ufs_qcom_ice_program_key(struct ufs_hba *hba,
 	} key;
 	int i;
 	int err;
+	struct qtee_shm shm;
 
 	if (!(cfg->config_enable & UFS_CRYPTO_CONFIGURATION_ENABLE))
-		return qcom_scm_ice_invalidate_key(slot);
+		return qcom_scm_clear_ice_key(slot, UFS_CE);
 
 	/* Only AES-256-XTS has been tested so far. */
 	cap = hba->crypto_cap_array[cfg->crypto_cap_idx];
@@ -228,6 +307,10 @@ int ufs_qcom_ice_program_key(struct ufs_hba *hba,
 		return -EINVAL;
 	}
 
+	err = qtee_shmbridge_allocate_shm(AES_256_XTS_KEY_SIZE, &shm);
+	if (err)
+		return -ENOMEM;
+
 	memcpy(key.bytes, cfg->crypto_key, AES_256_XTS_KEY_SIZE);
 
 	/*
@@ -237,9 +320,20 @@ int ufs_qcom_ice_program_key(struct ufs_hba *hba,
 	for (i = 0; i < ARRAY_SIZE(key.words); i++)
 		__cpu_to_be32s(&key.words[i]);
 
-	err = qcom_scm_ice_set_key(slot, key.bytes, AES_256_XTS_KEY_SIZE,
-				   QCOM_SCM_ICE_CIPHER_AES_256_XTS,
-				   cfg->data_unit_size);
+	memcpy(shm.vaddr, key.bytes, AES_256_XTS_KEY_SIZE);
+	qtee_shmbridge_flush_shm_buf(&shm);
+
+	err = qcom_scm_config_set_ice_key(slot, shm.paddr,
+					AES_256_XTS_KEY_SIZE,
+					QCOM_SCM_ICE_CIPHER_AES_256_XTS,
+					cfg->data_unit_size, UFS_CE);
+	if (err)
+		pr_err("%s:SCM call Error: 0x%x slot %d\n",
+				__func__, err, slot);
+
+	qtee_shmbridge_inv_shm_buf(&shm);
+	qtee_shmbridge_free_shm(&shm);
 	memzero_explicit(&key, sizeof(key));
+
 	return err;
 }

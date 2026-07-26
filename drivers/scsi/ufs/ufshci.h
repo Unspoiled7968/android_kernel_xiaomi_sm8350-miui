@@ -1,36 +1,11 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Universal Flash Storage Host controller driver
- *
- * This code is based on drivers/scsi/ufs/ufshci.h
  * Copyright (C) 2011-2013 Samsung India Software Operations
  *
  * Authors:
  *	Santosh Yaraganavi <santosh.sy@samsung.com>
  *	Vinayak Holikatti <h.vinayak@samsung.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
- * See the COPYING file in the top-level directory or visit
- * <http://www.gnu.org/licenses/gpl-2.0.html>
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * This program is provided "AS IS" and "WITH ALL FAULTS" and
- * without warranty of any kind. You are solely responsible for
- * determining the appropriateness of using and distributing
- * the program and assume all risks associated with your exercise
- * of rights with respect to the program, including but not limited
- * to infringement of third party rights, the risks and costs of
- * program errors, damage to or loss of data, programs or equipment,
- * and unavailability or interruption of operations. Under no
- * circumstances will the contributor of this Program be liable for
- * any damages of any kind arising from your use or distribution of
- * this program.
  */
 
 #ifndef _UFSHCI_H
@@ -64,6 +39,7 @@ enum {
 	REG_UTP_TRANSFER_REQ_DOOR_BELL		= 0x58,
 	REG_UTP_TRANSFER_REQ_LIST_CLEAR		= 0x5C,
 	REG_UTP_TRANSFER_REQ_LIST_RUN_STOP	= 0x60,
+	REG_UTP_TRANSFER_REQ_LIST_COMPL		= 0x64,
 	REG_UTP_TASK_REQ_LIST_BASE_L		= 0x70,
 	REG_UTP_TASK_REQ_LIST_BASE_H		= 0x74,
 	REG_UTP_TASK_REQ_DOOR_BELL		= 0x78,
@@ -99,14 +75,17 @@ enum {
 #define MINOR_VERSION_NUM_MASK		UFS_MASK(0xFFFF, 0)
 #define MAJOR_VERSION_NUM_MASK		UFS_MASK(0xFFFF, 16)
 
-/* Controller UFSHCI version */
-enum {
-	UFSHCI_VERSION_10 = 0x00010000, /* 1.0 */
-	UFSHCI_VERSION_11 = 0x00010100, /* 1.1 */
-	UFSHCI_VERSION_20 = 0x00000200, /* 2.0 */
-	UFSHCI_VERSION_21 = 0x00000210, /* 2.1 */
-	UFSHCI_VERSION_30 = 0x00000300, /* 3.0 */
-};
+/*
+ * Controller UFSHCI version
+ * - 2.x and newer use the following scheme:
+ *   major << 8 + minor << 4
+ * - 1.x has been converted to match this in
+ *   ufshcd_get_ufs_version()
+ */
+static inline u32 ufshci_version(u32 major, u32 minor)
+{
+	return (major << 8) + (minor << 4);
+}
 
 /*
  * HCDDID - Host Controller Identification Descriptor
@@ -155,16 +134,13 @@ enum {
 
 #define UFSHCD_UIC_MASK		(UIC_COMMAND_COMPL | UFSHCD_UIC_PWR_MASK)
 
-#define UFSHCD_ERROR_MASK	(UIC_ERROR |\
-				DEVICE_FATAL_ERROR |\
-				CONTROLLER_FATAL_ERROR |\
-				SYSTEM_BUS_FATAL_ERROR |\
-				CRYPTO_ENGINE_FATAL_ERROR)
+#define UFSHCD_ERROR_MASK	(UIC_ERROR | INT_FATAL_ERRORS)
 
 #define INT_FATAL_ERRORS	(DEVICE_FATAL_ERROR |\
 				CONTROLLER_FATAL_ERROR |\
 				SYSTEM_BUS_FATAL_ERROR |\
-				CRYPTO_ENGINE_FATAL_ERROR)
+				CRYPTO_ENGINE_FATAL_ERROR |\
+				UIC_LINK_LOST)
 
 /* HCS - Host Controller Status 30h */
 #define DEVICE_PRESENT				0x1
@@ -188,44 +164,6 @@ enum {
 	PWR_FATAL_ERROR	= 0x05,
 };
 
-#ifdef CONFIG_SCSI_UFSHCD_QTI
-/* Host UIC error type */
-enum ufshcd_uic_err_type {
-	UFS_UIC_ERROR_PA,
-	UFS_UIC_ERROR_DL,
-	UFS_UIC_ERROR_DME,
-};
-/* Host UIC error code PHY adapter layer */
-enum ufshcd_ec_pa {
-	UFS_EC_PA_LANE_0,
-	UFS_EC_PA_LANE_1,
-	UFS_EC_PA_LANE_2,
-	UFS_EC_PA_LANE_3,
-	UFS_EC_PA_LINE_RESET,
-	UFS_EC_PA_MAX,
-};
-
-/* Host UIC error code data link layer */
-enum ufshcd_ec_dl {
-	UFS_EC_DL_NAC_RECEIVED,
-	UFS_EC_DL_TCx_REPLAY_TIMER_EXPIRED,
-	UFS_EC_DL_AFCx_REQUEST_TIMER_EXPIRED,
-	UFS_EC_DL_FCx_PROTECT_TIMER_EXPIRED,
-	UFS_EC_DL_CRC_ERROR,
-	UFS_EC_DL_RX_BUFFER_OVERFLOW,
-	UFS_EC_DL_MAX_FRAME_LENGTH_EXCEEDED,
-	UFS_EC_DL_WRONG_SEQUENCE_NUMBER,
-	UFS_EC_DL_AFC_FRAME_SYNTAX_ERROR,
-	UFS_EC_DL_NAC_FRAME_SYNTAX_ERROR,
-	UFS_EC_DL_EOF_SYNTAX_ERROR,
-	UFS_EC_DL_FRAME_SYNTAX_ERROR,
-	UFS_EC_DL_BAD_CTRL_SYMBOL_TYPE,
-	UFS_EC_DL_PA_INIT_ERROR,
-	UFS_EC_DL_PA_ERROR_IND_RECEIVED,
-	UFS_EC_DL_MAX,
-};
-#endif
-
 /* HCE - Host Controller Enable 34h */
 #define CONTROLLER_ENABLE	0x1
 #define CONTROLLER_DISABLE	0x0
@@ -235,9 +173,8 @@ enum ufshcd_ec_dl {
 #define UIC_PHY_ADAPTER_LAYER_ERROR			0x80000000
 #define UIC_PHY_ADAPTER_LAYER_ERROR_CODE_MASK		0x1F
 #define UIC_PHY_ADAPTER_LAYER_LANE_ERR_MASK		0xF
-#ifdef CONFIG_SCSI_UFSHCD_QTI
 #define UIC_PHY_ADAPTER_LAYER_GENERIC_ERROR		0x10
-#endif
+
 /* UECDL - Host UIC Error Code Data Link Layer 3Ch */
 #define UIC_DATA_LINK_LAYER_ERROR		0x80000000
 #define UIC_DATA_LINK_LAYER_ERROR_CODE_MASK	0xFFFF
