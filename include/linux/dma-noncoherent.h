@@ -2,6 +2,7 @@
 #ifndef _LINUX_DMA_NONCOHERENT_H
 #define _LINUX_DMA_NONCOHERENT_H 1
 
+#include <linux/dma-map-ops.h>
 #include <linux/dma-mapping.h>
 #include <asm/pgtable.h>
 
@@ -21,17 +22,7 @@ static inline bool dev_is_dma_coherent(struct device *dev)
 }
 #endif /* CONFIG_ARCH_HAS_DMA_COHERENCE_H */
 
-#ifdef CONFIG_DMA_COHERENT_HINT_CACHED
-static inline bool dev_is_dma_coherent_hint_cached(struct device *dev)
-{
-	return dev->dma_coherent_hint_cached;
-}
-#else
-static inline bool dev_is_dma_coherent_hint_cached(struct device *dev)
-{
-	return false;
-}
-#endif
+/* dev_is_dma_coherent_hint_cached() lives in <linux/dma-map-ops.h> */
 
 /*
  * Check if an allocation needs to be marked uncached to be coherent.

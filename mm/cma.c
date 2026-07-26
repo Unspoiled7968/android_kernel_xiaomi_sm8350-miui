@@ -484,8 +484,6 @@ struct page *cma_alloc(struct cma *cma, size_t count, unsigned int align,
 
 	trace_cma_alloc_start(cma->name, count, align);
 
-	trace_cma_alloc_start(count, align);
-
 	mask = cma_bitmap_aligned_mask(cma, align);
 	offset = cma_bitmap_aligned_offset(cma, align);
 	bitmap_maxno = cma_bitmap_maxno(cma);
@@ -528,7 +526,6 @@ struct page *cma_alloc(struct cma *cma, size_t count, unsigned int align,
 			}
 		}
 
-		available_regions++;
 		bitmap_set(cma->bitmap, bitmap_no, bitmap_count);
 		/*
 		 * It's safe to drop the lock here. We've marked this region for

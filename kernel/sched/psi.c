@@ -145,6 +145,12 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/psi.h>
 
+/*
+ * trace/hooks/psi.h uses the same TRACE_SYSTEM name, so define_trace.h must
+ * not run for it here -- the vendor hooks are DEFINE_TRACE'd in
+ * drivers/android/vendor_hooks.c.
+ */
+#undef CREATE_TRACE_POINTS
 #include <trace/hooks/psi.h>
 
 static int psi_bug __read_mostly;
