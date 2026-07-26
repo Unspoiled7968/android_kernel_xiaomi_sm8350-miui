@@ -7726,7 +7726,7 @@ static int msm_snd_card_late_probe(struct snd_soc_card *card)
 	if (pdata->wcd_disabled)
 		return 0;
 
-	rtd = snd_soc_get_pcm_runtime(card, be_dl_name);
+	rtd = snd_soc_get_pcm_runtime_by_name(card, be_dl_name);
 	if (!rtd) {
 		dev_err(card->dev,
 			"%s: snd_soc_get_pcm_runtime for %s failed!\n",

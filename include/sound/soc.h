@@ -1264,6 +1264,22 @@ struct snd_soc_pcm_runtime {
 
 void snd_soc_close_delayed_work(struct snd_soc_pcm_runtime *rtd);
 
+/*
+ * 5.10 dropped the by-name form of snd_soc_get_pcm_runtime(); the QCOM machine
+ * drivers only ever have the backend dai_link name to go on.
+ */
+static inline struct snd_soc_pcm_runtime *
+snd_soc_get_pcm_runtime_by_name(struct snd_soc_card *card, const char *name)
+{
+	struct snd_soc_pcm_runtime *rtd;
+
+	for_each_card_rtds(card, rtd)
+		if (!strcmp(rtd->dai_link->name, name))
+			return rtd;
+
+	return NULL;
+}
+
 /* mixer control */
 struct soc_mixer_control {
 	int min, max, platform_max;

@@ -3927,7 +3927,7 @@ static int sm8150_notifier_service_cb(struct notifier_block *this,
 			return -EINVAL;
 
 		card = platform_get_drvdata(spdev);
-		rtd = snd_soc_get_pcm_runtime(card, be_dl_name);
+		rtd = snd_soc_get_pcm_runtime_by_name(card, be_dl_name);
 		if (!rtd) {
 			dev_err(card->dev,
 				"%s: snd_soc_get_pcm_runtime for %s failed!\n",
@@ -6431,7 +6431,7 @@ static int msm_snd_card_tavil_late_probe(struct snd_soc_card *card)
 	int ret = 0;
 	void *mbhc_calibration;
 
-	rtd = snd_soc_get_pcm_runtime(card, be_dl_name);
+	rtd = snd_soc_get_pcm_runtime_by_name(card, be_dl_name);
 	if (!rtd) {
 		dev_err(card->dev,
 			"%s: snd_soc_get_pcm_runtime for %s failed!\n",

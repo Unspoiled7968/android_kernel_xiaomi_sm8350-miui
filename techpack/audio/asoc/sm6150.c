@@ -8029,7 +8029,7 @@ static int msm_snd_card_tavil_late_probe(struct snd_soc_card *card)
 	int ret = 0;
 	void *mbhc_calibration;
 
-	rtd = snd_soc_get_pcm_runtime(card, be_dl_name);
+	rtd = snd_soc_get_pcm_runtime_by_name(card, be_dl_name);
 	if (!rtd) {
 		dev_err(card->dev,
 			"%s: snd_soc_get_pcm_runtime for %s failed!\n",
@@ -8073,7 +8073,7 @@ static int msm_snd_card_tasha_late_probe(struct snd_soc_card *card)
 	int ret = 0;
 	void *mbhc_calibration;
 
-	rtd = snd_soc_get_pcm_runtime(card, be_dl_name);
+	rtd = snd_soc_get_pcm_runtime_by_name(card, be_dl_name);
 	if (!rtd) {
 		dev_err(card->dev,
 			"%s: snd_soc_get_pcm_runtime for %s failed!\n",
@@ -8991,7 +8991,7 @@ static int sm6150_ssr_enable(struct device *dev, void *data)
 			const char *be_dl_name = LPASS_BE_SLIMBUS_0_RX;
 			struct snd_soc_pcm_runtime *rtd;
 
-			rtd = snd_soc_get_pcm_runtime(card, be_dl_name);
+			rtd = snd_soc_get_pcm_runtime_by_name(card, be_dl_name);
 			if (!rtd) {
 				dev_err(dev,
 					"%s: snd_soc_get_pcm_runtime for %s failed!\n",

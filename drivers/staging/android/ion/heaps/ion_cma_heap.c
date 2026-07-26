@@ -93,7 +93,7 @@ static int ion_cma_allocate(struct ion_heap *heap, struct ion_buffer *buffer,
 		}
 		pages = pfn_to_page(PFN_DOWN(info->handle));
 	} else {
-		pages = cma_alloc(cma_heap->cma, nr_pages, align, false);
+		pages = cma_alloc(cma_heap->cma, nr_pages, align, GFP_KERNEL);
 		if (!pages)
 			goto free_info;
 		if (hlos_accessible_buffer(buffer)) {
