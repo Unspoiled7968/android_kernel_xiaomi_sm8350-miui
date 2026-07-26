@@ -243,6 +243,8 @@ DEFINE_EVENT(sched_wakeup_template, sched_wakeup_new,
  * re-read at that point, so anything hidden behind CREATE_TRACE_POINTS here would
  * never be defined while sched_switch's TP_fast_assign still calls it.
  */
+#ifndef __TRACE_SCHED_SWITCH_STATE_HELPER
+#define __TRACE_SCHED_SWITCH_STATE_HELPER
 static inline long __trace_sched_switch_state(bool preempt, struct task_struct *p)
 {
 	unsigned int state;
@@ -268,7 +270,7 @@ static inline long __trace_sched_switch_state(bool preempt, struct task_struct *
 
 	return state ? (1 << (state - 1)) : state;
 }
-
+#endif /* __TRACE_SCHED_SWITCH_STATE_HELPER */
 
 /*
  * Tracepoint for task switches, performed by the scheduler:
