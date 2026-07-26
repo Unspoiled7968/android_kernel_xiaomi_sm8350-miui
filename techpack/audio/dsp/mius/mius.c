@@ -8,6 +8,7 @@
 #include <linux/version.h>
 /*  includes the file structure, that is, file open read close */
 #include <linux/fs.h>
+#include <linux/kernel_read_file.h>
 
 /* include the character device, makes cdev avilable */
 #include <linux/cdev.h>
@@ -664,11 +665,12 @@ static char *calibration_filename = "/persist/audio/mius_calibration";
 static size_t load_calibration_data(char *filename)
 {
 	size_t bytes_read = 0;
+	void *buf = calibration_data;
 	int rc = -ENOENT;
 
-	rc = kernel_read_file_from_path(filename, calibration_data, &bytes_read,
+	rc = kernel_read_file_from_path(filename, 0, &buf,
 					MIUS_CALIBRATION_MAX_DATA_SIZE,
-					READING_FIRMWARE);
+					&bytes_read, READING_FIRMWARE);
 	if (rc) {
 		if (rc == -ENOENT)
 			MI_PRINT_E("loading %s failed with error %d\n",

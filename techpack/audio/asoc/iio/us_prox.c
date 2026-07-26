@@ -38,7 +38,6 @@
 extern void iio_device_unregister(struct iio_dev *indio_dev);
 extern void iio_device_free(struct iio_dev *dev);
 extern int __iio_device_register(struct iio_dev *indio_dev, struct module *this_mod);
-extern struct iio_dev *iio_device_alloc(int sizeof_priv);
 struct iio_buffer *iio_kefifo_allocate(void);
 void iio_kefifo_free(struct iio_buffer *r);
 struct iio_poll_func
@@ -260,7 +259,7 @@ static int us_proximity_iio_setup(struct us_prox_data *data)
 	struct us_prox_data **priv_data;
 	int ret = 0;
 
-	idev = iio_device_alloc(sizeof(*priv_data));
+	idev = iio_device_alloc(&data->pdev->dev, sizeof(*priv_data));
 	if (!idev) {
 		pr_err("us prox IIO memory alloc fail\n");
 		return -ENOMEM;

@@ -2039,14 +2039,14 @@ static ssize_t
 thermal_board_sensor_temp_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
-	return snprintf(buf, PAGE_SIZE, board_sensor_temp);
+	return snprintf(buf, PAGE_SIZE, "%s", board_sensor_temp);
 }
 
 static ssize_t
 thermal_board_sensor_temp_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t len)
 {
-	snprintf(board_sensor_temp, PAGE_SIZE, buf);
+	snprintf(board_sensor_temp, sizeof(board_sensor_temp), "%s", buf);
 
 	return len;
 }
@@ -2058,14 +2058,14 @@ static ssize_t
 thermal_board_sensor_second_temp_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
-	return snprintf(buf, PAGE_SIZE, board_sensor_second_temp);
+	return snprintf(buf, PAGE_SIZE, "%s", board_sensor_second_temp);
 }
 
 static ssize_t
 thermal_board_sensor_second_temp_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t len)
 {
-	snprintf(board_sensor_second_temp, PAGE_SIZE, buf);
+	snprintf(board_sensor_second_temp, sizeof(board_sensor_second_temp), "%s", buf);
 
 	return len;
 }
@@ -2270,6 +2270,10 @@ static int __init thermal_init(void)
 		goto error;
 	}
 
+	result = thermal_netlink_init();
+	if (result)
+		goto destroy_wq;
+
 	result = thermal_register_governors();
 	if (result)
 		goto destroy_wq;
@@ -2316,12 +2320,10 @@ error:
 	return result;
 }
 
-static void thermal_exit(void)
+static void __maybe_unused thermal_exit(void)
 {
 	unregister_pm_notifier(&thermal_pm_nb);
-	of_thermal_destroy_zones();
 	destroy_workqueue(thermal_passive_wq);
-	genetlink_exit();
 	destroy_thermal_message_node();
 	class_unregister(&thermal_class);
 	thermal_debug_exit();
@@ -2332,21 +2334,7 @@ static void thermal_exit(void)
 	mutex_destroy(&thermal_governor_lock);
 }
 
-static int __init thermal_netlink_init(void)
-{
-	int ret = 0;
-
-	ret = genetlink_init();
-	if (!ret)
-		goto exit_netlink;
-
-	thermal_exit();
-exit_netlink:
-	return ret;
-}
-
 subsys_initcall(thermal_init);
-fs_initcall(thermal_netlink_init);
 #else
 static int __init thermal_init(void)
 {
