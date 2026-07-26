@@ -887,11 +887,6 @@ int policydb_load_isids(struct policydb *p, struct sidtab *s)
 			sidtab_destroy(s);
 			return -EINVAL;
 		}
-		rc = context_add_hash(p, &c->context[0]);
-		if (rc) {
-			sidtab_destroy(s);
-			goto out;
-		}
 
 		/* Ignore initial SIDs unused by this kernel. */
 		if (!name)

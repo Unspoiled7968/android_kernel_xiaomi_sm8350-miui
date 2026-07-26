@@ -7440,8 +7440,6 @@ static void __init free_area_init_node(int nid)
 	pg_data_t *pgdat = NODE_DATA(nid);
 	unsigned long start_pfn = 0;
 	unsigned long end_pfn = 0;
-	u64 i;
-	phys_addr_t start, end;
 
 	/* pg_data_t should be reset to zero when it's allocated */
 	WARN_ON(pgdat->nr_zones || pgdat->kswapd_highest_zoneidx);
