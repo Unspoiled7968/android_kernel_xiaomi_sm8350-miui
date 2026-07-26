@@ -95,11 +95,10 @@ int dwc3_host_init(struct dwc3 *dwc)
 		props[prop_idx++] = PROPERTY_ENTRY_BOOL("usb2-lpm-disable");
 
 	if (dwc->xhci_imod_value) {
-		imod_prop.name  = "imod-interval-ns";
-		imod_prop.length  = sizeof(u32);
-		imod_prop.is_array = false;
-		imod_prop.type = DEV_PROP_U32;
-		imod_prop.value.u32_data = dwc->xhci_imod_value;
+		/* 5.10 dropped property_entry.is_array / .value.u32_data */
+		imod_prop = (struct property_entry)
+			PROPERTY_ENTRY_U32("imod-interval-ns",
+					   dwc->xhci_imod_value);
 		props[prop_idx++] = imod_prop;
 	}
 
