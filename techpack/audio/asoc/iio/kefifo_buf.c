@@ -141,7 +141,7 @@ static void iio_kefifo_buffer_release(struct iio_buffer *buffer)
 
 static const struct iio_buffer_access_funcs kefifo_access_funcs = {
 	.store_to = &iio_store_to_kefifo,
-	.read_first_n = &iio_read_first_n_kefifo,
+	.read = &iio_read_first_n_kefifo,
 	.data_available = iio_kefifo_buf_data_available,
 	.request_update = &iio_request_update_kefifo,
 	.set_bytes_per_datum = &iio_set_bytes_per_datum_kefifo,

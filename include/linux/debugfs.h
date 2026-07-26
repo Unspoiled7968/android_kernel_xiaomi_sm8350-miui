@@ -405,33 +405,33 @@ static inline void debugfs_create_xul(const char *name, umode_t mode,
 		__dfs_parent;						\
 	})
 
-#define debugfs_create_u8(n, m, p, v)					\
-	__debugfs_ret_parent(debugfs_create_u8, n, m, p, v)
-#define debugfs_create_u16(n, m, p, v)					\
-	__debugfs_ret_parent(debugfs_create_u16, n, m, p, v)
-#define debugfs_create_u32(n, m, p, v)					\
-	__debugfs_ret_parent(debugfs_create_u32, n, m, p, v)
-#define debugfs_create_u64(n, m, p, v)					\
-	__debugfs_ret_parent(debugfs_create_u64, n, m, p, v)
-#define debugfs_create_x8(n, m, p, v)					\
-	__debugfs_ret_parent(debugfs_create_x8, n, m, p, v)
-#define debugfs_create_x16(n, m, p, v)					\
-	__debugfs_ret_parent(debugfs_create_x16, n, m, p, v)
-#define debugfs_create_x32(n, m, p, v)					\
-	__debugfs_ret_parent(debugfs_create_x32, n, m, p, v)
-#define debugfs_create_x64(n, m, p, v)					\
-	__debugfs_ret_parent(debugfs_create_x64, n, m, p, v)
-#define debugfs_create_xul(n, m, p, v)					\
-	__debugfs_ret_parent(debugfs_create_xul, n, m, p, v)
-#define debugfs_create_size_t(n, m, p, v)				\
-	__debugfs_ret_parent(debugfs_create_size_t, n, m, p, v)
-#define debugfs_create_atomic_t(n, m, p, v)				\
-	__debugfs_ret_parent(debugfs_create_atomic_t, n, m, p, v)
-#define debugfs_create_regset32(n, m, p, v)				\
-	__debugfs_ret_parent(debugfs_create_regset32, n, m, p, v)
-#define debugfs_create_u32_array(n, m, p, v, e)				\
-	__debugfs_ret_parent(debugfs_create_u32_array, n, m, p, v, e)
-#define debugfs_create_file_size(n, m, p, d, f, sz)			\
-	__debugfs_ret_parent(debugfs_create_file_size, n, m, p, d, f, sz)
+#define debugfs_create_u8(n, m, p, ...)				\
+	__debugfs_ret_parent(debugfs_create_u8, n, m, p, ##__VA_ARGS__)
+#define debugfs_create_u16(n, m, p, ...)				\
+	__debugfs_ret_parent(debugfs_create_u16, n, m, p, ##__VA_ARGS__)
+#define debugfs_create_u32(n, m, p, ...)				\
+	__debugfs_ret_parent(debugfs_create_u32, n, m, p, ##__VA_ARGS__)
+#define debugfs_create_u64(n, m, p, ...)				\
+	__debugfs_ret_parent(debugfs_create_u64, n, m, p, ##__VA_ARGS__)
+#define debugfs_create_x8(n, m, p, ...)				\
+	__debugfs_ret_parent(debugfs_create_x8, n, m, p, ##__VA_ARGS__)
+#define debugfs_create_x16(n, m, p, ...)				\
+	__debugfs_ret_parent(debugfs_create_x16, n, m, p, ##__VA_ARGS__)
+#define debugfs_create_x32(n, m, p, ...)				\
+	__debugfs_ret_parent(debugfs_create_x32, n, m, p, ##__VA_ARGS__)
+#define debugfs_create_x64(n, m, p, ...)				\
+	__debugfs_ret_parent(debugfs_create_x64, n, m, p, ##__VA_ARGS__)
+#define debugfs_create_xul(n, m, p, ...)				\
+	__debugfs_ret_parent(debugfs_create_xul, n, m, p, ##__VA_ARGS__)
+#define debugfs_create_size_t(n, m, p, ...)				\
+	__debugfs_ret_parent(debugfs_create_size_t, n, m, p, ##__VA_ARGS__)
+#define debugfs_create_atomic_t(n, m, p, ...)				\
+	__debugfs_ret_parent(debugfs_create_atomic_t, n, m, p, ##__VA_ARGS__)
+#define debugfs_create_regset32(n, m, p, ...)				\
+	__debugfs_ret_parent(debugfs_create_regset32, n, m, p, ##__VA_ARGS__)
+#define debugfs_create_u32_array(n, m, p, ...)				\
+	__debugfs_ret_parent(debugfs_create_u32_array, n, m, p, ##__VA_ARGS__)
+#define debugfs_create_file_size(n, m, p, ...)				\
+	__debugfs_ret_parent(debugfs_create_file_size, n, m, p, ##__VA_ARGS__)
 
 #endif
