@@ -3620,7 +3620,7 @@ static int dwc3_msm_resume(struct dwc3_msm *mdwc)
 	if (!mdwc->dual_port)
 		dwc3_pwr_event_handler(mdwc);
 
-	if (pm_qos_request_active(&mdwc->pm_qos_req_dma))
+	if (cpu_latency_qos_request_active(&mdwc->pm_qos_req_dma))
 		schedule_delayed_work(&mdwc->perf_vote_work,
 			msecs_to_jiffies(1000 * PM_QOS_SAMPLE_SEC));
 
@@ -4221,9 +4221,9 @@ static inline const char *usb_role_string(enum usb_role role)
 	return "Invalid";
 }
 
-static enum usb_role dwc3_msm_usb_get_role(struct device *dev)
+static enum usb_role dwc3_msm_usb_get_role(struct usb_role_switch *sw)
 {
-	struct dwc3_msm *mdwc = dev_get_drvdata(dev);
+	struct dwc3_msm *mdwc = usb_role_switch_get_drvdata(sw);
 	struct dwc3 *dwc = platform_get_drvdata(mdwc->dwc3);
 	enum usb_role role;
 
@@ -4238,13 +4238,13 @@ static enum usb_role dwc3_msm_usb_get_role(struct device *dev)
 	return role;
 }
 
-static int dwc3_msm_usb_set_role(struct device *dev, enum usb_role role)
+static int dwc3_msm_usb_set_role(struct usb_role_switch *sw, enum usb_role role)
 {
-	struct dwc3_msm *mdwc = dev_get_drvdata(dev);
+	struct dwc3_msm *mdwc = usb_role_switch_get_drvdata(sw);
 	struct dwc3 *dwc = platform_get_drvdata(mdwc->dwc3);
 	enum usb_role cur_role = USB_ROLE_NONE;
 
-	cur_role = dwc3_msm_usb_get_role(dev);
+	cur_role = dwc3_msm_usb_get_role(sw);
 
 	switch (role) {
 	case USB_ROLE_HOST:
@@ -4861,7 +4861,7 @@ static int dwc3_msm_probe(struct platform_device *pdev)
 	if (of_property_read_bool(node, "qcom,iommu-best-fit-algo"))
 		iommu_dma_enable_best_fit_algo(dev);
 
-	if (dma_set_mask_and_coherent(dev, DMA_BIT_MASK(64))) {
+	if (dma_set_mask_and_coherent(dev, ~0ULL)) {
 		dev_err(&pdev->dev, "setting DMA mask to 64 failed.\n");
 		if (dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32))) {
 			dev_err(&pdev->dev, "setting DMA mask to 32 failed.\n");
@@ -5058,6 +5058,8 @@ static int dwc3_msm_probe(struct platform_device *pdev)
 
 	if (of_property_read_bool(node, "usb-role-switch")) {
 		role_desc.fwnode = dev_fwnode(&pdev->dev);
+		/* 5.10 passes the switch, not the device, to ->get/->set */
+		role_desc.driver_data = mdwc;
 		mdwc->role_switch = usb_role_switch_register(mdwc->dev,
 								&role_desc);
 		if (IS_ERR(mdwc->role_switch)) {
