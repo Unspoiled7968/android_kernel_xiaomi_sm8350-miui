@@ -283,7 +283,7 @@ static int app_blk_server_do_read(struct neuron_application *app_dev,
 	if (ret)
 		return ret;
 
-	generic_make_request(bio);
+	submit_bio_noacct(bio);
 
 	return 0;
 }
@@ -312,7 +312,7 @@ static int app_blk_server_do_write(struct neuron_application *app_dev,
 	if (ret)
 		return ret;
 
-	generic_make_request(bio);
+	submit_bio_noacct(bio);
 
 	return 0;
 }
@@ -335,7 +335,7 @@ static int app_blk_server_do_discard(struct neuron_application *app_dev,
 	if (ret)
 		return ret;
 
-	generic_make_request(bio);
+	submit_bio_noacct(bio);
 
 	return 0;
 }
@@ -358,7 +358,7 @@ static int app_blk_server_do_secure_erase(struct neuron_application *app_dev,
 	if (ret)
 		return ret;
 
-	generic_make_request(bio);
+	submit_bio_noacct(bio);
 
 	return 0;
 }
@@ -382,7 +382,7 @@ static int app_blk_server_do_write_same(struct neuron_application *app_dev,
 	if (ret)
 		return ret;
 
-	generic_make_request(bio);
+	submit_bio_noacct(bio);
 
 	return 0;
 }
@@ -404,7 +404,7 @@ static int app_blk_server_do_write_zeroes(struct neuron_application *app_dev,
 					 req_id, start, 0, flags, NULL);
 	if (ret)
 		return ret;
-	generic_make_request(bio);
+	submit_bio_noacct(bio);
 
 	return 0;
 }
@@ -441,7 +441,7 @@ static int app_blk_server_get_bd_params(struct neuron_application *app_dev,
 	params->physical_block_size = bdev_physical_block_size(blk_dev->bdev);
 	blk_dev->sector_size = bdev_logical_block_size(blk_dev->bdev);
 
-	params->alignment_offset = blk_dev->bdev->bd_part->alignment_offset;
+	params->alignment_offset = bdev_alignment_offset(blk_dev->bdev);
 	params->read_only = bdev_read_only(blk_dev->bdev);
 	params->num_device_sectors = blk_dev->bdev->bd_part->nr_sects;
 
