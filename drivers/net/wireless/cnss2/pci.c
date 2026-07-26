@@ -36,7 +36,7 @@
 
 #define PCI_DMA_MASK_32_BIT		DMA_BIT_MASK(32)
 #define PCI_DMA_MASK_36_BIT		DMA_BIT_MASK(36)
-#define PCI_DMA_MASK_64_BIT		DMA_BIT_MASK(64)
+#define PCI_DMA_MASK_64_BIT		(~0ULL)
 
 #define MHI_NODE_NAME			"qcom,mhi"
 #define MHI_MSI_NAME			"MHI"
@@ -3055,7 +3055,7 @@ int cnss_pci_unregister_driver_hdlr(struct cnss_pci_data *pci_priv)
 #if IS_ENABLED(CONFIG_PCI_MSM)
 static bool cnss_pci_is_drv_supported(struct cnss_pci_data *pci_priv)
 {
-	struct pci_dev *root_port = pci_find_pcie_root_port(pci_priv->pci_dev);
+	struct pci_dev *root_port = pcie_find_root_port(pci_priv->pci_dev);
 	struct cnss_plat_data *plat_priv = pci_priv->plat_priv;
 	struct device_node *root_of_node;
 	bool drv_supported = false;
@@ -4467,7 +4467,7 @@ int cnss_smmu_map(struct device *dev,
 
 	if (!test_bit(DISABLE_IO_COHERENCY,
 		      &plat_priv->ctrl_params.quirks)) {
-		root_port = pci_find_pcie_root_port(pci_priv->pci_dev);
+		root_port = pcie_find_root_port(pci_priv->pci_dev);
 		if (!root_port) {
 			cnss_pr_err("Root port is null, so dma_coherent is disabled\n");
 		} else {
