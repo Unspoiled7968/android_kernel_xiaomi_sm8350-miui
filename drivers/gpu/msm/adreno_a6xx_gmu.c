@@ -3,6 +3,7 @@
  * Copyright (c) 2018-2021, The Linux Foundation. All rights reserved.
  */
 
+#include <linux/dma-map-ops.h>
 #include <linux/clk.h>
 #include <linux/component.h>
 #include <linux/delay.h>

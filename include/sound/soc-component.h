@@ -355,6 +355,16 @@ int snd_soc_component_init(struct snd_soc_component *component);
 /* component IO */
 unsigned int snd_soc_component_read(struct snd_soc_component *component,
 				      unsigned int reg);
+
+/*
+ * 5.10 renamed snd_soc_component_read32() to snd_soc_component_read();
+ * keep the old name for the downstream QC audio codecs (27 files).
+ */
+static inline unsigned int
+snd_soc_component_read32(struct snd_soc_component *component, unsigned int reg)
+{
+	return snd_soc_component_read(component, reg);
+}
 int snd_soc_component_write(struct snd_soc_component *component,
 			    unsigned int reg, unsigned int val);
 int snd_soc_component_update_bits(struct snd_soc_component *component,
