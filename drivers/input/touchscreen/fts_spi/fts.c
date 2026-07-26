@@ -2597,7 +2597,7 @@ static int fts_read_thp_frame(struct fts_ts_info *info)
 	int crc = 0;
 	int retry = 3;
 	static u64 thp_cnt = 0;
-	struct timespec ts;
+	struct timespec64 ts;
 	struct rtc_time tm;
 
 	force_len = getForceLen();
@@ -2616,9 +2616,9 @@ static int fts_read_thp_frame(struct fts_ts_info *info)
 		}
 		crc = thp_crc32_check((int *)(&info->thp_frame.thp_frame_buf[0x14]), node_data_size / 4 -5);
 		if (crc == ((int *)info->thp_frame.thp_frame_buf)[1]) {
-			getnstimeofday(&ts);
-			info->thp_frame.time_ns = timespec_to_ns(&ts);
-			rtc_time_to_tm(ts.tv_sec, &tm);
+			ktime_get_real_ts64(&ts);
+			info->thp_frame.time_ns = timespec64_to_ns(&ts);
+			rtc_time64_to_tm(ts.tv_sec, &tm);
 			info->thp_frame.frm_cnt = thp_cnt++;
 			/*
 			printk("raw time[%d-%02d-%02d %02d:%02d:%02d.%06lu]\n",
@@ -2645,7 +2645,7 @@ static int fts_read_thp_frame(struct fts_ts_info *info)
 	logError(0, "%s %s row:%d col:%d\n", tag, __func__,  info->thp_frame.thp_frame_buf[0x30], info->thp_frame.thp_frame_buf[0x31]);
 	logError(0, "%s %s frame no:%d\n", tag, __func__,	((short *)info->thp_frame.thp_frame_buf)[14]);
 */
-	return node_data_size + sizeof(long long) + sizeof(struct timeval);
+	return node_data_size + sizeof(long long) + sizeof(struct timespec64);
 }
 
 static const char *fts_get_config(struct fts_ts_info *info);

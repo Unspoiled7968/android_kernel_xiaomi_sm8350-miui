@@ -1097,7 +1097,7 @@ static int32_t event_show(struct seq_file *m, void *v)
 
 	if (event_info->state == EVENT_INIT)
 		return 0;
-	rtc_time_to_tm(event_info->touch_time.tv_sec, &tm);
+	rtc_time64_to_tm(event_info->touch_time.tv_sec, &tm);
 	seq_printf(m, "%d-%02d-%02d %02d:%02d:%02d.%09lu UTC Finger (%2d) %s\n",
 		tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
 		tm.tm_hour, tm.tm_min, tm.tm_sec, event_info->touch_time.tv_nsec,
@@ -1136,7 +1136,7 @@ void last_touch_events_collect(int slot, int state)
 	event_info = &event->touch_event_buf[event->head];
 	event_info->state = !!state ? EVENT_DOWN : EVENT_UP;
 	event_info->slot = slot;
-	getnstimeofday(&event_info->touch_time);
+	ktime_get_real_ts64(&event_info->touch_time);
 	event->head++;
 	event->head &= LAST_TOUCH_EVENTS_MAX - 1;
 }
