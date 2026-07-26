@@ -353,8 +353,7 @@ static int hw_info_decrypt_test(char *buf, size_t len)
 	int i;
 	int ret;
 
-	info_manager->tfm = crypto_alloc_cipher("aes",
-			CRYPTO_ALG_TYPE_BLKCIPHER, CRYPTO_ALG_ASYNC);
+	info_manager->tfm = crypto_alloc_cipher("aes", 0, 0);
 	if (IS_ERR(info_manager->tfm)) {
 		ret = -EINVAL;
 		goto out;
@@ -432,9 +431,8 @@ static ssize_t hw_info_show(struct kobject *kobj,
 		return 0;
 	}
 
-	/* Allocate transform for AES CRYPTO_ALG_TYPE_BLKCIPHER */
-	info_manager->tfm = crypto_alloc_cipher("aes",
-			CRYPTO_ALG_TYPE_BLKCIPHER, CRYPTO_ALG_ASYNC);
+	/* Allocate transform for AES single-block cipher */
+	info_manager->tfm = crypto_alloc_cipher("aes", 0, 0);
 	if (IS_ERR(info_manager->tfm)) {
 		return 0;
 	}

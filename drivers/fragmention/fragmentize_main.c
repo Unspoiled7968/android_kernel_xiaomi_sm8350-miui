@@ -98,7 +98,7 @@ static int __init fragmentize_init(void)
 				&fragmentize_attr_group);
 	if (ret < 0) {
 		kobject_put(fragmentize_kobj);
-		pr_warning("Error creating sysfs group");
+		pr_warn("Error creating sysfs group");
 		return -1;
 	}
 

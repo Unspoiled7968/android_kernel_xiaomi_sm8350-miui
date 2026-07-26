@@ -1370,6 +1370,9 @@ static inline void snd_pcm_limit_isa_dma_size(int dma, size_t *max)
 					 (IEC958_AES1_CON_PCM_CODER<<8)|\
 					 (IEC958_AES3_CON_FS_48000<<24))
 
+/* dropped upstream in 5.10; the QCOM LSM drivers still use it */
+#define PCM_RUNTIME_CHECK(sub)	snd_BUG_ON(!(sub) || !(sub)->runtime)
+
 const char *snd_pcm_format_name(snd_pcm_format_t format);
 
 /**
