@@ -3257,7 +3257,7 @@ static int msm_dai_q6_set_channel_map(struct snd_soc_dai *dai,
 }
 
 static int msm_dai_q6_spk_digital_mute(struct snd_soc_dai *dai,
-				       int mute)
+				       int mute, int stream)
 {
 	int port_id = dai->id;
 	struct msm_dai_q6_dai_data *dai_data = dev_get_drvdata(dai->dev);
@@ -3282,7 +3282,8 @@ static struct snd_soc_dai_ops msm_dai_slimbus_0_rx_ops = {
 	.shutdown	= msm_dai_q6_shutdown,
 	.set_fmt	= msm_dai_q6_set_fmt,
 	.set_channel_map = msm_dai_q6_set_channel_map,
-	.digital_mute = msm_dai_q6_spk_digital_mute,
+	.mute_stream = msm_dai_q6_spk_digital_mute,
+	.no_capture_mute = 1,
 };
 
 static int msm_dai_q6_cal_info_put(struct snd_kcontrol *kcontrol,
@@ -15404,7 +15405,7 @@ static void msm_dai_q6_cdc_dma_shutdown(struct snd_pcm_substream *substream,
 }
 
 static int msm_dai_q6_cdc_dma_digital_mute(struct snd_soc_dai *dai,
-				       int mute)
+				       int mute, int stream)
 {
 	int port_id = dai->id;
 	struct msm_dai_q6_cdc_dma_dai_data *dai_data =
@@ -15428,7 +15429,8 @@ static struct snd_soc_dai_ops msm_dai_q6_cdc_wsa_dma_ops = {
 	.hw_params        = msm_dai_q6_cdc_dma_hw_params,
 	.shutdown         = msm_dai_q6_cdc_dma_shutdown,
 	.set_channel_map = msm_dai_q6_cdc_dma_set_channel_map,
-	.digital_mute = msm_dai_q6_cdc_dma_digital_mute,
+	.mute_stream = msm_dai_q6_cdc_dma_digital_mute,
+	.no_capture_mute = 1,
 };
 
 static struct snd_soc_dai_driver msm_dai_q6_cdc_dma_dai[] = {

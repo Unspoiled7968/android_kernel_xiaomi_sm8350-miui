@@ -1818,7 +1818,7 @@ static int cs35l45_dai_startup(struct snd_pcm_substream *substream,
 	return 0;
 }
 
-static int cs35l45_dai_digital_mute(struct snd_soc_dai *dai, int mute)
+static int cs35l45_dai_digital_mute(struct snd_soc_dai *dai, int mute, int stream)
 {
 	struct cs35l45_private *cs35l45 = snd_soc_component_get_drvdata(dai->component);
 	unsigned int dv;
@@ -1867,7 +1867,8 @@ static const struct snd_soc_dai_ops cs35l45_dai_ops = {
 	.hw_params = cs35l45_dai_hw_params,
 	.set_tdm_slot = cs35l45_dai_set_tdm_slot,
 	.set_sysclk = cs35l45_dai_set_sysclk,
-	.digital_mute = cs35l45_dai_digital_mute,
+	.mute_stream = cs35l45_dai_digital_mute,
+	.no_capture_mute = 1,
 };
 
 #define CS35L45_FORMATS (SNDRV_PCM_FMTBIT_S16_LE | \

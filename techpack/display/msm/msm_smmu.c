@@ -21,6 +21,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/msm_dma_iommu_mapping.h>
 #include <linux/dma-mapping.h>
+#include <linux/dma-map-ops.h>
 
 #include <soc/qcom/secure_buffer.h>
 
@@ -523,7 +524,7 @@ static int msm_smmu_probe(struct platform_device *pdev)
 		client->dev->dma_parms = devm_kzalloc(client->dev,
 				sizeof(*client->dev->dma_parms), GFP_KERNEL);
 	dma_set_max_seg_size(client->dev, DMA_BIT_MASK(32));
-	dma_set_seg_boundary(client->dev, (unsigned long)DMA_BIT_MASK(64));
+	dma_set_seg_boundary(client->dev, ~0UL);
 
 	iommu_set_fault_handler(client->domain,
 			msm_smmu_fault_handler, (void *)client);
