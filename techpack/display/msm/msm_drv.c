@@ -40,6 +40,7 @@
 #include <linux/of_address.h>
 #include <linux/kthread.h>
 #include <uapi/linux/sched/types.h>
+#include <drm/drm_irq.h>
 #include <drm/drm_of.h>
 #include <drm/drm_auth.h>
 #include <drm/drm_probe_helper.h>
