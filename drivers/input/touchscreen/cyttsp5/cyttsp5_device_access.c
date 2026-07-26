@@ -1805,8 +1805,9 @@ static ssize_t cyttsp5_cmcp_test_store(struct device *dev,
 	 * If it is not all Test, then range_check should be 0
 	 * because other test does not has concept of basic check
 	 */
-	if (test_item > 0 && test_item < 5)
+	if (test_item > 0 && test_item < 5) {
 		range_check = 0;
+	}
 		dad->cmcp_test_items = test_item;
 		dad->cmcp_range_check = range_check;
 		dad->cmcp_force_calibrate = force_calibrate;
@@ -2025,11 +2026,12 @@ int save_engineering_data(struct device *dev, char *out_buf, int index,
 						index = prepare_print_data(
 							out_buf,
 							&tmp, index, 1);
-					for (j = 1; j < tx_num; j++)
+					for (j = 1; j < tx_num; j++) {
 						index = prepare_print_data(
 						out_buf,
 			&cmcp_info->cm_sensor_column_delta[(j-1)*rx_num+i],
 						index, 1);
+					}
 						index = prepare_print_string(
 								out_buf,
 								"\n", index);

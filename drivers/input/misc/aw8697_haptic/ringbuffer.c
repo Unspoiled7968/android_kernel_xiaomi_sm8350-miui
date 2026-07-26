@@ -12,7 +12,9 @@
 #include <linux/errno.h>
 #include "ringbuffer.h"
 
+#ifndef MIN	/* 5.10 defines MIN in <linux/minmax.h> */
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
+#endif
 
 #define BUFFER_SIZE (1024 * 8 + 1)
 
