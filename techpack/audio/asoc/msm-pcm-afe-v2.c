@@ -126,7 +126,7 @@ static enum hrtimer_restart afe_hrtimer_rec_callback(struct hrtimer *hrt)
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
 	u32 mem_map_handle = 0;
-	int port_id = rtd->cpu_dai->id;
+	int port_id = asoc_rtd_to_cpu(rtd, 0)->id;
 	int ret;
 
 	mem_map_handle = afe_req_mmap_handle(prtd->audio_client);
@@ -270,7 +270,7 @@ static void pcm_afe_process_rx_pkt(uint32_t opcode,
 	substream =  prtd->substream;
 	runtime = substream->runtime;
 	rtd = substream->private_data;
-	port_id = rtd->cpu_dai->id;
+	port_id = asoc_rtd_to_cpu(rtd, 0)->id;
 	pr_debug("%s\n", __func__);
 	spin_lock_irqsave(&prtd->dsp_lock, dsp_flags);
 	switch (opcode) {
@@ -371,7 +371,7 @@ static int msm_afe_playback_prepare(struct snd_pcm_substream *substream)
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct pcm_afe_info *prtd = runtime->private_data;
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_dai *dai = rtd->cpu_dai;
+	struct snd_soc_dai *dai = asoc_rtd_to_cpu(rtd, 0);
 	int ret = 0;
 
 	pr_debug("%s: sample_rate=%d\n", __func__, runtime->rate);
@@ -393,7 +393,7 @@ static int msm_afe_capture_prepare(struct snd_pcm_substream *substream)
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct pcm_afe_info *prtd = runtime->private_data;
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_dai *dai = rtd->cpu_dai;
+	struct snd_soc_dai *dai = asoc_rtd_to_cpu(rtd, 0);
 	int ret = 0;
 
 	pr_debug("%s\n", __func__);
@@ -551,7 +551,7 @@ static int msm_afe_capture_copy(struct snd_pcm_substream *substream,
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct pcm_afe_info *prtd = runtime->private_data;
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	int port_id = rtd->cpu_dai->id;
+	int port_id = asoc_rtd_to_cpu(rtd, 0)->id;
 	char *hwbuf = runtime->dma_area + hwoff;
 	u32 mem_map_handle = 0;
 
@@ -648,7 +648,7 @@ static int msm_afe_close(struct snd_pcm_substream *substream)
 		return -EINVAL;
 	}
 	rtd = substream->private_data;
-	dai = rtd->cpu_dai;
+	dai = asoc_rtd_to_cpu(rtd, 0);
 	runtime = substream->runtime;
 	prtd = runtime->private_data;
 

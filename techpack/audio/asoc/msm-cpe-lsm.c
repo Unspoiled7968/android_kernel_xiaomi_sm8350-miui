@@ -353,8 +353,8 @@ static int msm_cpe_lsm_lab_stop(struct snd_pcm_substream *substream)
 	lsm_ops = &cpe->lsm_ops;
 	afe_ops = &cpe->afe_ops;
 	session = lsm_d->lsm_session;
-	if (rtd->cpu_dai)
-		dma_data = snd_soc_dai_get_dma_data(rtd->cpu_dai,
+	if (asoc_rtd_to_cpu(rtd, 0))
+		dma_data = snd_soc_dai_get_dma_data(asoc_rtd_to_cpu(rtd, 0),
 					substream);
 	if (!dma_data || !dma_data->dai_channel_ctl) {
 		dev_err(rtd->dev,
@@ -398,7 +398,7 @@ static int msm_cpe_lsm_lab_stop(struct snd_pcm_substream *substream)
 			"%s: PRE ch teardown failed, err = %d\n",
 			__func__, rc);
 	/* continue with teardown even if any intermediate step fails */
-	rc = dma_data->dai_channel_ctl(dma_data, rtd->cpu_dai, false);
+	rc = dma_data->dai_channel_ctl(dma_data, asoc_rtd_to_cpu(rtd, 0), false);
 	if (rc)
 		dev_err(rtd->dev,
 			"%s: open data failed %d\n", __func__, rc);
@@ -595,8 +595,8 @@ static int msm_cpe_lab_thread(void *data)
 	}
 
 	rtd = substream->private_data;
-	if (rtd->cpu_dai)
-		dma_data = snd_soc_dai_get_dma_data(rtd->cpu_dai,
+	if (asoc_rtd_to_cpu(rtd, 0))
+		dma_data = snd_soc_dai_get_dma_data(asoc_rtd_to_cpu(rtd, 0),
 					substream);
 	if (!dma_data || !dma_data->dai_channel_ctl) {
 		pr_err("%s: dma_data is not set\n", __func__);
@@ -617,7 +617,7 @@ static int msm_cpe_lab_thread(void *data)
 		goto done;
 	}
 
-	rc = dma_data->dai_channel_ctl(dma_data, rtd->cpu_dai, true);
+	rc = dma_data->dai_channel_ctl(dma_data, asoc_rtd_to_cpu(rtd, 0), true);
 	if (rc) {
 		dev_err(rtd->dev,
 			"%s: open data failed %d\n", __func__, rc);
@@ -1104,8 +1104,8 @@ static int msm_cpe_lsm_ioctl_shared(struct snd_pcm_substream *substream,
 			"%s: %s, lab_enable = %d\n",
 			__func__, "SNDRV_LSM_LAB_CONTROL",
 			session->lab_enable);
-		if (rtd->cpu_dai)
-			dma_data = snd_soc_dai_get_dma_data(rtd->cpu_dai,
+		if (asoc_rtd_to_cpu(rtd, 0))
+			dma_data = snd_soc_dai_get_dma_data(asoc_rtd_to_cpu(rtd, 0),
 						substream);
 		if (!dma_data || !dma_data->dai_channel_ctl) {
 			dev_err(rtd->dev,
@@ -1267,7 +1267,7 @@ static int msm_cpe_lsm_ioctl_shared(struct snd_pcm_substream *substream,
 					"%s: Lab Disable Failed rc %d\n",
 				       __func__, rc);
 
-			dma_data = snd_soc_dai_get_dma_data(rtd->cpu_dai,
+			dma_data = snd_soc_dai_get_dma_data(asoc_rtd_to_cpu(rtd, 0),
 							substream);
 			if (!dma_data || !dma_data->dai_channel_ctl)
 				dev_err(rtd->dev,
