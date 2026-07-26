@@ -108,6 +108,16 @@ struct qcom_wdt_ops {
  *	Require userspace to write to a sysfs file every pet_time milliseconds.
  *	Disabled by default on boot.
  */
+/*
+ * arm64 moved NR_IPI into a private enum in arch/arm64/kernel/smp.c in 5.10.
+ * It is 7 there (RESCHEDULE, CALL_FUNC, CPU_STOP, CPU_CRASH_STOP, TIMER,
+ * IRQ_WORK, WAKEUP); this only sizes a statistics array, so a fixed bound is
+ * fine as long as it is >= the real count.
+ */
+#ifndef NR_IPI
+#define NR_IPI 7
+#endif
+
 struct msm_watchdog_data {
 	void __iomem *base;
 	struct device *dev;

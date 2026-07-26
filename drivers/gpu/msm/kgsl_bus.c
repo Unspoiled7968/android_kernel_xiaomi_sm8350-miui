@@ -6,6 +6,7 @@
 
 #include <linux/interconnect.h>
 #include <linux/of.h>
+#include <linux/slab.h>
 #include <linux/devfreq.h>
 
 #include "../../devfreq/governor.h"
@@ -65,8 +66,8 @@ static void set_ddr_qos(struct kgsl_device *device, int buslevel)
 	 * Update both min/max to make sure correct vote is set regardless
 	 * of the governor, which can be changed from sysfs
 	 */
-	dev->min_freq = new_min_freq;
-	dev->max_freq = new_min_freq;
+	dev->scaling_min_freq = new_min_freq;
+	dev->scaling_max_freq = new_min_freq;
 	ret = update_devfreq(dev);
 	mutex_unlock(&dev->lock);
 	event_mutex_unlock(dev);
