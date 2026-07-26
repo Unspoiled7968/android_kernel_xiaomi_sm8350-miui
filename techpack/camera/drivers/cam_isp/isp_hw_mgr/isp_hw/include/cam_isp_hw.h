@@ -7,6 +7,7 @@
 #define _CAM_ISP_HW_H_
 
 #include <linux/completion.h>
+#include <linux/time64.h>
 #include <media/cam_isp.h>
 #include "cam_hw.h"
 #include "cam_soc_util.h"
@@ -26,8 +27,8 @@
  * @ticks:              Qtimer ticks
  */
 struct cam_isp_timestamp {
-	struct timeval          mono_time;
-	struct timeval          vt_time;
+	struct timespec64       mono_time;
+	struct timespec64       vt_time;
 	uint64_t                ticks;
 };
 

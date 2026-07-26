@@ -134,14 +134,11 @@ static inline void adsp_err_check_panic(u32 adsp_error) {}
 #define ADSP_ERR_LIMITED_TIME		(1)
 static int err_count = 0;
 static long long err_total_count = 0;
-static __kernel_time_t last_time = 0;
+static time64_t last_time = 0;
 static void adsp_err_check_restart(u32 adsp_error)
 {
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0))
 	struct timespec64 curtime;
-#else
-	struct timeval curtime;
-#endif
+
 	pr_err("%s: DSP returned error adsp_err = 0x%x total = %lld\n", __func__, adsp_error, err_total_count);
 
 	if (adsp_error == ADSP_ENEEDMORE || adsp_error == ADSP_ENOMEMORY) {
@@ -149,11 +146,7 @@ static void adsp_err_check_restart(u32 adsp_error)
 		err_total_count++;
 		pr_err("%s: DSP returned error ADSP_ENEEDMORE or ADSP_ENOMEMORY adsp_err=0x%x\n",
 			__func__, adsp_error);
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0))
 		ktime_get_real_ts64(&curtime);
-#else
-		do_gettimeofday(&curtime);
-#endif
 		pr_err("%s: err_count = %d [%lld - %lld = %lld]\n", __func__,
 			err_count, curtime.tv_sec, last_time, curtime.tv_sec - last_time);
 

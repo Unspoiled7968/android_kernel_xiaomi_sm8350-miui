@@ -21,6 +21,7 @@
 #include <linux/interrupt.h>
 #include <linux/irq.h>
 #include <linux/delay.h>
+#include <linux/timekeeping.h>
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
 #include <linux/iio/trigger.h>
@@ -154,9 +155,10 @@ int us_afe_callback(int data)
 {
 	int ret;
 	struct us_prox_el_data el_data;
-	struct timespec ts;
-	getnstimeofday(&ts);
-	el_data.timestamp = timespec_to_ns(&ts);
+	struct timespec64 ts;
+
+	ktime_get_real_ts64(&ts);
+	el_data.timestamp = timespec64_to_ns(&ts);
 	pr_info("%s: data = %d\n", __func__, data);
 
 	if (!data)

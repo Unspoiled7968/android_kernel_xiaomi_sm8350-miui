@@ -261,10 +261,10 @@ static inline int q6asm_get_flag_from_token(union asm_token_struct *asm_token,
 #define OUT_BUFFER_SIZE 56
 #define IN_BUFFER_SIZE 24
 
-static struct timeval out_cold_tv;
-static struct timeval out_warm_tv;
-static struct timeval out_cont_tv;
-static struct timeval in_cont_tv;
+static struct timespec64 out_cold_tv;
+static struct timespec64 out_warm_tv;
+static struct timespec64 out_cont_tv;
+static struct timespec64 in_cont_tv;
 static long out_enable_flag;
 static long in_enable_flag;
 static struct dentry *out_dentry;
@@ -293,9 +293,10 @@ static ssize_t audio_output_latency_dbgfs_read(struct file *file,
 						OUT_BUFFER_SIZE, count);
 		return 0;
 	}
-	snprintf(out_buffer, OUT_BUFFER_SIZE, "%ld,%ld,%ld,%ld,%ld,%ld,",
-		out_cold_tv.tv_sec, out_cold_tv.tv_usec, out_warm_tv.tv_sec,
-		out_warm_tv.tv_usec, out_cont_tv.tv_sec, out_cont_tv.tv_usec);
+	snprintf(out_buffer, OUT_BUFFER_SIZE, "%lld,%ld,%lld,%ld,%lld,%ld,",
+		out_cold_tv.tv_sec, out_cold_tv.tv_nsec / NSEC_PER_USEC,
+		out_warm_tv.tv_sec, out_warm_tv.tv_nsec / NSEC_PER_USEC,
+		out_cont_tv.tv_sec, out_cont_tv.tv_nsec / NSEC_PER_USEC);
 	return  simple_read_from_buffer(buf, OUT_BUFFER_SIZE, ppos,
 						out_buffer, OUT_BUFFER_SIZE);
 }
@@ -350,8 +351,9 @@ static ssize_t audio_input_latency_dbgfs_read(struct file *file,
 						IN_BUFFER_SIZE, count);
 		return 0;
 	}
-	snprintf(in_buffer, IN_BUFFER_SIZE, "%ld,%ld,",
-				in_cont_tv.tv_sec, in_cont_tv.tv_usec);
+	snprintf(in_buffer, IN_BUFFER_SIZE, "%lld,%ld,",
+				in_cont_tv.tv_sec,
+				in_cont_tv.tv_nsec / NSEC_PER_USEC);
 	return  simple_read_from_buffer(buf, IN_BUFFER_SIZE, ppos,
 						in_buffer, IN_BUFFER_SIZE);
 }
@@ -388,29 +390,27 @@ static const struct file_operations audio_input_latency_debug_fops = {
 };
 
 /*
- * get_monotonic_timeval -
- *       This method returns a structure in timeval
- *       format (sec,microsec) by using ktime kernel
+ * get_monotonic_timespec64 -
+ *       This method returns a structure in timespec64
+ *       format (sec,nanosec) by using ktime kernel
  *       API to get time in nano secs and then converts
- *       it to timeval format
+ *       it to timespec64 format
  *
- * ktime_get [nsec]-> ktime_to_timespec [sec,nsec]-> timeval[sec,usec]
+ * ktime_get [nsec]-> ktime_to_timespec64 [sec,nsec]
  *
- * Returns struct timeval
+ * Returns struct timespec64
 */
-static struct timeval get_monotonic_timeval(void)
+static struct timespec64 get_monotonic_timespec64(void)
 {
-	static struct timeval out_tval;
+	static struct timespec64 out_tval;
 
 	/* Get time from monotonic clock in nanoseconds */
 	ktime_t kTimeNsec = ktime_get();
 
-	/* Convert it to timespec format and later to timeval as expected by audio HAL */
-	struct timespec temp_tspec = ktime_to_timespec(kTimeNsec);
-
-	/* Time returned above is in sec,nanosec format, needs to convert to sec,microsec */
-	out_tval.tv_usec = temp_tspec.tv_nsec/1000;
-	out_tval.tv_sec = temp_tspec.tv_sec;
+	/* Convert it to sec,nanosec format; callers scale to microsec
+	 * when reporting to the audio HAL
+	 */
+	out_tval = ktime_to_timespec64(kTimeNsec);
 	return out_tval;
 }
 
@@ -421,10 +421,10 @@ static void config_debug_fs_write_cb(void)
 		 * out_cold_index
 		 */
 		if (out_cold_index != 1) {
-			out_cold_tv = get_monotonic_timeval();
-			pr_debug("COLD: apr_send_pkt at %ld sec %ld microsec\n",
+			out_cold_tv = get_monotonic_timespec64();
+			pr_debug("COLD: apr_send_pkt at %lld sec %ld microsec\n",
 				out_cold_tv.tv_sec,
-				out_cold_tv.tv_usec);
+				out_cold_tv.tv_nsec / NSEC_PER_USEC);
 			out_cold_index = 1;
 		}
 		pr_debug("%s: out_enable_flag %ld\n",
@@ -446,10 +446,10 @@ static void config_debug_fs_read_cb(void)
 		 * Hence continuous input latency
 		 */
 		if (in_cont_index == 7) {
-			in_cont_tv = get_monotonic_timeval();
-			pr_info("%s: read buffer at %ld sec %ld microsec\n",
-				__func__,
-				in_cont_tv.tv_sec, in_cont_tv.tv_usec);
+			in_cont_tv = get_monotonic_timespec64();
+			pr_info("%s: read buffer at %lld sec %ld microsec\n",
+				__func__, in_cont_tv.tv_sec,
+				in_cont_tv.tv_nsec / NSEC_PER_USEC);
 		}
 		in_cont_index++;
 	}
@@ -463,9 +463,10 @@ static void config_debug_fs_reset_index(void)
 static void config_debug_fs_run(void)
 {
 	if (out_enable_flag) {
-		out_cold_tv = get_monotonic_timeval();
-		pr_debug("%s: COLD apr_send_pkt at %ld sec %ld microsec\n",
-			__func__, out_cold_tv.tv_sec, out_cold_tv.tv_usec);
+		out_cold_tv = get_monotonic_timespec64();
+		pr_debug("%s: COLD apr_send_pkt at %lld sec %ld microsec\n",
+			__func__, out_cold_tv.tv_sec,
+			out_cold_tv.tv_nsec / NSEC_PER_USEC);
 	}
 }
 
@@ -478,11 +479,11 @@ static void config_debug_fs_write(struct audio_buffer *ab)
 		 */
 		if ((strcmp(((char *)ab->data), zero_pattern)) &&
 		(!strcmp(((char *)ab->data + 2), zero_pattern))) {
-			out_warm_tv = get_monotonic_timeval();
-			pr_debug("%s: WARM:apr_send_pkt at %ld sec %ld microsec\n",
+			out_warm_tv = get_monotonic_timespec64();
+			pr_debug("%s: WARM:apr_send_pkt at %lld sec %ld microsec\n",
 			 __func__,
 			 out_warm_tv.tv_sec,
-			out_warm_tv.tv_usec);
+			out_warm_tv.tv_nsec / NSEC_PER_USEC);
 			pr_debug("%s: Warm Pattern Matched\n", __func__);
 		}
 		/* If First two byte is zero and last two byte is
@@ -490,11 +491,11 @@ static void config_debug_fs_write(struct audio_buffer *ab)
 		 */
 		else if ((!strcmp(((char *)ab->data), zero_pattern))
 		&& (strcmp(((char *)ab->data + 2), zero_pattern))) {
-			out_cont_tv = get_monotonic_timeval();
-			pr_debug("%s: CONT:apr_send_pkt at %ld sec %ld microsec\n",
+			out_cont_tv = get_monotonic_timespec64();
+			pr_debug("%s: CONT:apr_send_pkt at %lld sec %ld microsec\n",
 			__func__,
 			out_cont_tv.tv_sec,
-			out_cont_tv.tv_usec);
+			out_cont_tv.tv_nsec / NSEC_PER_USEC);
 			pr_debug("%s: Cont Pattern Matched\n", __func__);
 		}
 	}
