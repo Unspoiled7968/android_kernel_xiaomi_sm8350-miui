@@ -27,6 +27,23 @@ kernel/sched/walt + hooks in core/fair/rt/schedutil; ION/msm_dma_iommu; minidump
 Xiaomi charger/thermal/touch/misc/mi-reclaim; GitHub Actions workflows (KernelSU is
 injected by the workflows at build time — the 5.4 tree never had inline ksu hooks).
 
+## Build-fix status (2026-07-26)
+Around 30 follow-up commits took the tree from "fails at kconfig" to compiling ~770 C files.
+The important ones were not compile errors but silent boot-breakers:
+- `scripts/Makefile.dtbo` used the deprecated `always` variable, so **no dtb/dtbo was built
+  at all** and mkdtboimg produced an empty image.
+- mainline `arm-smmu` has no `qcom,qsmmu-v500`, the compatible both lahaina SMMUs use, so
+  `apps_smmu` would never have probed and all 30 consumers would sit in -EPROBE_DEFER.
+- 5.10's `icc_node_add()` performs an initial hardware sync; the CAF 5.4 RPMh providers were
+  not written for that and would have pushed INT_MAX bandwidth votes into DDR/GEM/MMSS.
+- `qcom_pdc_gic_set_type()` dereferenced `d->parent_data` before the GPIO_NO_WAKE_IRQ check.
+- The merge had lost a closing brace in `__sched_setscheduler()`.
+
+Subsystems re-based on Qualcomm's own msm-5.10 (`clo/kernel.lnx.5.10.r7-rel`, which is itself
+android12-5.10): UFS core from ACK + vendor driver/PHY from CLO; clk/regulator/interconnect
+ported surgically; iommu/pinctrl/pdc/glink ported; display, camera, audio and touch moved off
+`struct timeval`/`getnstimeofday` (both removed for kernel code in 5.10).
+
 ## Known follow-ups for CI build (expected errors)
 - CAF leaf drivers kept wholesale still call some 5.4-era APIs (keyslot-manager in
   ufshcd-crypto/cqhci-crypto-qti, coresight byte-cntr/csr vs 5.10 coresight-core,
@@ -35,6 +52,9 @@ injected by the workflows at build time — the 5.4 tree never had inline ksu ho
   coresight-core.c doesn't implement them (CAF tmc-etr/etf call them).
 - crypto-qti-common.h still includes removed linux/bio-crypt-ctx.h.
 - mm/kasan/shadow.c lacks the 5.4 vendor __GFP_ZERO hotplug hunk (KASAN-only).
+- Degraded on purpose: coresight `*_all_source_link` are no-ops (5.10 removed the machinery),
+  SMMU "fastmap" is inert and CAF SMMU domain attrs (ATOS, secure VMID, dynamic domains) are
+  gone with mainline arm-smmu, so camera/display/kgsl lose those optimisations but still probe.
 - Dropped (deliberate): QCOM_INITIAL_LOGBUF (incompatible with 5.10 printk ringbuffer),
   CAF energy_model debugfs (superseded), CAF arm32 IOMMU-DMA rework (arm64 device),
   wil6210 CAF fork (CONFIG_WIL6210 not set for star), vendor exfat 6.0 (5.10 GKI exfat used).
