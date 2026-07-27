@@ -1,6 +1,7 @@
 # Mi 11 Ultra (star / sm8350) — real Linux 5.10.261 port (branch `5.10.261`)
 
-**Status: EXPERIMENTAL / for testing. Expect build fixups needed; boot untested.**
+**Status: builds clean. `arch/arm64/boot/Image` links and the AnyKernel3 zip packages.
+Boot untested on hardware.**
 
 ## What this branch is
 - Base: `ASB-2024-10-05` = Linux **5.4.283** (CAF msm-5.4 + Xiaomi + EndCredits)
@@ -131,6 +132,25 @@ which is what you want to see: the tree no longer looks like the older kernel.
 Re-run both after any large rebase:
     git clone --depth 1 -b gki-android12-5.10 https://gitlab.com/simonpunk/susfs4ksu.git
     patch -p1 --dry-run -F3 < susfs4ksu/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch
+
+## Build result (2026-07-27)
+A full `clean_build.yml` run compiles every object, links vmlinux and produces
+`arch/arm64/boot/Image`; the flashable zip is packaged. Getting there took ~90 CI rounds
+after the merge. The last things in the way were link-time rather than compile-time:
+
+- `drivers/block/zram/lz4p/lz4p_compress.c` had been overwritten by the merge with
+  `lib/lz4/lz4_compress.c`. That both lost the vendor `LZ4P_compress_default()` entry point
+  `lz4p.c` calls and duplicated the public LZ4 API against lib/lz4. Restoring the vendor file
+  fixed both. Worth remembering: the merge *can* silently swap a vendor file for a
+  same-shaped upstream one - if a vendor symbol goes missing, diff the file against the
+  5.4 base before assuming an API change.
+- `xhci_submit_single_step_set_feature()` disappeared from `xhci-ring.c` while `xhci-hub.c`
+  kept calling it. Restored from the 5.4 tree.
+- `trylock_device_hotplug()` (needed by the vendor `try_online_one_block()`) and
+  `cpu_limits_set_level()` (CAF's `cpu_cooling.c`, which 5.10 replaced with
+  `cpufreq_cooling.c`) had to be written against 5.10's structures.
+- The CAF coresight CTI driver is not in 5.10's Makefile, so its four trigger-mapping
+  helpers are stubs; the tmc sinks only call them with pointers this tree never populates.
 
 ## Safety (flashing)
 - Building/editing source touches no phone. Worst case flashing = bootloop (soft-brick):
