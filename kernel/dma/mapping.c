@@ -16,6 +16,7 @@
 #include <linux/vmalloc.h>
 #include "debug.h"
 #include "direct.h"
+#include <linux/qcom-dma-mapping.h>
 
 /*
  * Managed DMA API
