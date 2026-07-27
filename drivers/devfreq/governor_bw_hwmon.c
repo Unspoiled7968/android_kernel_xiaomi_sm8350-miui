@@ -289,7 +289,7 @@ static unsigned long to_mbps_zone(struct hwmon_node *node, unsigned long mbps)
 		if (node->mbps_zones[i] >= mbps)
 			return node->mbps_zones[i];
 
-	return node->hw->df->max_freq;
+	return node->hw->df->scaling_max_freq;
 }
 
 #define MIN_MBPS	500UL
@@ -620,7 +620,11 @@ static int gov_start(struct devfreq *df)
 	}
 
 	mutex_lock(&df->lock);
-	df->min_freq = df->max_freq;
+	/*
+	 * 5.10 clamps in get_freq_range(), which folds in scaling_min_freq -
+	 * so raising the floor to the ceiling still pins this update to max.
+	 */
+	df->scaling_min_freq = df->scaling_max_freq;
 	update_devfreq(df);
 	mutex_unlock(&df->lock);
 
@@ -886,7 +890,7 @@ static int devfreq_bw_hwmon_ev_handler(struct devfreq *df,
 		dev_dbg(df->dev.parent,
 			"Disabled dev BW HW monitor governor\n");
 		break;
-	case DEVFREQ_GOV_INTERVAL:
+	case DEVFREQ_GOV_UPDATE_INTERVAL:
 		node = df->data;
 		sample_ms = *(unsigned int *)data;
 		if (sample_ms < node->sample_ms) {
@@ -904,7 +908,7 @@ static int devfreq_bw_hwmon_ev_handler(struct devfreq *df,
 		 */
 		hw = node->hw;
 		hw->suspend_hwmon(hw);
-		devfreq_interval_update(df, &sample_ms);
+		devfreq_update_interval(df, &sample_ms);
 		ret = hw->resume_hwmon(hw);
 		if (ret < 0) {
 			dev_err(df->dev.parent,
