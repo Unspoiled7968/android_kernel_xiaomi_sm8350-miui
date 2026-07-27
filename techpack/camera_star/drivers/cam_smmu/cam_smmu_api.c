@@ -29,6 +29,7 @@
 #include "cam_trace.h"
 #include "cam_common_util.h"
 #include <linux/qcom-dma-mapping.h>
+#include <linux/qcom-iommu-util.h>
 
 #define SHARED_MEM_POOL_GRANULARITY 16
 
@@ -365,7 +366,7 @@ static void cam_smmu_page_fault_work(struct work_struct *work)
 	int idx;
 	struct cam_smmu_work_payload *payload;
 	uint32_t buf_info;
-	struct iommu_fault_ids fault_ids = {0, 0, 0};
+	struct qcom_iommu_fault_ids fault_ids = {0, 0, 0};
 	struct cam_smmu_pf_info  pf_info;
 
 	mutex_lock(&iommu_cb_set.payload_list_lock);
@@ -382,7 +383,7 @@ static void cam_smmu_page_fault_work(struct work_struct *work)
 	mutex_unlock(&iommu_cb_set.payload_list_lock);
 
 
-	if ((iommu_get_fault_ids(payload->domain, &fault_ids)))
+	if ((qcom_iommu_get_fault_ids(payload->domain, &fault_ids)))
 		CAM_ERR(CAM_SMMU,
 			"Error: Can not get smmu fault ids");
 
