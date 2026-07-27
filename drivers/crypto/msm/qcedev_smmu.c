@@ -2,7 +2,7 @@
 /*
  * Qti (or) Qualcomm Technologies Inc CE device driver.
  *
- * Copyright (c) 2018-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2018-2021, The Linux Foundation. All rights reserved.
  */
 
 #include <linux/dma-iommu.h>
@@ -12,6 +12,7 @@
 #include "qcedevi.h"
 #include "qcedev_smmu.h"
 #include "soc/qcom/secure_buffer.h"
+#include <linux/mem-buf.h>
 
 static int qcedev_setup_context_bank(struct context_bank_info *cb,
 				struct device *dev)
@@ -130,7 +131,6 @@ static int ion_map_buffer(struct qcedev_handle *qce_hndl,
 		struct qcedev_mem_client *mem_client, int fd,
 		unsigned int fd_size, struct qcedev_reg_buf_info *binfo)
 {
-	unsigned long ion_flags = 0;
 	int rc = 0;
 	struct dma_buf *buf = NULL;
 	struct dma_buf_attachment *attach = NULL;
@@ -141,14 +141,8 @@ static int ion_map_buffer(struct qcedev_handle *qce_hndl,
 	if (IS_ERR_OR_NULL(buf))
 		return -EINVAL;
 
-	rc = dma_buf_get_flags(buf, &ion_flags);
-	if (rc) {
-		pr_err("%s: err: failed to get ion flags: %d\n", __func__, rc);
-		goto map_err;
-	}
-
 	if (is_iommu_present(qce_hndl)) {
-		cb = get_context_bank(qce_hndl, ion_flags & ION_FLAG_SECURE);
+		cb = get_context_bank(qce_hndl, !mem_buf_dma_buf_exclusive_owner(buf));
 		if (!cb) {
 			pr_err("%s: err: failed to get context bank info\n",
 				__func__);
@@ -350,8 +344,12 @@ int qcedev_check_and_map_buffer(void *handle,
 	return 0;
 
 unmap:
-	if (!found)
+	if (!found) {
 		qcedev_unmap_buffer(handle, mem_client, binfo);
+		mutex_lock(&qce_hndl->registeredbufs.lock);
+		list_del(&binfo->list);
+		mutex_unlock(&qce_hndl->registeredbufs.lock);
+	}
 
 error:
 	kfree(binfo);
