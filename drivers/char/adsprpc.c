@@ -6682,8 +6682,8 @@ static int fastrpc_cb_probe(struct device *dev)
 		sess->smmu.dev->dma_parms = devm_kzalloc(sess->smmu.dev,
 			sizeof(*sess->smmu.dev->dma_parms), GFP_KERNEL);
 
-	dma_set_max_seg_size(sess->smmu.dev, DMA_BIT_MASK(32));
-	dma_set_seg_boundary(sess->smmu.dev, (unsigned long)DMA_BIT_MASK(64));
+	dma_set_max_seg_size(sess->smmu.dev, UINT_MAX);
+	dma_set_seg_boundary(sess->smmu.dev, ~0UL);
 
 	of_property_read_u32_array(dev->of_node, "qcom,iommu-dma-addr-pool",
 			dma_addr_pool, 2);
