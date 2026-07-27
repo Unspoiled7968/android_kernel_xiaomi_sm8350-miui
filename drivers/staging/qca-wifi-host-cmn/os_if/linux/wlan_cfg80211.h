@@ -305,6 +305,15 @@ nla_fail:
 #define NLA_EXACT_LEN NLA_UNSPEC
 #endif /*End of (LINUX_VERSION_CODE <= KERNEL_VERSION(4, 20, 0) */
 
+/*
+ * 5.10 dropped the NLA_EXACT_LEN policy type. NLA_UNSPEC with .len set is the
+ * closest survivor: it enforces the minimum length, which is what the handlers
+ * rely on before reading a fixed-size struct out of the attribute.
+ */
+#ifndef NLA_EXACT_LEN
+#define NLA_EXACT_LEN NLA_UNSPEC
+#endif
+
 #if defined(NBUF_MEMORY_DEBUG) && defined(NETLINK_BUF_TRACK)
 #define wlan_cfg80211_vendor_free_skb(skb) \
 	qdf_nbuf_free(skb)

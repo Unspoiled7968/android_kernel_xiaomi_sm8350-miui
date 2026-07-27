@@ -30,11 +30,12 @@ static inline void getnstimeofday(struct timespec *ts)
 }
 
 /*
- * NLA_EXACT_LEN is gone; NLA_BINARY with .len is the closest surviving
- * policy - it caps the attribute at the same length.
+ * NLA_EXACT_LEN is gone. NLA_UNSPEC with .len enforces the minimum length,
+ * which is what the handler needs before reading a fixed-size struct out of
+ * the attribute - and it is what qcacld's own compat picks.
  */
 #ifndef NLA_EXACT_LEN
-#define NLA_EXACT_LEN NLA_BINARY
+#define NLA_EXACT_LEN NLA_UNSPEC
 #endif
 
 #endif /* _RMNET_SHS_COMPAT_H_ */
