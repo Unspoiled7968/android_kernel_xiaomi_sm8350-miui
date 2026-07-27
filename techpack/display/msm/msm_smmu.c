@@ -30,6 +30,7 @@
 #include "msm_mmu.h"
 #include "sde_dbg.h"
 #include <linux/qcom-iommu-util.h>
+#include <linux/qcom-dma-mapping.h>
 
 struct msm_smmu_client {
 	struct device *dev;

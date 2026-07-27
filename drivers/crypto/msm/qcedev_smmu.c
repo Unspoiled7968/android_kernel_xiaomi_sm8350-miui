@@ -14,6 +14,7 @@
 #include "qcedev_smmu.h"
 #include "soc/qcom/secure_buffer.h"
 #include <linux/mem-buf.h>
+#include <linux/qcom-dma-mapping.h>
 
 static int qcedev_setup_context_bank(struct context_bank_info *cb,
 				struct device *dev)

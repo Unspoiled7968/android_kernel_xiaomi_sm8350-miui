@@ -18,6 +18,7 @@
 #include "npu_common.h"
 #include "npu_hw.h"
 #include <linux/qcom-iommu-util.h>
+#include <linux/qcom-dma-mapping.h>
 
 /* -------------------------------------------------------------------------
  * Functions - Register

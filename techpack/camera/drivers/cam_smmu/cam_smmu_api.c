@@ -29,6 +29,7 @@
 #include "cam_trace.h"
 #include "cam_common_util.h"
 #include <linux/qcom-iommu-util.h>
+#include <linux/qcom-dma-mapping.h>
 
 #define SHARED_MEM_POOL_GRANULARITY 16
 

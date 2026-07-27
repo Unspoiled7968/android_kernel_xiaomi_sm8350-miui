@@ -23,6 +23,7 @@
 
 #include "msm_ion_priv.h"
 #include "ion_secure_util.h"
+#include <linux/qcom-dma-mapping.h>
 
 static void *msm_ion_buffer_kmap_get(struct ion_buffer *buffer)
 {

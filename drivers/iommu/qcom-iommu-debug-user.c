@@ -9,6 +9,7 @@
 #include <linux/slab.h>
 #include <linux/qcom-iommu-util.h>
 #include "qcom-iommu-debug.h"
+#include <linux/qcom-dma-mapping.h>
 
 #define kstrtoux kstrtou64
 #define kstrtox_from_user kstrtoull_from_user

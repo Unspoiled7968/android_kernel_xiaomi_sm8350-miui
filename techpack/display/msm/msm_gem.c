@@ -27,6 +27,7 @@
 #include "msm_mmu.h"
 #include "sde_dbg.h"
 #include <linux/qcom-iommu-util.h>
+#include <linux/qcom-dma-mapping.h>
 
 static void msm_gem_vunmap_locked(struct drm_gem_object *obj);
 

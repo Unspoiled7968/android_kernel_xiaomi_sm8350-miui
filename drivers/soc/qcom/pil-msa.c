@@ -24,6 +24,7 @@
 #include "peripheral-loader.h"
 #include "pil-q6v5.h"
 #include "pil-msa.h"
+#include <linux/qcom-dma-mapping.h>
 
 /* Q6 Register Offsets */
 #define QDSP6SS_RST_EVB			0x010

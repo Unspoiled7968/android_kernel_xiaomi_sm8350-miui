@@ -14,6 +14,7 @@
 #include <asm/barrier.h>
 
 #include <linux/msm_dma_iommu_mapping.h>
+#include <linux/qcom-dma-mapping.h>
 
 /**
  * struct msm_iommu_map - represents a mapping of an ion buffer to an iommu

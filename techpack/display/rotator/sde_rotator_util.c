@@ -26,6 +26,7 @@
 #include "sde_rotator_util.h"
 #include "sde_rotator_smmu.h"
 #include "sde_rotator_debug.h"
+#include <linux/qcom-dma-mapping.h>
 
 #define Y_TILEWIDTH     48
 #define Y_TILEHEIGHT    4

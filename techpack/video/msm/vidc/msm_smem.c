@@ -9,6 +9,7 @@
 #include "msm_vidc_debug.h"
 #include "msm_vidc_resources.h"
 #include <linux/qcom-iommu-util.h>
+#include <linux/qcom-dma-mapping.h>
 
 static int msm_dma_get_device_address(struct dma_buf *dbuf, unsigned long align,
 	dma_addr_t *iova, unsigned long *buffer_size,

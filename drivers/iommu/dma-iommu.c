@@ -27,6 +27,7 @@
 #include <linux/crash_dump.h>
 #include <trace/hooks/iommu.h>
 #include <linux/qcom-iommu-util.h>
+#include <linux/qcom-dma-mapping.h>
 
 struct iommu_dma_msi_page {
 	struct list_head	list;
