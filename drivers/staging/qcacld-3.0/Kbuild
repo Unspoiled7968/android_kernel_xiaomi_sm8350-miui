@@ -1868,6 +1868,11 @@ endif
 
 ifeq ($(CONFIG_IPA_OFFLOAD), y)
 DP_OBJS +=     $(DP_SRC)/dp_ipa.o
+# dp_ipa_setup() puts a qdf_ipa_wdi_conn_in_params_t (~2.5K, it holds the
+# union of the smmu and non-smmu pipe descriptions) on the stack. That is over
+# the 2048-byte default warning limit but harmless on arm64's 16K stacks: it is
+# a one-shot setup path, not recursive and not deep.
+CFLAGS_$(DP_SRC)/dp_ipa.o += -Wframe-larger-than=4096
 endif
 
 ifeq ($(CONFIG_WDI_EVENT_ENABLE), y)
