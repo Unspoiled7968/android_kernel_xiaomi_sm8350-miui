@@ -108,6 +108,30 @@ carried *both* the CAF `keyslot_manager *ksm` and 5.10's `blk_keyslot_manager ks
 `cma_alloc()`'s last argument is a gfp_t in this tree, not the old `no_warn` bool - the
 minidump and ION CMA heaps were passing `false`, i.e. no GFP flags at all.
 
+## Proof that this is really 5.10-shaped (re-checked 2026-07-27, after ~40 fix commits)
+`make kernelversion` -> 5.10.261.
+
+Positive control - susfs4ksu's `gki-android12-5.10` patch, 23 files:
+`patch -p1 --dry-run -F3` succeeds on all of them. Only `security/selinux/hooks.c`
+needs the fuzz, and only because this tree wraps the definition in Qualcomm's RTIC
+hardening:
+
+    #ifdef CONFIG_QCOM_RTIC
+    struct selinux_state selinux_state __rticdata;
+    #else
+    struct selinux_state selinux_state;
+    #endif
+
+where stock GKI has the bare line susfs's context expects. That is a vendor difference,
+not a porting defect, and every other hunk lands with only line-number offsets.
+
+Negative control - susfs4ksu's older `kernel-4.19` patch fails 9 hunks against this tree,
+which is what you want to see: the tree no longer looks like the older kernel.
+
+Re-run both after any large rebase:
+    git clone --depth 1 -b gki-android12-5.10 https://gitlab.com/simonpunk/susfs4ksu.git
+    patch -p1 --dry-run -F3 < susfs4ksu/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch
+
 ## Safety (flashing)
 - Building/editing source touches no phone. Worst case flashing = bootloop (soft-brick):
   `fastboot flash boot <stock_boot.img>` recovers. Kernel flash does NOT wipe data
