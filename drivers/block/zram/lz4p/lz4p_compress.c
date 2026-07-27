@@ -39,6 +39,20 @@
 #include <linux/kernel.h>
 #include <asm/unaligned.h>
 
+/*
+ * This is a private copy of the LZ4 compressor for zram's lz4p backend.
+ * lib/lz4 is also built in 5.10, and both define the public LZ4 API, so
+ * keep this copy's definitions to itself. Nothing outside this file calls
+ * them.
+ */
+#define LZ4_compress_fast			lz4p_LZ4_compress_fast
+#define LZ4_compress_default			lz4p_LZ4_compress_default
+#define LZ4_compress_destSize			lz4p_LZ4_compress_destSize
+#define LZ4_loadDict			lz4p_LZ4_loadDict
+#define LZ4_saveDict			lz4p_LZ4_saveDict
+#define LZ4_compress_fast_continue			lz4p_LZ4_compress_fast_continue
+#define LZ4_resetStream			lz4p_LZ4_resetStream
+
 static const int LZ4_minLength = (MFLIMIT + 1);
 static const int LZ4_64Klimit = ((64 * KB) + (MFLIMIT - 1));
 
