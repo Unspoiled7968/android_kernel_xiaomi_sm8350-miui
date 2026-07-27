@@ -247,7 +247,7 @@ static void rndis_ipa_packet_receive_notify
 	(void *private, enum ipa_dp_evt_type evt, unsigned long data);
 static void rndis_ipa_tx_complete_notify
 	(void *private, enum ipa_dp_evt_type evt, unsigned long data);
-static void rndis_ipa_tx_timeout(struct net_device *net);
+static void rndis_ipa_tx_timeout(struct net_device *net, unsigned int txqueue);
 static int rndis_ipa_stop(struct net_device *net);
 static void rndis_ipa_enable_data_path(struct rndis_ipa_dev *rndis_ipa_ctx);
 static struct sk_buff *rndis_encapsulate_skb(struct sk_buff *skb,
@@ -1075,7 +1075,7 @@ out:
 	dev_kfree_skb_any(skb);
 }
 
-static void rndis_ipa_tx_timeout(struct net_device *net)
+static void rndis_ipa_tx_timeout(struct net_device *net, unsigned int txqueue)
 {
 	struct rndis_ipa_dev *rndis_ipa_ctx = netdev_priv(net);
 	int outstanding = atomic_read(&rndis_ipa_ctx->outstanding_pkts);

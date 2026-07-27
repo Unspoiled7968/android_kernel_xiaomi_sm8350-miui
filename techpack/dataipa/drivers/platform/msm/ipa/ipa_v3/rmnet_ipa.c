@@ -1319,7 +1319,7 @@ out:
 	return ret;
 }
 
-static void ipa3_wwan_tx_timeout(struct net_device *dev)
+static void ipa3_wwan_tx_timeout(struct net_device *dev, unsigned int txqueue)
 {
 	struct ipa3_wwan_private *wwan_ptr = netdev_priv(dev);
 

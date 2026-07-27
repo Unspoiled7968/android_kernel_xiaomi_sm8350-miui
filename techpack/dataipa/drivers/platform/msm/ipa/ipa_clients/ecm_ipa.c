@@ -175,7 +175,7 @@ static void ecm_ipa_packet_receive_notify
 	(void *priv, enum ipa_dp_evt_type evt, unsigned long data);
 static void ecm_ipa_tx_complete_notify
 	(void *priv, enum ipa_dp_evt_type evt, unsigned long data);
-static void ecm_ipa_tx_timeout(struct net_device *net);
+static void ecm_ipa_tx_timeout(struct net_device *net, unsigned int txqueue);
 static int ecm_ipa_stop(struct net_device *net);
 static void ecm_ipa_enable_data_path(struct ecm_ipa_dev *ecm_ipa_ctx);
 static int ecm_ipa_rules_cfg
@@ -1197,7 +1197,7 @@ out:
 	dev_kfree_skb_any(skb);
 }
 
-static void ecm_ipa_tx_timeout(struct net_device *net)
+static void ecm_ipa_tx_timeout(struct net_device *net, unsigned int txqueue)
 {
 	struct ecm_ipa_dev *ecm_ipa_ctx = netdev_priv(net);
 

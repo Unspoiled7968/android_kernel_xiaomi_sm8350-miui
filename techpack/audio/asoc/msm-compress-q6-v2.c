@@ -2552,7 +2552,7 @@ static int msm_compr_wait_for_stream_avail(struct msm_compr_audio *prtd,
 	return rc;
 }
 
-static int msm_compr_trigger(struct snd_soc_component *component,
+static int msm_compr_trigger(struct snd_soc_component *soc_component,
 			     struct snd_compr_stream *cstream, int cmd)
 {
 	struct snd_compr_runtime *runtime = cstream->runtime;
@@ -3079,7 +3079,7 @@ static int msm_compr_trigger(struct snd_soc_component *component,
 	return rc;
 }
 
-static int msm_compr_pointer(struct snd_soc_component *component,
+static int msm_compr_pointer(struct snd_soc_component *soc_component,
 				struct snd_compr_stream *cstream,
 				struct snd_compr_tstamp *arg)
 {
