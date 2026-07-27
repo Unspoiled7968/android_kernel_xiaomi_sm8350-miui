@@ -41486,7 +41486,8 @@ static const struct snd_soc_dapm_route intercon_mi2s[] = {
 };
 #endif
 
-static int msm_pcm_routing_hw_params(struct snd_pcm_substream *substream,
+static int msm_pcm_routing_hw_params(struct snd_soc_component *component,
+				struct snd_pcm_substream *substream,
 				struct snd_pcm_hw_params *params)
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
@@ -41508,7 +41509,8 @@ static int msm_pcm_routing_hw_params(struct snd_pcm_substream *substream,
 	return 0;
 }
 
-static int msm_pcm_routing_close(struct snd_pcm_substream *substream)
+static int msm_pcm_routing_close(struct snd_soc_component *component,
+				 struct snd_pcm_substream *substream)
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
 	unsigned int be_id = rtd->dai_link->id;
@@ -41577,7 +41579,8 @@ static int msm_pcm_routing_close(struct snd_pcm_substream *substream)
 	return 0;
 }
 
-static int msm_pcm_routing_prepare(struct snd_pcm_substream *substream)
+static int msm_pcm_routing_prepare(struct snd_soc_component *component,
+				   struct snd_pcm_substream *substream)
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
 	unsigned int be_id = rtd->dai_link->id;
@@ -43087,12 +43090,6 @@ static const struct snd_kcontrol_new internal_mclk_control[] = {
 				 msm_internal_mclk_ctl_put),
 };
 
-static const struct snd_pcm_ops msm_routing_pcm_ops = {
-	.hw_params	= msm_pcm_routing_hw_params,
-	.close          = msm_pcm_routing_close,
-	.prepare        = msm_pcm_routing_prepare,
-};
-
 #ifndef CONFIG_TDM_DISABLE
 static void snd_soc_dapm_new_controls_tdm(struct snd_soc_component *component)
 {
@@ -43305,22 +43302,26 @@ static int msm_routing_probe(struct snd_soc_component *component)
 	return 0;
 }
 
-int msm_routing_pcm_new(struct snd_soc_pcm_runtime *runtime)
+int msm_routing_pcm_new(struct snd_soc_component *component,
+			struct snd_soc_pcm_runtime *runtime)
 {
 	return msm_pcm_routing_hwdep_new(runtime, msm_bedais);
 }
 
-void msm_routing_pcm_free(struct snd_pcm *pcm)
+void msm_routing_pcm_free(struct snd_soc_component *component,
+			  struct snd_pcm *pcm)
 {
 	msm_pcm_routing_hwdep_free(pcm);
 }
 
 static struct snd_soc_component_driver msm_soc_routing_component = {
 	.name		= DRV_NAME,
-	.ops		= &msm_routing_pcm_ops,
+	.hw_params	= msm_pcm_routing_hw_params,
+	.close		= msm_pcm_routing_close,
+	.prepare	= msm_pcm_routing_prepare,
 	.probe		= msm_routing_probe,
-	.pcm_new	= msm_routing_pcm_new,
-	.pcm_free	= msm_routing_pcm_free,
+	.pcm_construct	= msm_routing_pcm_new,
+	.pcm_destruct	= msm_routing_pcm_free,
 };
 
 static int msm_routing_pcm_probe(struct platform_device *pdev)

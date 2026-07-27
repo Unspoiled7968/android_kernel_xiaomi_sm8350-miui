@@ -12,7 +12,8 @@
 
 #define DRV_NAME "msm-pcm-hostless"
 
-static int msm_pcm_hostless_prepare(struct snd_pcm_substream *substream)
+static int msm_pcm_hostless_prepare(struct snd_soc_component *component,
+				    struct snd_pcm_substream *substream)
 {
 	if (!substream) {
 		pr_err("%s: invalid params\n", __func__);
@@ -22,13 +23,9 @@ static int msm_pcm_hostless_prepare(struct snd_pcm_substream *substream)
 	return 0;
 }
 
-static const struct snd_pcm_ops msm_pcm_hostless_ops = {
-	.prepare = msm_pcm_hostless_prepare
-};
-
 static struct snd_soc_component_driver msm_soc_hostless_component = {
 	.name		= DRV_NAME,
-	.ops		= &msm_pcm_hostless_ops,
+	.prepare	= msm_pcm_hostless_prepare,
 };
 
 static int msm_pcm_hostless_probe(struct platform_device *pdev)

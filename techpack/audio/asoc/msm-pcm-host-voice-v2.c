@@ -978,7 +978,8 @@ static struct snd_pcm_hw_constraint_list constraints_sample_rates = {
 	.mask = 0,
 };
 
-static int msm_pcm_close(struct snd_pcm_substream *substream)
+static int msm_pcm_close(struct snd_soc_component *component,
+			 struct snd_pcm_substream *substream)
 {
 	int ret = 0;
 	struct list_head *ptr = NULL;
@@ -1179,7 +1180,8 @@ done:
 	return ret;
 }
 
-static int msm_pcm_copy(struct snd_pcm_substream *substream, int channel,
+static int msm_pcm_copy(struct snd_soc_component *component,
+			struct snd_pcm_substream *substream, int channel,
 			unsigned long hwoff, void __user *buf,
 			unsigned long fbytes)
 {
@@ -1195,7 +1197,8 @@ static int msm_pcm_copy(struct snd_pcm_substream *substream, int channel,
 	return ret;
 }
 
-static snd_pcm_uframes_t msm_pcm_pointer(struct snd_pcm_substream *substream)
+static snd_pcm_uframes_t msm_pcm_pointer(struct snd_soc_component *component,
+					 struct snd_pcm_substream *substream)
 {
 	struct dai_data *dai_data = NULL;
 	struct snd_pcm_runtime *runtime = substream->runtime;
@@ -1220,7 +1223,8 @@ done:
 	return ret;
 }
 
-static int msm_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
+static int msm_pcm_trigger(struct snd_soc_component *component,
+			   struct snd_pcm_substream *substream, int cmd)
 {
 	int ret = 0;
 	struct snd_pcm_runtime *runtime = substream->runtime;
@@ -1257,7 +1261,8 @@ done:
 	return ret;
 }
 
-static int msm_pcm_prepare(struct snd_pcm_substream *substream)
+static int msm_pcm_prepare(struct snd_soc_component *component,
+			   struct snd_pcm_substream *substream)
 {
 	int ret = 0;
 	struct snd_pcm_runtime *runtime = substream->runtime;
@@ -1303,7 +1308,8 @@ done:
 	return ret;
 }
 
-static int msm_pcm_hw_params(struct snd_pcm_substream *substream,
+static int msm_pcm_hw_params(struct snd_soc_component *component,
+			     struct snd_pcm_substream *substream,
 			     struct snd_pcm_hw_params *params)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
@@ -1360,7 +1366,8 @@ done:
 	return ret;
 }
 
-static int msm_pcm_open(struct snd_pcm_substream *substream)
+static int msm_pcm_open(struct snd_soc_component *component,
+			struct snd_pcm_substream *substream)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct hpcm_drv *prtd = &hpcm_drv;
@@ -1416,17 +1423,8 @@ done:
 	return ret;
 }
 
-static const struct snd_pcm_ops msm_pcm_ops = {
-	.open           = msm_pcm_open,
-	.hw_params      = msm_pcm_hw_params,
-	.prepare        = msm_pcm_prepare,
-	.trigger        = msm_pcm_trigger,
-	.pointer        = msm_pcm_pointer,
-	.copy_user      = msm_pcm_copy,
-	.close          = msm_pcm_close,
-};
-
-static int msm_asoc_pcm_new(struct snd_soc_pcm_runtime *rtd)
+static int msm_asoc_pcm_new(struct snd_soc_component *component,
+			    struct snd_soc_pcm_runtime *rtd)
 {
 	struct snd_card *card = rtd->card->snd_card;
 
@@ -1447,8 +1445,14 @@ static int msm_pcm_hpcm_probe(struct snd_soc_component *component)
 
 static struct snd_soc_component_driver msm_soc_component = {
 	.name		= DRV_NAME,
-	.ops		= &msm_pcm_ops,
-	.pcm_new	= msm_asoc_pcm_new,
+	.open           = msm_pcm_open,
+	.hw_params      = msm_pcm_hw_params,
+	.prepare        = msm_pcm_prepare,
+	.trigger        = msm_pcm_trigger,
+	.pointer        = msm_pcm_pointer,
+	.copy_user      = msm_pcm_copy,
+	.close          = msm_pcm_close,
+	.pcm_construct	= msm_asoc_pcm_new,
 	.probe		= msm_pcm_hpcm_probe,
 };
 

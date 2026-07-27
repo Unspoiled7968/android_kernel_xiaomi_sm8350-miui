@@ -1591,7 +1591,8 @@ static int msm_transcode_add_volume_control(struct snd_soc_pcm_runtime *rtd)
 	return 0;
 }
 
-static int msm_transcode_loopback_new(struct snd_soc_pcm_runtime *rtd)
+static int msm_transcode_loopback_new(struct snd_soc_component *component,
+				      struct snd_soc_pcm_runtime *rtd)
 {
 	int rc;
 
@@ -1677,7 +1678,7 @@ static struct snd_soc_component_driver msm_soc_component = {
 	.name		= DRV_NAME,
 	.probe		= msm_transcode_loopback_probe,
 	.compress_ops	= &msm_transcode_loopback_ops,
-	.pcm_new	= msm_transcode_loopback_new,
+	.pcm_construct	= msm_transcode_loopback_new,
 	.remove		= msm_transcode_loopback_remove,
 };
 
