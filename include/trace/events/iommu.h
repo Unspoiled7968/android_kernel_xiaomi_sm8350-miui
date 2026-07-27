@@ -141,32 +141,6 @@ TRACE_EVENT(unmap,
 	)
 );
 
-TRACE_EVENT(map_sg,
-
-	TP_PROTO(struct msm_iommu_domain *domain, unsigned long iova,
-		 size_t size, int prot),
-
-	TP_ARGS(domain, iova, size, prot),
-
-	TP_STRUCT__entry(
-		__string(name, domain->name)
-		__field(u64, iova)
-		__field(size_t, size)
-		__field(int, prot)
-	),
-
-	TP_fast_assign(
-		__assign_str(name, domain->name);
-		__entry->iova = iova;
-		__entry->size = size;
-		__entry->prot = prot;
-	),
-
-	TP_printk("IOMMU:%s iova=0x%016llx size=0x%zx prot=0x%x",
-			__get_str(name), __entry->iova, __entry->size,
-			__entry->prot
-	)
-);
 
 DECLARE_EVENT_CLASS(iommu_error,
 
