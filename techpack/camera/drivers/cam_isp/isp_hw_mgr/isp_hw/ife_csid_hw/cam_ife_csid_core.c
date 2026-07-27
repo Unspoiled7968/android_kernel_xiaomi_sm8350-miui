@@ -376,10 +376,12 @@ static int cam_ife_match_vc_dt_pair(int32_t *vc, uint32_t *dt,
 		return -EINVAL;
 	}
 
-	if ((camera_hw_version != CAM_CPAS_TITAN_480_V100) ||
-		(camera_hw_version != CAM_CPAS_TITAN_580_V100) ||
-		(camera_hw_version != CAM_CPAS_TITAN_570_V200))
-		num_valid_vc_dt = 1;
+	/*
+	 * This compared one value against three constants with != and ||, so
+	 * it was always true on every part. Assign unconditionally, which is
+	 * what the hardware has always seen.
+	 */
+	num_valid_vc_dt = 1;
 
 	switch (num_valid_vc_dt) {
 	case 2:
