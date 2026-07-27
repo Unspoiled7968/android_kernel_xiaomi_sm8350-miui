@@ -72,7 +72,12 @@ enum v4l2_mpeg_vidc_video_bitrate_mode {
 		V4L2_MPEG_VIDEO_BITRATE_MODE_CBR + 1,
 	V4L2_MPEG_VIDEO_BITRATE_MODE_MBR,
 	V4L2_MPEG_VIDEO_BITRATE_MODE_MBR_VFR,
-	V4L2_MPEG_VIDEO_BITRATE_MODE_CQ,
+	/*
+	 * 5.10's v4l2-controls.h defines a V4L2_MPEG_VIDEO_BITRATE_MODE_CQ of
+	 * its own (value 2). This one keeps its original value of 5 - which is
+	 * what userspace already sends - under a name that does not clash.
+	 */
+	V4L2_MPEG_VIDEO_BITRATE_MODE_VIDC_CQ,
 };
 /* missing v4l2 entries end */
 
