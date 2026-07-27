@@ -21,6 +21,7 @@
 #include "arm-smmu-debug.h"
 #include <linux/debugfs.h>
 #include <linux/uaccess.h>
+#include <linux/qcom-iommu-util.h>
 
 struct qcom_smmu {
 	struct arm_smmu_device smmu;

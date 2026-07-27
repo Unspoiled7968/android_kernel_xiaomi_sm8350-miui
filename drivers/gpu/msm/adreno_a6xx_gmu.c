@@ -27,6 +27,7 @@
 #include "kgsl_device.h"
 #include "kgsl_trace.h"
 #include "kgsl_util.h"
+#include <linux/qcom-iommu-util.h>
 
 #define ARC_VOTE_GET_PRI(_v) ((_v) & 0xFF)
 #define ARC_VOTE_GET_SEC(_v) (((_v) >> 8) & 0xFF)

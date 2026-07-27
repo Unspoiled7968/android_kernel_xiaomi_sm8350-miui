@@ -29,6 +29,7 @@
 #include "msm_gem.h"
 #include "msm_mmu.h"
 #include "sde_dbg.h"
+#include <linux/qcom-iommu-util.h>
 
 struct msm_smmu_client {
 	struct device *dev;

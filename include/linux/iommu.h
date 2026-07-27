@@ -81,9 +81,6 @@ struct iommu_domain_geometry {
 
 /* Non secure unprivileged Data read operation */
 
-struct iommu_pgtbl_info {
-	void *ops;
-};
 
 /* Domain feature flags */
 #define __IOMMU_DOMAIN_PAGING	(1U << 0)  /* Support for iommu_map/unmap */
@@ -1263,13 +1260,5 @@ static inline void iommu_debugfs_setup(void) {}
 #endif
 
 
-/*
- * The QCOM domain attributes and prot flags live in Qualcomm's header now -
- * they moved there in msm-5.10 and the numbering differs from the 5.4 copy
- * that used to sit here, so there must be exactly one definition. Included
- * last, after DOMAIN_ATTR_MAX exists, since EXTENDED_ATTR_BASE is derived
- * from it. The include guards make the mutual inclusion a no-op.
- */
-#include <linux/qcom-iommu-util.h>
 
 #endif /* __LINUX_IOMMU_H */

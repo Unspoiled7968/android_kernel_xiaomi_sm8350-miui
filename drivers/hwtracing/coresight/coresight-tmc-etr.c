@@ -18,6 +18,7 @@
 #include "coresight-etm-perf.h"
 #include "coresight-priv.h"
 #include "coresight-tmc.h"
+#include <linux/qcom-iommu-util.h>
 
 /*
  * etr_perf_buffer - Perf buffer used for ETR

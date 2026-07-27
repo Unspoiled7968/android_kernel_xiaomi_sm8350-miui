@@ -65,6 +65,7 @@
 
 #define CREATE_TRACE_POINTS
 #include "sde_trace.h"
+#include <linux/qcom-iommu-util.h>
 
 /* defines for secure channel call */
 #define MEM_PROTECT_SD_CTRL_SWITCH 0x18

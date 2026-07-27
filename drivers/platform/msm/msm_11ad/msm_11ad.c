@@ -24,6 +24,7 @@
 #include <linux/sched/core_ctl.h>
 #include "wil_platform.h"
 #include "msm_11ad.h"
+#include <linux/qcom-iommu-util.h>
 
 #define WIGIG_ENABLE_DELAY	50
 

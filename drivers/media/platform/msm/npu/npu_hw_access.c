@@ -17,6 +17,7 @@
 #include "npu_hw_access.h"
 #include "npu_common.h"
 #include "npu_hw.h"
+#include <linux/qcom-iommu-util.h>
 
 /* -------------------------------------------------------------------------
  * Functions - Register

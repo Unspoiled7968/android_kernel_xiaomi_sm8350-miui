@@ -35,6 +35,7 @@
 
 #ifdef CONFIG_ARM64_PTDUMP_CORE
 #include <asm/ptdump.h>
+#include <linux/qcom-iommu-util.h>
 #endif
 
 #if defined(CONFIG_IOMMU_TESTS)

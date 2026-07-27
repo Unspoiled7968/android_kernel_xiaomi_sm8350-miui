@@ -41,6 +41,7 @@
 
 #ifdef CONFIG_WCNSS_MEM_PRE_ALLOC
 #include <net/cnss_prealloc.h>
+#include <linux/qcom-iommu-util.h>
 #endif
 
 #define subsys_to_drv(d) container_of(d, struct cnss_data, subsys_desc)

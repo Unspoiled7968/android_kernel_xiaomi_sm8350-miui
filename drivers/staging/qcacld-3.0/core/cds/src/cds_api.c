@@ -81,6 +81,7 @@
 #include <qdf_notifier.h>
 #include <qwlan_version.h>
 #include <qdf_trace.h>
+#include <linux/qcom-iommu-util.h>
 
 /* Preprocessor Definitions and Constants */
 

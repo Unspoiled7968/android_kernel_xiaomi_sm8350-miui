@@ -25,6 +25,7 @@
 #include "kgsl_pwrctrl.h"
 #include "kgsl_sharedmem.h"
 #include "kgsl_trace.h"
+#include <linux/qcom-iommu-util.h>
 
 #define _IOMMU_PRIV(_mmu) (&((_mmu)->priv.iommu))
 

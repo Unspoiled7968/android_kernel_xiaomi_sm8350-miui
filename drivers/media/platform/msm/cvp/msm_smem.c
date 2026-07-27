@@ -15,6 +15,7 @@
 #include "msm_cvp_debug.h"
 #include "msm_cvp_resources.h"
 #include "cvp_core_hfi.h"
+#include <linux/qcom-iommu-util.h>
 
 
 static int msm_dma_get_device_address(struct dma_buf *dbuf, u32 align,
