@@ -6,7 +6,7 @@
 
 #include <linux/device.h>
 #include <linux/dma-buf.h>
-#include <linux/dma-noncoherent.h>
+/* dma-map-ops.h supersedes dma-noncoherent.h here and they cannot be mixed */
 #include <linux/dma-map-ops.h>
 #include <linux/err.h>
 #include <linux/export.h>
