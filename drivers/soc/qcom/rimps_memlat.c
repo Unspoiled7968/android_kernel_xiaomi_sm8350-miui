@@ -152,7 +152,8 @@ struct memlat_cpu_grp {
 	u32 num_inited_mons;
 	struct cpu_data	*cpus_data;
 	struct memlat_mon *mons;
-	const struct scmi_handle *handle;
+	const struct scmi_protocol_handle *ph;
+	const struct scmi_memlat_vendor_ops *memlat_ops;
 	struct list_head node;
 	struct device *dev;
 	struct kobject kobj;
@@ -207,10 +208,9 @@ static ssize_t store_##name(struct kobject *kobj,			\
 	unsigned int val;						\
 	struct memlat_mon *mon = to_memlat_mon(kobj);			\
 	struct memlat_cpu_grp *cpu_grp = mon->cpu_grp;			\
-	struct scmi_memlat_vendor_ops *ops = NULL;			\
-	if (cpu_grp && cpu_grp->handle &&				\
-			cpu_grp->handle->memlat_ops)			\
-		ops = cpu_grp->handle->memlat_ops;			\
+	const struct scmi_memlat_vendor_ops *ops = NULL;			\
+	if (cpu_grp && cpu_grp->ph && cpu_grp->memlat_ops)		\
+		ops = cpu_grp->memlat_ops;				\
 	else								\
 		return -ENODEV;						\
 	ret = kstrtouint(buf, 10, &val);				\
@@ -221,7 +221,7 @@ static ssize_t store_##name(struct kobject *kobj,			\
 	val = min(val, _max);						\
 	mon->name = val;						\
 	if (mon->mon_started)						\
-		ret = ops->name(cpu_grp->handle, mon->cpus_mpidr,		\
+		ret = ops->name(cpu_grp->ph, mon->cpus_mpidr,		\
 				mon->mon_type, mon->name);		\
 	if (ret < 0) {							\
 		pr_err("failed to set mon tunable %s, ret = %d\n",	\
@@ -253,13 +253,12 @@ static ssize_t store_min_freq(struct kobject *kobj,
 	unsigned int val;
 	struct memlat_mon *mon = to_memlat_mon(kobj);
 	struct memlat_cpu_grp *cpu_grp = mon->cpu_grp;
-	struct scmi_memlat_vendor_ops *ops = NULL;
+	const struct scmi_memlat_vendor_ops *ops = NULL;
 	unsigned int min_freq;
 	unsigned int max_freq;
 
-	if (cpu_grp && cpu_grp->handle &&
-			cpu_grp->handle->memlat_ops)
-		ops = cpu_grp->handle->memlat_ops;
+	if (cpu_grp && cpu_grp->ph && cpu_grp->memlat_ops)
+		ops = cpu_grp->memlat_ops;
 	else
 		return -ENODEV;
 
@@ -279,7 +278,7 @@ static ssize_t store_min_freq(struct kobject *kobj,
 	val = min(val, mon->max_freq);
 	mon->min_freq = val;
 	if (mon->mon_started)
-		ret = ops->min_freq(cpu_grp->handle, mon->cpus_mpidr,
+		ret = ops->min_freq(cpu_grp->ph, mon->cpus_mpidr,
 					mon->mon_type, mon->min_freq);
 	if (ret < 0) {
 		pr_err("failed to set mon tunable %s, ret = %d\n",
@@ -298,13 +297,12 @@ static ssize_t store_max_freq(struct kobject *kobj,
 	unsigned int val;
 	struct memlat_mon *mon = to_memlat_mon(kobj);
 	struct memlat_cpu_grp *cpu_grp = mon->cpu_grp;
-	struct scmi_memlat_vendor_ops *ops = NULL;
+	const struct scmi_memlat_vendor_ops *ops = NULL;
 	unsigned int min_freq;
 	unsigned int max_freq;
 
-	if (cpu_grp && cpu_grp->handle &&
-			cpu_grp->handle->memlat_ops)
-		ops = cpu_grp->handle->memlat_ops;
+	if (cpu_grp && cpu_grp->ph && cpu_grp->memlat_ops)
+		ops = cpu_grp->memlat_ops;
 	else
 		return -ENODEV;
 
@@ -324,7 +322,7 @@ static ssize_t store_max_freq(struct kobject *kobj,
 	val = max(val, mon->min_freq);
 	mon->max_freq = val;
 	if (mon->mon_started)
-		ret = ops->max_freq(cpu_grp->handle, mon->cpus_mpidr,
+		ret = ops->max_freq(cpu_grp->ph, mon->cpus_mpidr,
 				mon->mon_type, mon->max_freq);
 	if (ret < 0) {
 		pr_err("failed to set max_freq tunable %s, ret = %d\n", ret);
@@ -374,13 +372,13 @@ static ssize_t store_log_level(struct kobject *kobj,
 			size_t count)
 {
 	struct memlat_cpu_grp *cpu_grp;
-	struct scmi_memlat_vendor_ops *ops = NULL;
+	const struct scmi_memlat_vendor_ops *ops = NULL;
 	int ret = 0, val, cpu;
 
 	for_each_possible_cpu(cpu) {
 		cpu_grp = per_cpu(per_cpu_grp, cpu);
-		if (cpu_grp && cpu_grp->handle) {
-			ops = cpu_grp->handle->memlat_ops;
+		if (cpu_grp && cpu_grp->ph) {
+			ops = cpu_grp->memlat_ops;
 			break;
 		}
 	}
@@ -394,7 +392,7 @@ static ssize_t store_log_level(struct kobject *kobj,
 
 	val = max(val, MIN_LOG_LEVEL);
 	val = min(val, MAX_LOG_LEVEL);
-	ret = ops->set_log_level(cpu_grp->handle, val);
+	ret = ops->set_log_level(cpu_grp->ph, val);
 	if (ret < 0) {
 		pr_err("failed to set log level ret = %d\n", ret);
 		return 0;
@@ -727,7 +725,7 @@ static void free_mon_evs(struct memlat_mon *mon, cpumask_t *mask)
 static int memlat_hp_restart_events(unsigned int cpu, bool cpu_up)
 {
 	struct memlat_cpu_grp *cpu_grp = per_cpu(per_cpu_grp, cpu);
-	struct scmi_memlat_vendor_ops *ops;
+	const struct scmi_memlat_vendor_ops *ops;
 	struct memlat_mon *mon;
 	int ret = 0;
 	unsigned int i = 0;
@@ -736,7 +734,7 @@ static int memlat_hp_restart_events(unsigned int cpu, bool cpu_up)
 	if (!cpu_grp)
 		goto exit;
 
-	ops = cpu_grp->handle->memlat_ops;
+	ops = cpu_grp->memlat_ops;
 
 	cpumask_set_cpu(cpu, &mask);
 
@@ -750,7 +748,7 @@ static int memlat_hp_restart_events(unsigned int cpu, bool cpu_up)
 					cpu, ret);
 			goto exit;
 		}
-		ret = ops->common_pmu_map(cpu_grp->handle,
+		ret = ops->common_pmu_map(cpu_grp->ph,
 						cpu_grp->cpus_mpidr,
 						MEMLAT_CPU_GRP,
 						cpumask_weight(&cpu_grp->cpus)
@@ -777,7 +775,7 @@ static int memlat_hp_restart_events(unsigned int cpu, bool cpu_up)
 						cpu, ret);
 				goto exit;
 			}
-			ret = ops->mon_pmu_map(cpu_grp->handle,
+			ret = ops->mon_pmu_map(cpu_grp->ph,
 						mon->cpus_mpidr,
 						mon->mon_type,
 						cpumask_weight(&mon->cpus)
@@ -1021,19 +1019,19 @@ static int populate_opp_table(struct device *dev)
 
 static int configure_rimps(struct memlat_cpu_grp *cpu_grp)
 {
-	struct scmi_memlat_vendor_ops *ops = cpu_grp->handle->memlat_ops;
+	const struct scmi_memlat_vendor_ops *ops = cpu_grp->memlat_ops;
 	int num_cpus = cpumask_weight(&cpu_grp->cpus);
 	int i = 0;
 	int ret = 0;
 
 	mutex_lock(&cpu_grp->mons_lock);
-	ret = ops->set_cpu_grp(cpu_grp->handle, cpu_grp->cpus_mpidr, MEMLAT_CPU_GRP);
+	ret = ops->set_cpu_grp(cpu_grp->ph, cpu_grp->cpus_mpidr, MEMLAT_CPU_GRP);
 	if (ret < 0) {
 		dev_err(cpu_grp->dev, "failed to configure cpu_grp\n");
 		goto out;
 	}
 
-	ret = ops->common_pmu_map(cpu_grp->handle, cpu_grp->cpus_mpidr,
+	ret = ops->common_pmu_map(cpu_grp->ph, cpu_grp->cpus_mpidr,
 				MEMLAT_CPU_GRP, num_cpus * NUM_COMMON_EVS,
 				cpu_grp->common_ev_map);
 	if (ret < 0) {
@@ -1044,14 +1042,14 @@ static int configure_rimps(struct memlat_cpu_grp *cpu_grp)
 	for (i = 0; i < cpu_grp->num_mons; i++) {
 		struct memlat_mon *mon = &cpu_grp->mons[i];
 
-		ret = ops->set_mon(cpu_grp->handle, mon->cpus_mpidr,
+		ret = ops->set_mon(cpu_grp->ph, mon->cpus_mpidr,
 					mon->mon_type);
 		if (ret < 0) {
 			pr_err("%s: failed to configure monitor\n", mon->mon_name);
 			goto out;
 		}
 
-		ret = ops->mon_pmu_map(cpu_grp->handle, mon->cpus_mpidr,
+		ret = ops->mon_pmu_map(cpu_grp->ph, mon->cpus_mpidr,
 					mon->mon_type,
 					cpumask_weight(&mon->cpus)
 					* NUM_MON_EVS,
@@ -1062,7 +1060,7 @@ static int configure_rimps(struct memlat_cpu_grp *cpu_grp)
 			goto out;
 		}
 
-		ret = ops->ratio_ceil(cpu_grp->handle, mon->cpus_mpidr,
+		ret = ops->ratio_ceil(cpu_grp->ph, mon->cpus_mpidr,
 					mon->mon_type, mon->ratio_ceil);
 		if (ret < 0) {
 			pr_err("%s: failed to configure ceil ratio\n",
@@ -1070,7 +1068,7 @@ static int configure_rimps(struct memlat_cpu_grp *cpu_grp)
 			goto out;
 		}
 
-		ret = ops->stall_floor(cpu_grp->handle, mon->cpus_mpidr,
+		ret = ops->stall_floor(cpu_grp->ph, mon->cpus_mpidr,
 					mon->mon_type, mon->stall_floor);
 		if (ret < 0) {
 			pr_err("%s: failed to configure stall floor\n",
@@ -1078,7 +1076,7 @@ static int configure_rimps(struct memlat_cpu_grp *cpu_grp)
 			goto out;
 		}
 
-		ret = ops->sample_ms(cpu_grp->handle, mon->cpus_mpidr,
+		ret = ops->sample_ms(cpu_grp->ph, mon->cpus_mpidr,
 					mon->mon_type, mon->sample_ms);
 		if (ret < 0) {
 			pr_err("%s: failed to configure sample_ms\n",
@@ -1087,14 +1085,14 @@ static int configure_rimps(struct memlat_cpu_grp *cpu_grp)
 		}
 
 		if (mon->mon_type == L3_MEMLAT) {
-			ret = ops->l2wb_pct(cpu_grp->handle, mon->cpus_mpidr,
+			ret = ops->l2wb_pct(cpu_grp->ph, mon->cpus_mpidr,
 					mon->mon_type, mon->l2wb_pct);
 			if (ret < 0) {
 				pr_err("%s: failed to configure l2wb pct\n",
 					mon->mon_name);
 				goto out;
 			}
-			ret = ops->l2wb_filter(cpu_grp->handle,
+			ret = ops->l2wb_filter(cpu_grp->ph,
 					mon->cpus_mpidr,
 					mon->mon_type, mon->l2wb_filter);
 			if (ret < 0) {
@@ -1104,7 +1102,7 @@ static int configure_rimps(struct memlat_cpu_grp *cpu_grp)
 			}
 		}
 
-		ret = ops->freq_map(cpu_grp->handle, mon->cpus_mpidr,
+		ret = ops->freq_map(cpu_grp->ph, mon->cpus_mpidr,
 					mon->mon_type,
 					mon->num_freq_map_entries,
 					mon->freq_map);
@@ -1114,7 +1112,7 @@ static int configure_rimps(struct memlat_cpu_grp *cpu_grp)
 			goto out;
 		}
 
-		ret = ops->min_freq(cpu_grp->handle, mon->cpus_mpidr,
+		ret = ops->min_freq(cpu_grp->ph, mon->cpus_mpidr,
 					mon->mon_type, mon->min_freq);
 		if (ret < 0) {
 			pr_err("%s: failed to configure min_freq\n",
@@ -1122,7 +1120,7 @@ static int configure_rimps(struct memlat_cpu_grp *cpu_grp)
 			goto out;
 		}
 
-		ret = ops->max_freq(cpu_grp->handle, mon->cpus_mpidr,
+		ret = ops->max_freq(cpu_grp->ph, mon->cpus_mpidr,
 					mon->mon_type, mon->max_freq);
 		if (ret < 0) {
 			pr_err("%s: failed to configure max_freq\n",
@@ -1130,7 +1128,7 @@ static int configure_rimps(struct memlat_cpu_grp *cpu_grp)
 			goto out;
 		}
 
-		ret = ops->start_monitor(cpu_grp->handle,
+		ret = ops->start_monitor(cpu_grp->ph,
 				mon->cpus_mpidr, mon->mon_type);
 		if (ret < 0) {
 			pr_err("%s: failed to start monitor\n",
@@ -1172,11 +1170,15 @@ static struct kobj_type ktype_cpugrp = {
 	.release	= mon_sysfs_release,
 };
 
-void rimps_memlat_init(struct scmi_handle *handle)
+void rimps_memlat_init(const struct scmi_memlat_vendor_ops *ops,
+		       const struct scmi_protocol_handle *ph)
 {
 	struct memlat_cpu_grp *cpu_grp;
 	unsigned int cpu;
 	int ret = 0;
+
+	if (!ops || !ph)
+		return;
 
 	get_online_cpus();
 	for_each_possible_cpu(cpu) {
@@ -1184,7 +1186,8 @@ void rimps_memlat_init(struct scmi_handle *handle)
 		if (!cpu_grp || (cpu != cpumask_first(&cpu_grp->cpus)))
 			continue;
 
-		cpu_grp->handle = handle;
+		cpu_grp->ph = ph;
+		cpu_grp->memlat_ops = ops;
 		ret = configure_rimps(cpu_grp);
 		if (ret < 0)
 			pr_err("failed to configure RIMPS ret = %d\n", ret);

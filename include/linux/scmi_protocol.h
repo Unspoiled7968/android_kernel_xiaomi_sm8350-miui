@@ -633,39 +633,39 @@ struct scmi_notify_ops {
  * @get_data: added for debug purpose gets the data structure information
  */
 struct scmi_memlat_vendor_ops {
-	int (*set_cpu_grp)(const struct scmi_handle *handle,
+	int (*set_cpu_grp)(const struct scmi_protocol_handle *ph,
 				u32 cpus_mpidr, u32 mon_type);
-	int (*set_mon)(const struct scmi_handle *handle,
+	int (*set_mon)(const struct scmi_protocol_handle *ph,
 				u32 cpus_mpidr, u32 mon_type);
-	int (*common_pmu_map)(const struct scmi_handle *handle,
+	int (*common_pmu_map)(const struct scmi_protocol_handle *ph,
 				u32 cpus_mpidr, u32 mon_type,
 				u32 nr_rows, void *buf);
-	int (*mon_pmu_map)(const struct scmi_handle *handle,
+	int (*mon_pmu_map)(const struct scmi_protocol_handle *ph,
 				u32 cpus_mpidr, u32 mon_type,
 				u32 nr_rows, void *buf);
-	int (*ratio_ceil)(const struct scmi_handle *handle,
+	int (*ratio_ceil)(const struct scmi_protocol_handle *ph,
 				u32 cpus_mpidr, u32 mon_type, u32 val);
-	int (*stall_floor)(const struct scmi_handle *handle,
+	int (*stall_floor)(const struct scmi_protocol_handle *ph,
 				u32 cpus_mpidr, u32 mon_type, u32 val);
-	int (*l2wb_pct)(const struct scmi_handle *handle,
+	int (*l2wb_pct)(const struct scmi_protocol_handle *ph,
 				u32 cpus_mpidr, u32 mon_type, u32 val);
-	int (*l2wb_filter)(const struct scmi_handle *handle,
+	int (*l2wb_filter)(const struct scmi_protocol_handle *ph,
 				u32 cpus_mpidr, u32 mon_type, u32 val);
-	int (*sample_ms)(const struct scmi_handle *handle,
+	int (*sample_ms)(const struct scmi_protocol_handle *ph,
 				u32 cpus_mpidr, u32 mon_type, u32 val);
-	int (*freq_map)(const struct scmi_handle *handle,
+	int (*freq_map)(const struct scmi_protocol_handle *ph,
 				u32 cpus_mpidr, u32 mon_type,
 				u32 nr_rows, void *buf);
-	int (*min_freq)(const struct scmi_handle *handle,
+	int (*min_freq)(const struct scmi_protocol_handle *ph,
 				u32 cpus_mpidr, u32 mon_type, u32 val);
-	int (*max_freq)(const struct scmi_handle *handle,
+	int (*max_freq)(const struct scmi_protocol_handle *ph,
 				u32 cpus_mpidr, u32 mon_type, u32 val);
-	int (*start_monitor)(const struct scmi_handle *handle,
+	int (*start_monitor)(const struct scmi_protocol_handle *ph,
 				u32 cpus_mpidr, u32 mon_type);
-	int (*stop_monitor)(const struct scmi_handle *handle,
+	int (*stop_monitor)(const struct scmi_protocol_handle *ph,
 				u32 cpus_mpidr, u32 mon_type);
-	int (*set_log_level)(const struct scmi_handle *handle, u32 val);
-	int (*get_data)(const struct scmi_handle *handle, u8 *buf);
+	int (*set_log_level)(const struct scmi_protocol_handle *ph, u32 val);
+	int (*get_data)(const struct scmi_protocol_handle *ph, u8 *buf);
 };
 #endif
 
@@ -680,11 +680,11 @@ struct scmi_memlat_vendor_ops {
  * @set_plh_log_level: configure the supported log_level in plh module of rimps
  */
 struct scmi_plh_vendor_ops {
-	int (*init_splh_ipc_freq_tbl)(const struct scmi_handle *handle,
+	int (*init_splh_ipc_freq_tbl)(const struct scmi_protocol_handle *ph,
 				u16 *p_init_args, u16 init_len);
-	int (*start_splh)(const struct scmi_handle *handle,	u16 fps);
-	int (*stop_splh)(const struct scmi_handle *handle);
-	int (*set_plh_log_level)(const struct scmi_handle *handle,
+	int (*start_splh)(const struct scmi_protocol_handle *ph,	u16 fps);
+	int (*stop_splh)(const struct scmi_protocol_handle *ph);
+	int (*set_plh_log_level)(const struct scmi_protocol_handle *ph,
 				u16 log_level);
 };
 #endif
@@ -717,13 +717,6 @@ struct scmi_handle {
 	void (*devm_put_protocol)(struct scmi_device *sdev, u8 proto);
 
 	const struct scmi_notify_ops *notify_ops;
-
-#ifdef CONFIG_QTI_SCMI_MEMLAT_PROTOCOL
-	struct scmi_memlat_vendor_ops *memlat_ops;
-#endif
-#ifdef CONFIG_QTI_SCMI_PLH_PROTOCOL
-	struct scmi_plh_vendor_ops *plh_ops;
-#endif
 
 	ANDROID_KABI_RESERVE(1);
 };

@@ -63,15 +63,14 @@ struct pmu_map_msg {
 	uint32_t pmu[MAX_PMU_ENTRIES];
 };
 
-static int scmi_set_cpugrp_mon(const struct scmi_handle *handle,
+static int scmi_set_cpugrp_mon(const struct scmi_protocol_handle *ph,
 			u32 cpus_mpidr, u32 mon_type, u32 msg_id)
 {
 	int ret = 0;
 	struct scmi_xfer *t;
 	struct node_msg *msg;
 
-	ret = scmi_xfer_get_init(handle, msg_id,
-				SCMI_PROTOCOL_MEMLAT,
+	ret = ph->xops->xfer_get_init(ph, msg_id,
 				sizeof(*msg), sizeof(*msg), &t);
 	if (ret)
 		return ret;
@@ -79,27 +78,27 @@ static int scmi_set_cpugrp_mon(const struct scmi_handle *handle,
 	msg = t->tx.buf;
 	msg->cpumask = cpu_to_le32(cpus_mpidr);
 	msg->mon_type = cpu_to_le32(mon_type);
-	ret = scmi_do_xfer(handle, t);
-	scmi_xfer_put(handle, t);
+	ret = ph->xops->do_xfer(ph, t);
+	ph->xops->xfer_put(ph, t);
 
 	return ret;
 }
 
-static int scmi_set_mon(const struct scmi_handle *handle,
+static int scmi_set_mon(const struct scmi_protocol_handle *ph,
 			u32 cpus_mpidr, u32 mon_type)
 {
-	return scmi_set_cpugrp_mon(handle, cpus_mpidr,
+	return scmi_set_cpugrp_mon(ph, cpus_mpidr,
 				mon_type, MEMLAT_SET_MONITOR);
 }
 
-static int scmi_set_cpu_grp(const struct scmi_handle *handle,
+static int scmi_set_cpu_grp(const struct scmi_protocol_handle *ph,
 			u32 cpus_mpidr, u32 mon_type)
 {
-	return scmi_set_cpugrp_mon(handle, cpus_mpidr,
+	return scmi_set_cpugrp_mon(ph, cpus_mpidr,
 				mon_type, MEMLAT_SET_CPU_GROUP);
 }
 
-static int scmi_send_pmu_map_command(const struct scmi_handle *handle,
+static int scmi_send_pmu_map_command(const struct scmi_protocol_handle *ph,
 				u32 cpus_mpidr, u32 mon_type, u32 nr_entries,
 				void *buf, u32 msg_id)
 {
@@ -112,8 +111,7 @@ static int scmi_send_pmu_map_command(const struct scmi_handle *handle,
 	if (nr_entries > MAX_PMU_ENTRIES)
 		return -EINVAL;
 
-	ret = scmi_xfer_get_init(handle, msg_id,
-				SCMI_PROTOCOL_MEMLAT,
+	ret = ph->xops->xfer_get_init(ph, msg_id,
 				sizeof(*msg), sizeof(*msg), &t);
 	if (ret)
 		return ret;
@@ -127,30 +125,30 @@ static int scmi_send_pmu_map_command(const struct scmi_handle *handle,
 	for (i = 0; i < nr_entries; i++)
 		dst[i] = cpu_to_le32(src[i].v2);
 
-	ret = scmi_do_xfer(handle, t);
-	scmi_xfer_put(handle, t);
+	ret = ph->xops->do_xfer(ph, t);
+	ph->xops->xfer_put(ph, t);
 	return ret;
 }
 
-static int scmi_common_pmu_map(const struct scmi_handle *handle,
+static int scmi_common_pmu_map(const struct scmi_protocol_handle *ph,
 				u32 cpus_mpidr, u32 mon_type,
 				u32 nr_entries, void *buf)
 {
-	return scmi_send_pmu_map_command(handle, cpus_mpidr,
+	return scmi_send_pmu_map_command(ph, cpus_mpidr,
 					mon_type, nr_entries, buf,
 					MEMLAT_COMMON_PMU_MAP);
 }
 
-static int scmi_mon_pmu_map(const struct scmi_handle *handle,
+static int scmi_mon_pmu_map(const struct scmi_protocol_handle *ph,
 				u32 cpus_mpidr, u32 mon_type,
 				u32 nr_entries, void *buf)
 {
-	return scmi_send_pmu_map_command(handle, cpus_mpidr,
+	return scmi_send_pmu_map_command(ph, cpus_mpidr,
 					mon_type, nr_entries, buf,
 					MEMLAT_MON_PMU_MAP);
 }
 
-static int scmi_freq_map(const struct scmi_handle *handle,
+static int scmi_freq_map(const struct scmi_protocol_handle *ph,
 				u32 cpus_mpidr, u32 mon_type,
 				u32 nr_rows, void *buf)
 {
@@ -162,8 +160,7 @@ static int scmi_freq_map(const struct scmi_handle *handle,
 	if (nr_rows > MAX_MAP_ENTRIES)
 		return -EINVAL;
 
-	ret = scmi_xfer_get_init(handle, MEMLAT_MON_FREQ_MAP,
-				SCMI_PROTOCOL_MEMLAT,
+	ret = ph->xops->xfer_get_init(ph, MEMLAT_MON_FREQ_MAP,
 				sizeof(*msg), sizeof(*msg), &t);
 	if (ret)
 		return ret;
@@ -178,20 +175,19 @@ static int scmi_freq_map(const struct scmi_handle *handle,
 		tbl[i].v1 = cpu_to_le32(src[i].v1);
 		tbl[i].v2 = cpu_to_le32(src[i].v2);
 	}
-	ret = scmi_do_xfer(handle, t);
-	scmi_xfer_put(handle, t);
+	ret = ph->xops->do_xfer(ph, t);
+	ph->xops->xfer_put(ph, t);
 	return ret;
 }
 
 #define scmi_send_cmd(name, _msg_id)					\
-static int scmi_##name(const struct scmi_handle *handle,		\
+static int scmi_##name(const struct scmi_protocol_handle *ph,		\
 				u32 cpus_mpidr, u32 mon_type, u32 val)	\
 {									\
 	int ret = 0;							\
 	struct scmi_xfer *t;						\
 	struct scalar_param_msg *msg;					\
-	ret = scmi_xfer_get_init(handle, _msg_id,			\
-				SCMI_PROTOCOL_MEMLAT,			\
+	ret = ph->xops->xfer_get_init(ph, _msg_id,			\
 				sizeof(*msg), sizeof(*msg), &t);	\
 	if (ret)							\
 		return ret;						\
@@ -199,8 +195,8 @@ static int scmi_##name(const struct scmi_handle *handle,		\
 	msg->cpumask = cpu_to_le32(cpus_mpidr);				\
 	msg->mon_type = cpu_to_le32(mon_type);				\
 	msg->val = cpu_to_le32(val);					\
-	ret = scmi_do_xfer(handle, t);					\
-	scmi_xfer_put(handle, t);					\
+	ret = ph->xops->do_xfer(ph, t);					\
+	ph->xops->xfer_put(ph, t);					\
 	return ret;							\
 }									\
 
@@ -212,57 +208,55 @@ scmi_send_cmd(sample_ms, MEMLAT_SAMPLE_MS);
 scmi_send_cmd(min_freq, MEMLAT_SET_MIN_FREQ);
 scmi_send_cmd(max_freq, MEMLAT_SET_MAX_FREQ);
 
-static int scmi_send_start_stop(const struct scmi_handle *handle,
+static int scmi_send_start_stop(const struct scmi_protocol_handle *ph,
 				u32 cpus_mpidr, u32 mon_type, u32 msg_id)
 {
 	int ret = 0;
 	struct scmi_xfer *t;
 	struct scalar_param_msg *msg;
 
-	ret = scmi_xfer_get_init(handle, msg_id,
-				SCMI_PROTOCOL_MEMLAT,
+	ret = ph->xops->xfer_get_init(ph, msg_id,
 				sizeof(*msg), sizeof(*msg), &t);
 	if (ret)
 		return ret;
 	msg = t->tx.buf;
 	msg->cpumask = cpu_to_le32(cpus_mpidr);
 	msg->mon_type = cpu_to_le32(mon_type);
-	ret = scmi_do_xfer(handle, t);
-	scmi_xfer_put(handle, t);
+	ret = ph->xops->do_xfer(ph, t);
+	ph->xops->xfer_put(ph, t);
 
 	return ret;
 }
 
-static int scmi_stop_mon(const struct scmi_handle *handle,
+static int scmi_stop_mon(const struct scmi_protocol_handle *ph,
 				u32 cpus_mpidr, u32 mon_type)
 {
-	return scmi_send_start_stop(handle, cpus_mpidr,
+	return scmi_send_start_stop(ph, cpus_mpidr,
 				mon_type, MEMLAT_STOP_MONITOR);
 }
 
-static int scmi_start_mon(const struct scmi_handle *handle,
+static int scmi_start_mon(const struct scmi_protocol_handle *ph,
 				u32 cpus_mpidr, u32 mon_type)
 {
-	return scmi_send_start_stop(handle, cpus_mpidr,
+	return scmi_send_start_stop(ph, cpus_mpidr,
 				mon_type, MEMLAT_START_MONITOR);
 }
 
-static int scmi_get_data(const struct scmi_handle *handle, u8 *buf)
+static int scmi_get_data(const struct scmi_protocol_handle *ph, u8 *buf)
 {
 	int ret = 0;
 	struct scmi_xfer *t;
 	u32 prev_cnt = 0;
 	struct scalar_param_msg *msg;
 
-	ret = scmi_xfer_get_init(handle, MEMLAT_GET_DATA,
-				 SCMI_PROTOCOL_MEMLAT, sizeof(*msg),
-				 SCMI_MAX_RX_SIZE, &t);
+	ret = ph->xops->xfer_get_init(ph, MEMLAT_GET_DATA, sizeof(*msg),
+				      SCMI_MAX_RX_SIZE, &t);
 	if (ret)
 		return ret;
 	do {
-		ret = scmi_do_xfer(handle, t);
+		ret = ph->xops->do_xfer(ph, t);
 		if (ret == -ETIMEDOUT)
-			ret = scmi_do_xfer(handle, t);
+			ret = ph->xops->do_xfer(ph, t);
 		if (ret < 0)
 			break;
 
@@ -270,31 +264,30 @@ static int scmi_get_data(const struct scmi_handle *handle, u8 *buf)
 		prev_cnt += t->rx.len;
 	} while (t->rx.len >= SCMI_MAX_GET_DATA_SIZE);
 
-	scmi_xfer_put(handle, t);
+	ph->xops->xfer_put(ph, t);
 
 	return ret;
 }
 
-static int scmi_set_log_level(const struct scmi_handle *handle, u32 val)
+static int scmi_set_log_level(const struct scmi_protocol_handle *ph, u32 val)
 {
 	int ret = 0;
 	struct scmi_xfer *t;
 	u32 *ptr;
 
-	ret = scmi_xfer_get_init(handle, MEMLAT_SET_LOG_LEVEL,
-				SCMI_PROTOCOL_MEMLAT, sizeof(u32),
-				sizeof(u32), &t);
+	ret = ph->xops->xfer_get_init(ph, MEMLAT_SET_LOG_LEVEL, sizeof(u32),
+				      sizeof(u32), &t);
 	if (ret)
 		return ret;
 	ptr = (u32 *)t->tx.buf;
 	*ptr = cpu_to_le32(val);
-	ret = scmi_do_xfer(handle, t);
-	scmi_xfer_put(handle, t);
+	ret = ph->xops->do_xfer(ph, t);
+	ph->xops->xfer_put(ph, t);
 
 	return ret;
 }
 
-static struct scmi_memlat_vendor_ops memlat_ops = {
+static const struct scmi_memlat_vendor_ops memlat_proto_ops = {
 	.set_cpu_grp = scmi_set_cpu_grp,
 	.freq_map = scmi_freq_map,
 	.set_mon = scmi_set_mon,
@@ -313,23 +306,25 @@ static struct scmi_memlat_vendor_ops memlat_ops = {
 	.get_data = scmi_get_data,
 };
 
-static int scmi_memlat_vendor_protocol_init(struct scmi_handle *handle)
+static int scmi_memlat_vendor_protocol_init(const struct scmi_protocol_handle *ph)
 {
 	u32 version;
 
-	scmi_version_get(handle, SCMI_PROTOCOL_MEMLAT, &version);
+	ph->xops->version_get(ph, &version);
 
-	dev_dbg(handle->dev, "memlat version %d.%d\n",
+	dev_dbg(ph->dev, "memlat version %d.%d\n",
 		PROTOCOL_REV_MAJOR(version), PROTOCOL_REV_MINOR(version));
-
-	handle->memlat_ops = &memlat_ops;
 
 	return 0;
 }
 
-static int __init scmi_memlat_init(void)
-{
-	return scmi_protocol_register(SCMI_PROTOCOL_MEMLAT,
-				      &scmi_memlat_vendor_protocol_init);
-}
-subsys_initcall(scmi_memlat_init);
+static const struct scmi_protocol scmi_memlat = {
+	.id = SCMI_PROTOCOL_MEMLAT,
+	.owner = THIS_MODULE,
+	.init_instance = &scmi_memlat_vendor_protocol_init,
+	.ops = &memlat_proto_ops,
+};
+module_scmi_protocol(scmi_memlat);
+
+MODULE_DESCRIPTION("SCMI Memlat vendor protocol");
+MODULE_LICENSE("GPL v2");

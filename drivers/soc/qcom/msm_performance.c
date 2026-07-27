@@ -938,11 +938,15 @@ module_param_cb(evnt_gplaf_pid, &param_ops_game_start_pid, NULL, 0644);
 
 /*******************************GFX Call************************************/
 #ifdef CONFIG_QTI_PLH
-static struct scmi_handle *plh_handle;
-void rimps_plh_init(struct scmi_handle *handle)
+static const struct scmi_protocol_handle *plh_ph;
+static const struct scmi_plh_vendor_ops *plh_ops;
+void rimps_plh_init(const struct scmi_plh_vendor_ops *ops,
+		    const struct scmi_protocol_handle *ph)
 {
-	if (handle)
-		plh_handle = handle;
+	if (ops && ph) {
+		plh_ops = ops;
+		plh_ph = ph;
+	}
 }
 EXPORT_SYMBOL(rimps_plh_init);
 
@@ -958,14 +962,14 @@ static int splh_notif, splh_init_done, plh_log_level;
 static int set_plh_log_level(const char *buf, const struct kernel_param *kp)
 {
 	int ret, log_val_backup;
-	struct scmi_plh_vendor_ops *ops;
+	const struct scmi_plh_vendor_ops *ops;
 
-	if (!plh_handle || !plh_handle->plh_ops) {
+	if (!plh_ph || !plh_ops) {
 		pr_err("msm_perf: plh scmi handle or vendor ops null\n");
 		return -EINVAL;
 	}
 
-	ops = plh_handle->plh_ops;
+	ops = plh_ops;
 
 	log_val_backup = plh_log_level;
 
@@ -976,7 +980,7 @@ static int set_plh_log_level(const char *buf, const struct kernel_param *kp)
 	}
 
 	plh_log_level = clamp(plh_log_level, PLH_MIN_LOG_LEVEL, PLH_MAX_LOG_LEVEL);
-	ret = ops->set_plh_log_level(plh_handle, plh_log_level);
+	ret = ops->set_plh_log_level(plh_ph, plh_log_level);
 	if (ret < 0) {
 		plh_log_level = log_val_backup;
 		pr_err("msm_perf: setting new plh_log_level failed, ret=%d\n", ret);
@@ -997,10 +1001,10 @@ static int init_splh_notif(const char *buf)
 	u16 tmp[SPLH_INIT_IPC_FREQ_TBL_PARAMS] = {0};
 	u16 *ptmp = tmp, ntokens, nfps, n_ipc_freq_pair, tmp_valid_len = 0;
 	const char *cp, *cp1;
-	struct scmi_plh_vendor_ops *ops;
+	const struct scmi_plh_vendor_ops *ops;
 
 	/* buf contains the init info from user */
-	if (buf == NULL || !plh_handle || !plh_handle->plh_ops)
+	if (buf == NULL || !plh_ph || !plh_ops)
 		return -EINVAL;
 
 	cp = buf;
@@ -1075,8 +1079,8 @@ static int init_splh_notif(const char *buf)
 		return -EINVAL;
 	}
 
-	ops = plh_handle->plh_ops;
-	ret = ops->init_splh_ipc_freq_tbl(plh_handle, tmp, tmp_valid_len);
+	ops = plh_ops;
+	ret = ops->init_splh_ipc_freq_tbl(plh_ph, tmp, tmp_valid_len);
 	if (ret < 0)
 		return -EINVAL;
 
@@ -1089,18 +1093,18 @@ static int init_splh_notif(const char *buf)
 static void activate_splh_notif(void)
 {
 	int ret;
-	struct scmi_plh_vendor_ops *ops;
+	const struct scmi_plh_vendor_ops *ops;
 	/* received event notification here */
-	if (!plh_handle || !plh_handle->plh_ops) {
+	if (!plh_ph || !plh_ops) {
 		pr_err("msm_perf: splh not supported\n");
 		return;
 	}
-	ops = plh_handle->plh_ops;
+	ops = plh_ops;
 
 	if (splh_notif)
-		ret = ops->start_splh(plh_handle, splh_notif); /* splh_notif is fps */
+		ret = ops->start_splh(plh_ph, splh_notif); /* splh_notif is fps */
 	else
-		ret = ops->stop_splh(plh_handle);
+		ret = ops->stop_splh(plh_ph);
 
 	if (ret < 0) {
 		pr_err("msm_perf: splh start or stop failed, ret=%d\n", ret);

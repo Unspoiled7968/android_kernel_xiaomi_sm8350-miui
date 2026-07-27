@@ -11,16 +11,23 @@
 #include <linux/errno.h>
 #include <linux/platform_device.h>
 
-extern void rimps_plh_init(struct scmi_handle *handle);
+extern void rimps_plh_init(const struct scmi_plh_vendor_ops *ops,
+			   const struct scmi_protocol_handle *ph);
 
 static int scmi_plh_probe(struct scmi_device *sdev)
 {
-	struct scmi_handle *handle = sdev->handle;
+	const struct scmi_handle *handle = sdev->handle;
+	const struct scmi_plh_vendor_ops *ops;
+	struct scmi_protocol_handle *ph;
 
-	if (!handle || !handle->plh_ops)
+	if (!handle)
 		return -ENODEV;
 
-	rimps_plh_init(handle);
+	ops = handle->devm_get_protocol(sdev, SCMI_PROTOCOL_PLH, &ph);
+	if (IS_ERR(ops))
+		return PTR_ERR(ops);
+
+	rimps_plh_init(ops, ph);
 	return 0;
 }
 
