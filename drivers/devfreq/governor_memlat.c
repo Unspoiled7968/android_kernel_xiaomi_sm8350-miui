@@ -197,7 +197,8 @@ static int gov_start(struct devfreq *df)
 		goto err_sysfs;
 
 	mutex_lock(&df->lock);
-	df->min_freq = df->max_freq;
+	/* 5.10 folds scaling_min_freq into get_freq_range()'s clamp */
+	df->scaling_min_freq = df->scaling_max_freq;
 	update_devfreq(df);
 	mutex_unlock(&df->lock);
 
@@ -421,7 +422,7 @@ static int devfreq_memlat_ev_handler(struct devfreq *df,
 		dev_dbg(df->dev.parent, "Resumed memlat governor\n");
 		break;
 
-	case DEVFREQ_GOV_INTERVAL:
+	case DEVFREQ_GOV_UPDATE_INTERVAL:
 		node = df->data;
 		hw = node->hw;
 		sample_ms = *(unsigned int *)data;
@@ -430,7 +431,7 @@ static int devfreq_memlat_ev_handler(struct devfreq *df,
 		if (hw->request_update_ms)
 			hw->request_update_ms(hw, sample_ms);
 		if (!hw->should_ignore_df_monitor)
-			devfreq_interval_update(df, &sample_ms);
+			devfreq_update_interval(df, &sample_ms);
 		break;
 	}
 
