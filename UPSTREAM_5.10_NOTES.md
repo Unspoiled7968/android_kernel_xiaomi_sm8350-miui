@@ -62,6 +62,52 @@ ported surgically; iommu/pinctrl/pdc/glink ported; display, camera, audio and to
   DMA_ATTR_FORCE_(NON_)COHERENT bits 18/19, IOMMU_USE_UPSTREAM_HINT/LLC_NWA bits 8/9,
   IO_PGTABLE quirk bits 6/7, BPF_SOCK_OPS_VOIP_CB appended after 5.10 callbacks.
 
+## Second build-fix phase (2026-07-27)
+CI progress is measured in compiled objects: 770 -> 2400 -> 3388 and climbing. Most of the
+remaining work was not conflict resolution but genuine 5.4 -> 5.10 API drift in vendor code.
+The errors were found faster by *predicting* them than by waiting for 25-minute CI rounds:
+`git archive` the 5.4 base's include/ to a temp tree, diff it against the working tree for
+(a) symbols declared then but not now, (b) prototypes whose argument count changed,
+(c) struct members removed, (d) macros and enum constants removed, (e) ops-table callback
+signatures - then intersect each with what the vendor trees actually call or initialise.
+
+Larger items in this phase:
+- ASoC: 5.10 dissolved `struct snd_pcm_ops` into `snd_soc_component_driver`, with the
+  component passed as a new first argument to every callback; `pcm_new`/`pcm_free` became
+  `pcm_construct`/`pcm_destruct`. Twelve techpack/audio drivers converted. There is no
+  `compat_ioctl` member any more and soc-pcm never wires one up, so the LSM drivers' 32-bit
+  ioctl paths are gone (SNDRV_LSM_* from 32-bit userspace returns -ENOIOCTLCMD).
+  Compressed audio is the same change: `snd_compr_ops` -> const `snd_compress_ops`.
+- crypto: `drivers/crypto/msm` still registered ciphers through the ablkcipher interface that
+  5.5 deleted. Every file there was byte-identical to the 5.4 CAF original, so the whole
+  directory was replaced with CLO msm-5.10's, i.e. Qualcomm's own skcipher port.
+- SCMI: 5.10 made protocols self-contained (transfers through the protocol handle's xops,
+  `struct scmi_protocol` registration, consumers asking the handle for ops). The QTI memlat
+  and PLH vendor protocols and their consumers were ported to that shape; `memlat_ops` and
+  `plh_ops` are gone from `struct scmi_handle`.
+- debugfs: 5.10 made `debugfs_create_u32()` and friends return void, but around sixty vendor
+  files still assign and error-check the result. Rather than edit all of them, debugfs.h now
+  wraps those helpers in macros that yield the parent dentry (never NULL, never an ERR_PTR),
+  with `#undef`s where debugfs itself defines the real functions.
+- Smaller renames applied across the vendor trees: `digital_mute` -> `mute_stream` +
+  `no_capture_mute`, `rtd->cpu_dai`/`codec_dai` -> `asoc_rtd_to_cpu/codec()`,
+  `VFL_TYPE_GRABBER` -> `VFL_TYPE_VIDEO`, `ndo_tx_timeout` gaining a queue index,
+  `last_residency` -> `last_residency_ns`, thermal `get_mode`/`set_mode` ->
+  `thermal_zone_device_{enable,disable}`, procfs entries needing `struct proc_ops`,
+  `pr_warning` -> `pr_warn`, `probe_kernel_address` -> `get_kernel_nofault`,
+  `ktime_to_timespec` -> `ktime_to_timespec64`, `iio_device_alloc` gaining a parent device,
+  `kernel_read_file_from_path` moving header and gaining an offset.
+
+Definitions that had to be restored because the merge replaced the file that held them:
+`of_thermal_handle_trip{,_temp}` (of-thermal.c became thermal_of.c) and `iommu_get_fault_ids`
+(CAF's arm-smmu.c became the mainline driver; it now reports the ids as unavailable, which
+only affects a diagnostic print in the camera SMMU fault handler).
+
+Two real bugs the merge had left behind, both found as compile errors: `struct mmc_host`
+carried *both* the CAF `keyslot_manager *ksm` and 5.10's `blk_keyslot_manager ksm`, and
+`cma_alloc()`'s last argument is a gfp_t in this tree, not the old `no_warn` bool - the
+minidump and ION CMA heaps were passing `false`, i.e. no GFP flags at all.
+
 ## Safety (flashing)
 - Building/editing source touches no phone. Worst case flashing = bootloop (soft-brick):
   `fastboot flash boot <stock_boot.img>` recovers. Kernel flash does NOT wipe data
