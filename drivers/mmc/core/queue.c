@@ -505,7 +505,6 @@ int mmc_init_queue(struct mmc_queue *mq, struct mmc_card *card)
 	blk_queue_rq_timeout(mq->queue, 60 * HZ);
 
 	mmc_setup_queue(mq, card);
-	mmc_crypto_setup_queue(host, mq->queue);
 	return 0;
 
 free_tag_set:
