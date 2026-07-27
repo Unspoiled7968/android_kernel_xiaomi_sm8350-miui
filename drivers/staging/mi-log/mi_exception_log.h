@@ -10,7 +10,9 @@
 
 #define MAXSIZE 100
 #define DATASIZE 1024
+#ifndef MIN
 #define MIN( x, y ) ( ((x) < (y)) ? (x) : (y) )
+#endif
 
 struct exception_log_dev {
 	dev_t devt;

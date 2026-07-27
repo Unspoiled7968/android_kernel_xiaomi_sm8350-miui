@@ -104,7 +104,7 @@ static int update_node(struct devfreq_node *node)
 	if (!node->timeout)
 		goto out;
 
-	if (df->previous_freq <= df->min_freq)
+	if (df->previous_freq <= df->scaling_min_freq)
 		goto out;
 
 	schedule_delayed_work(&node->dwork,
@@ -333,10 +333,10 @@ static unsigned int interpolate_freq(struct devfreq *df, unsigned int cpu)
 		dev_min = freq_table[0];
 		dev_max = freq_table[df->profile->max_state - 1];
 	} else {
-		if (df->max_freq <= df->min_freq)
+		if (df->scaling_max_freq <= df->scaling_min_freq)
 			return 0;
-		dev_min = df->min_freq;
-		dev_max = df->max_freq;
+		dev_min = df->scaling_min_freq;
+		dev_max = df->scaling_max_freq;
 	}
 
 	cpu_percent = ((cpu_freq - cpu_min) * 100) / (cpu_max - cpu_min);

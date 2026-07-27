@@ -23,7 +23,9 @@
 
 #define KB(pages) ((pages) << (PAGE_SHIFT - 10))
 #define PAGES(mb) ((mb * 1024) >> (PAGE_SHIFT - 10))
+#ifndef MAX
 #define MAX(a,b) ((a)>(b) ? (a):(b))
+#endif
 
 #define MI_RECLAIM_MODE_RO  0440
 #define MI_RECLAIM_MODE_RW  0660

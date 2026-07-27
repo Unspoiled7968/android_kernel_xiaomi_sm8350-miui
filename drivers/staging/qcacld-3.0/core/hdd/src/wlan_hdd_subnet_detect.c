@@ -33,6 +33,7 @@
 #include "wlan_hdd_main.h"
 #include "wlan_hdd_subnet_detect.h"
 #include <qca_vendor.h>
+#include <wlan_cfg80211.h>
 
 /*
  * define short names for the global vendor params
