@@ -419,10 +419,9 @@ static int cpufreq_get_cur_state(struct thermal_cooling_device *cdev,
  *
  * Return: 0 on success, an error code otherwise.
  */
-static int cpufreq_set_cur_state(struct thermal_cooling_device *cdev,
-				 unsigned long state)
+static int __cpufreq_set_cur_state(struct cpufreq_cooling_device *cpufreq_cdev,
+				   unsigned long state)
 {
-	struct cpufreq_cooling_device *cpufreq_cdev = cdev->devdata;
 	struct cpumask *cpus;
 	unsigned int frequency;
 	unsigned long max_capacity, capacity;
@@ -451,6 +450,44 @@ static int cpufreq_set_cur_state(struct thermal_cooling_device *cdev,
 
 	return ret;
 }
+
+static int cpufreq_set_cur_state(struct thermal_cooling_device *cdev,
+				 unsigned long state)
+{
+	return __cpufreq_set_cur_state(cdev->devdata, state);
+}
+
+/*
+ * cpu_limits_set_level - cap a CPU's frequency through its cooling device
+ *
+ * The Xiaomi thermal_message sysfs interface writes "cpu<N> <kHz>" here. Pick
+ * the lowest cooling state whose frequency is still at or below the requested
+ * ceiling and apply it. 5.10's cooling device does not keep a back-pointer to
+ * its thermal_cooling_device, hence the shared helper above.
+ */
+void cpu_limits_set_level(unsigned int cpu, unsigned int max_freq)
+{
+	struct cpufreq_cooling_device *cpufreq_cdev;
+	unsigned int level;
+
+	mutex_lock(&cooling_list_lock);
+	list_for_each_entry(cpufreq_cdev, &cpufreq_cdev_list, node) {
+		if (cpufreq_cdev->policy->cpu != cpu)
+			continue;
+
+		for (level = 0; level <= cpufreq_cdev->max_level; level++) {
+			if (max_freq < get_state_freq(cpufreq_cdev, level))
+				continue;
+			if (level > 0)
+				level--;
+			__cpufreq_set_cur_state(cpufreq_cdev, level);
+			break;
+		}
+		break;
+	}
+	mutex_unlock(&cooling_list_lock);
+}
+EXPORT_SYMBOL_GPL(cpu_limits_set_level);
 
 /* Bind cpufreq callbacks to thermal cooling device ops */
 

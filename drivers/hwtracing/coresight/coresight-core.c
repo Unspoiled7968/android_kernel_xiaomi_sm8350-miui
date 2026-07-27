@@ -21,6 +21,7 @@
 
 #include "coresight-etm-perf.h"
 #include "coresight-priv.h"
+#include <linux/coresight-cti.h>
 
 static DEFINE_MUTEX(coresight_mutex);
 static DEFINE_PER_CPU(struct coresight_device *, csdev_sink);
@@ -121,6 +122,34 @@ static int coresight_source_is_unique(struct coresight_device *csdev)
 	return !bus_for_each_dev(&coresight_bustype, NULL,
 				 csdev, coresight_id_match);
 }
+
+/*
+ * The CAF CTI driver (coresight-cti.c) is not in this tree's Makefile - 5.10
+ * builds its own coresight-cti-core.c instead, which has no equivalent API.
+ * The tmc-etr/etf sinks call these with cti_flush/cti_reset pointers that are
+ * never populated here, so the trigger wiring is inert either way.
+ */
+int coresight_cti_map_trigin(struct coresight_cti *cti, int trig, int ch)
+{
+	return -ENODEV;
+}
+EXPORT_SYMBOL(coresight_cti_map_trigin);
+
+int coresight_cti_map_trigout(struct coresight_cti *cti, int trig, int ch)
+{
+	return -ENODEV;
+}
+EXPORT_SYMBOL(coresight_cti_map_trigout);
+
+void coresight_cti_unmap_trigin(struct coresight_cti *cti, int trig, int ch)
+{
+}
+EXPORT_SYMBOL(coresight_cti_unmap_trigin);
+
+void coresight_cti_unmap_trigout(struct coresight_cti *cti, int trig, int ch)
+{
+}
+EXPORT_SYMBOL(coresight_cti_unmap_trigout);
 
 static int coresight_find_link_inport(struct coresight_device *csdev,
 				      struct coresight_device *parent)

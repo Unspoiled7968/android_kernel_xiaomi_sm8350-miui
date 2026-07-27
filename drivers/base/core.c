@@ -1922,6 +1922,14 @@ void unlock_device_hotplug(void)
 	mutex_unlock(&device_hotplug_lock);
 }
 
+/*
+ * Used by the vendor try_online_one_block() path in mm/memory_hotplug.c.
+ */
+int trylock_device_hotplug(void)
+{
+	return mutex_trylock(&device_hotplug_lock);
+}
+
 int lock_device_hotplug_sysfs(void)
 {
 	if (mutex_trylock(&device_hotplug_lock))
