@@ -15,6 +15,7 @@
 #include <linux/crypto.h>
 #include <asm/setup.h>
 #include "mi_hwconf_manager.h"
+#include <crypto/internal/cipher.h>
 
 #define MAX_LEN_STR 256
 char *print_buf;

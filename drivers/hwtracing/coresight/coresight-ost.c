@@ -20,7 +20,9 @@
 #define STM_MAKE_VERSION(ma, mi)	((ma << 8) | mi)
 #define STM_HEADER_MAGIC		(0x5953)
 
+#ifndef STM_FLAG_MARKED
 #define STM_FLAG_MARKED			BIT(4)
+#endif
 
 #define STM_TRACE_BUF_SIZE		4096
 

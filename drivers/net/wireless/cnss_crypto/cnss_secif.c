@@ -4,6 +4,7 @@
 #include <linux/export.h>
 #include <linux/qcomwlan_secif.h>
 #include <crypto/aes.h>
+#include <crypto/internal/cipher.h>
 
 /* APIs for calling crypto routines from kernel
  */
