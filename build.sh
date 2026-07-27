@@ -56,6 +56,40 @@ make_defconfig(){
     echo "------------------------------";
 
     make $FINAL_KERNEL_BUILD_PARA $DEFCONFIG_NAME;
+
+    audit_defconfig;
+}
+
+# Every option the vendor fragments ask for that did NOT survive olddefconfig.
+# merge_config only *requests* symbols; any whose Kconfig dependencies changed
+# between 5.4 and 5.10 are dropped silently, which is exactly how a critical
+# driver disappears from a ported kernel without a single build error.
+audit_defconfig(){
+    local cfg="$TARGET_OUT/.config"
+    [ -f "$cfg" ] || { echo "audit: no $cfg"; return 0; }
+
+    echo "=============================================="
+    echo " Defconfig audit: requested but NOT in .config"
+    echo "=============================================="
+    local missing=0
+    for frag in $DEFCONFIG_NAME; do
+        local path="$DEFCONFIG_PATH/$frag"
+        [ -f "$path" ] || continue
+        while IFS= read -r line; do
+            case "$line" in
+                CONFIG_*=y|CONFIG_*=m)
+                    sym="${line%%=*}"
+                    if ! grep -qx -- "$line" "$cfg"; then
+                        actual=$(grep -E "^($sym=| *# $sym is not set)" "$cfg" || echo "  (absent entirely)")
+                        echo "  $frag: wanted '$line' -> got '$actual'"
+                        missing=$((missing + 1))
+                    fi
+                    ;;
+            esac
+        done < "$path"
+    done
+    echo "---- $missing requested options did not take effect"
+    echo "=============================================="
 }
 
 menu_config(){
