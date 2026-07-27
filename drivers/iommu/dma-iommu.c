@@ -1309,52 +1309,22 @@ static const struct dma_map_ops iommu_dma_ops = {
 	.get_merge_boundary	= iommu_dma_get_merge_boundary,
 };
 
-/*
- * The IOMMU core code allocates the default DMA domain, which the underlying
- * IOMMU driver needs to support via the dma-iommu layer.
- */
-static int iommu_init_dma_resources(struct device *dev,
-				      struct iommu_domain *domain, u64 dma_base,
-				      u64 size)
-{
-	int is_fast = 0, ret = 0;
-
-	iommu_domain_get_attr(domain, DOMAIN_ATTR_FAST, &is_fast);
-
-	if (is_fast) {
-		dev->dma_ops = fast_smmu_get_dma_ops();
-	} else {
-		ret = iommu_dma_init_domain(domain, dma_base, size, dev);
-		if (!ret)
-			dev->dma_ops = &iommu_dma_ops;
-	}
-
-	return ret;
-}
 
 void iommu_setup_dma_ops(struct device *dev, u64 dma_base, u64 size)
 {
 	struct iommu_domain *domain = iommu_get_domain_for_dev(dev);
-	int s1_bypass = 0;
 
 	if (!domain)
 		goto out_err;
 
-	iommu_domain_get_attr(domain, DOMAIN_ATTR_S1_BYPASS, &s1_bypass);
-	if (s1_bypass)
-		return;
-
 	/*
 	 * The IOMMU core code allocates the default DMA domain, which the
 	 * underlying IOMMU driver needs to support via the dma-iommu layer.
-	 *
-	 * Also allow iommu-debug to call arch_setup_dma_ops to reconfigure
-	 * itself.
 	 */
-	if (domain->type == IOMMU_DOMAIN_DMA ||
-	    of_device_is_compatible(dev->of_node, "iommu-debug-test")) {
-		if (iommu_init_dma_resources(dev, domain, dma_base, size))
+	if (domain->type == IOMMU_DOMAIN_DMA) {
+		if (iommu_dma_init_domain(domain, dma_base, size, dev))
 			goto out_err;
+		dev->dma_ops = &iommu_dma_ops;
 	}
 
 	return;
