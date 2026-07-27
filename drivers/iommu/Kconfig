@@ -179,6 +179,36 @@ config QCOM_IOMMU_IO_PGTABLE_QUIRKS
 
 	  If unsure, say N here.
 
+
+config QCOM_IOMMU_UTIL
+	tristate "Support for qcom additions to the iommu framework"
+	help
+	  QCOM iommu drivers support a general set of functionality in
+	  addition to the functions provided by the iommu framework.
+	  This includes devicetree properties for configuring iommu
+	  groups and iova ranges.
+
+	  Say N here if unsure.
+
+config ARM_SMMU_CONTEXT_FAULT_RETRY
+	bool "Context fault retry sequence"
+	depends on ARM_SMMU && (ARCH_WAIPIO || ARCH_PARROT)
+	help
+	  In some cases, issuing a tlb invalidate operation after a
+	  context fault may cause a subsequent retry of the failing
+	  address to succeed. Only applies to clients which have
+	  stall-on-fault enabled, like display.
+
+config ARM_SMMU_CAPTUREBUS_DEBUGFS
+	bool "Expose capturebus control debugfs nodes"
+	depends on ARM_SMMU && QCOM_IOMMU_DEBUG
+	help
+	  Support for exposing debugfs nodes to configure capturebus for each
+	  tbu of an SMMU. This also exposes debugfs nodes to get the snapshot
+	  of capturebus.
+
+	  If unsure, say N here.
+
 endmenu
 
 config IOMMU_DEBUGFS

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2016-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
  */
 
 #define pr_fmt(fmt)	"io-pgtable-fast: " fmt
@@ -14,10 +14,10 @@
 #include <linux/io-pgtable.h>
 #include <linux/io-pgtable-fast.h>
 #include <linux/mm.h>
+#include <linux/qcom-io-pgtable.h>
 #include <asm/cacheflush.h>
 #include <linux/vmalloc.h>
 #include <linux/dma-mapping.h>
-
 
 #define AV8L_FAST_MAX_ADDR_BITS		48
 
@@ -68,7 +68,7 @@
 #define ARM_32_LPAE_TCR_EAE		(1 << 31)
 #define ARM_64_LPAE_S2_TCR_RES1		(1 << 31)
 
-#define AV8L_FAST_TCR_TG0_4K		0
+#define AV8L_FAST_TCR_TG0_4K		(0 << 14)
 #define AV8L_FAST_TCR_TG0_64K		(1 << 14)
 #define AV8L_FAST_TCR_TG0_16K		(2 << 14)
 
@@ -147,7 +147,7 @@ static void __av8l_clean_range(struct device *dev, void *start, void *end)
 		while (start < end) {
 			page_end = round_down((unsigned long)start + PAGE_SIZE,
 					      PAGE_SIZE);
-			region_end = min_t(void *, end, (void *)page_end);
+			region_end = min_t(void *, end, page_end);
 			size = region_end - start;
 			dma_sync_single_for_device(dev, av8l_dma_addr(start),
 						   size, DMA_TO_DEVICE);
@@ -233,7 +233,7 @@ av8l_fast_prot_to_pte(struct av8l_fast_io_pgtable *data, int prot)
 	else if (prot & IOMMU_CACHE)
 		pte |= (AV8L_FAST_MAIR_ATTR_IDX_CACHE
 			<< AV8L_FAST_PTE_ATTRINDX_SHIFT);
-	else if (prot & IOMMU_USE_UPSTREAM_HINT)
+	else if (prot & IOMMU_SYS_CACHE)
 		pte |= (AV8L_FAST_MAIR_ATTR_IDX_UPSTREAM
 			<< AV8L_FAST_PTE_ATTRINDX_SHIFT);
 
@@ -269,6 +269,18 @@ int av8l_fast_map_public(struct io_pgtable_ops *ops, unsigned long iova,
 			 phys_addr_t paddr, size_t size, int prot)
 {
 	return av8l_fast_map(ops, iova, paddr, size, prot, GFP_ATOMIC);
+}
+
+static int av8l_fast_map_pages(struct io_pgtable_ops *ops, unsigned long iova,
+			       phys_addr_t paddr, size_t pgsize, size_t pgcount,
+			       int prot, gfp_t gfp, size_t *mapped)
+{
+	int ret = av8l_fast_map(ops, iova, paddr, pgsize * pgcount, prot, gfp);
+
+	if (!ret)
+		*mapped = pgsize * pgcount;
+
+	return ret;
 }
 
 static size_t
@@ -307,27 +319,34 @@ static size_t av8l_fast_unmap(struct io_pgtable_ops *ops, unsigned long iova,
 	return __av8l_fast_unmap(ops, iova, size, false);
 }
 
+static size_t av8l_fast_unmap_pages(struct io_pgtable_ops *ops, unsigned long iova,
+				    size_t pgsize, size_t pgcount,
+				    struct iommu_iotlb_gather *gather)
+{
+	return __av8l_fast_unmap(ops, iova, pgsize * pgcount, false);
+}
+
 static int av8l_fast_map_sg(struct io_pgtable_ops *ops,
 			unsigned long iova, struct scatterlist *sgl,
-			unsigned int nents, int prot, size_t *size)
+			unsigned int nents, int prot, gfp_t gfp, size_t *mapped)
 {
 	struct scatterlist *sg;
 	int i;
 
 	for_each_sg(sgl, sg, nents, i) {
-		av8l_fast_map(ops, iova, sg_phys(sg), sg->length, prot,
-			      GFP_ATOMIC);
+		av8l_fast_map(ops, iova, sg_phys(sg), sg->length, prot, gfp);
 		iova += sg->length;
+		*mapped += sg->length;
 	}
 
-	return nents;
+	return 0;
 }
 
 int av8l_fast_map_sg_public(struct io_pgtable_ops *ops,
 			    unsigned long iova, struct scatterlist *sgl,
-			    unsigned int nents, int prot, size_t *size)
+			    unsigned int nents, int prot, size_t *mapped)
 {
-	return av8l_fast_map_sg(ops, iova, sgl, nents, prot, size);
+	return av8l_fast_map_sg(ops, iova, sgl, nents, prot, GFP_ATOMIC, mapped);
 }
 
 #if defined(CONFIG_ARM64)
@@ -399,7 +418,6 @@ static struct av8l_fast_io_pgtable *
 av8l_fast_alloc_pgtable_data(struct io_pgtable_cfg *cfg)
 {
 	struct av8l_fast_io_pgtable *data;
-	struct msm_io_pgtable_info *pgtbl_info = to_msm_io_pgtable_info(cfg);
 
 	data = kmalloc(sizeof(*data), GFP_KERNEL);
 	if (!data)
@@ -407,12 +425,13 @@ av8l_fast_alloc_pgtable_data(struct io_pgtable_cfg *cfg)
 
 	data->iop.ops = (struct io_pgtable_ops) {
 		.map		= av8l_fast_map,
+		.map_pages	= av8l_fast_map_pages,
+		.map_sg		= av8l_fast_map_sg,
 		.unmap		= av8l_fast_unmap,
+		.unmap_pages	= av8l_fast_unmap_pages,
 		.iova_to_phys	= av8l_fast_iova_to_phys,
 	};
 
-	pgtbl_info->map_sg = av8l_fast_map_sg;
-	pgtbl_info->is_iova_coherent = av8l_fast_iova_coherent;
 	return data;
 }
 
@@ -454,9 +473,9 @@ av8l_fast_prepopulate_pgtables(struct av8l_fast_io_pgtable *data,
 {
 	int i, j, pg = 0;
 	struct page **pages, *page;
+	struct qcom_io_pgtable_info *pgtbl_info = to_qcom_io_pgtable_info(cfg);
 	dma_addr_t pud, pmd;
 	int pmd_pg_index;
-	struct msm_io_pgtable_info *pgtbl_info = to_msm_io_pgtable_info(cfg);
 	dma_addr_t base = pgtbl_info->iova_base;
 	dma_addr_t end = pgtbl_info->iova_end;
 
@@ -568,7 +587,8 @@ av8l_fast_alloc_pgtable(struct io_pgtable_cfg *cfg, void *cookie)
 		tcr->irgn = AV8L_FAST_TCR_RGN_NC;
 		tcr->orgn = AV8L_FAST_TCR_RGN_WBWA;
 	} else if (cfg->coherent_walk) {
-		tcr->sh = AV8L_FAST_TCR_SH_OS;
+		/* Changed from SH_OS to SH_IS per io-pgtable-arm.c */
+		tcr->sh = AV8L_FAST_TCR_SH_IS;
 		tcr->irgn = AV8L_FAST_TCR_RGN_WBWA;
 		tcr->orgn = AV8L_FAST_TCR_RGN_WBWA;
 	} else {
@@ -620,7 +640,7 @@ av8l_fast_alloc_pgtable(struct io_pgtable_cfg *cfg, void *cookie)
 	if (av8l_fast_prepopulate_pgtables(data, cfg, cookie))
 		goto out_free_data;
 
-	/* TTBR */
+	/* TTBRs */
 	cfg->arm_lpae_s1_cfg.ttbr = virt_to_phys(data->pgd);
 	return &data->iop;
 
@@ -703,7 +723,7 @@ static int __init av8l_fast_positive_testing(void)
 	int failed = 0;
 	u64 iova;
 	struct io_pgtable_ops *ops;
-	struct msm_io_pgtable_info pgtable_info;
+	struct qcom_io_pgtable_info pgtable_info;
 	struct av8l_fast_io_pgtable *data;
 	av8l_fast_iopte *pmds;
 	u64 max = SZ_1G * 4ULL - 1;
@@ -711,7 +731,7 @@ static int __init av8l_fast_positive_testing(void)
 
 	pgtable_info.iova_base = base;
 	pgtable_info.iova_end = max;
-	pgtable_info.pgtbl_cfg = (struct io_pgtable_cfg) {
+	pgtable_info.cfg = (struct io_pgtable_cfg) {
 		.quirks = 0,
 		.tlb = &dummy_tlb_ops,
 		.ias = 32,
@@ -732,7 +752,7 @@ static int __init av8l_fast_positive_testing(void)
 
 	/* map the entire 4GB VA space with 4K map calls */
 	for (iova = base; iova < max; iova += SZ_4K) {
-		if (WARN_ON(ops->map(ops, iova, iova, SZ_4K, IOMMU_READ, GFP_KERNEL))) {
+		if (WARN_ON(ops->map(ops, iova, iova, SZ_4K, IOMMU_READ))) {
 			failed++;
 			continue;
 		}
@@ -752,7 +772,7 @@ static int __init av8l_fast_positive_testing(void)
 
 	/* map the entire 4GB VA space with 8K map calls */
 	for (iova = base; iova < max; iova += SZ_8K) {
-		if (WARN_ON(ops->map(ops, iova, iova, SZ_8K, IOMMU_READ, GFP_KERNEL))) {
+		if (WARN_ON(ops->map(ops, iova, iova, SZ_8K, IOMMU_READ))) {
 			failed++;
 			continue;
 		}
@@ -773,7 +793,7 @@ static int __init av8l_fast_positive_testing(void)
 
 	/* map the entire 4GB VA space with 16K map calls */
 	for (iova = base; iova < max; iova += SZ_16K) {
-		if (WARN_ON(ops->map(ops, iova, iova, SZ_16K, IOMMU_READ, GFP_KERNEL))) {
+		if (WARN_ON(ops->map(ops, iova, iova, SZ_16K, IOMMU_READ))) {
 			failed++;
 			continue;
 		}
@@ -794,7 +814,7 @@ static int __init av8l_fast_positive_testing(void)
 
 	/* map the entire 4GB VA space with 64K map calls */
 	for (iova = base; iova < max; iova += SZ_64K) {
-		if (WARN_ON(ops->map(ops, iova, iova, SZ_64K, IOMMU_READ, GFP_KERNEL))) {
+		if (WARN_ON(ops->map(ops, iova, iova, SZ_64K, IOMMU_READ))) {
 			failed++;
 			continue;
 		}
