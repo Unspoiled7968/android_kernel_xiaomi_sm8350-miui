@@ -1631,4 +1631,20 @@ static inline int sps_pipe_inject_zlt(unsigned long dev, u32 pipe_index)
 }
 #endif
 
+
+/*
+ * Newer CAF crypto masks the BAM's interrupts around bulk transfers. This
+ * tree's SPS driver has no per-BAM irq gate, so the interrupts simply stay
+ * enabled, which is what it always did.
+ */
+static inline int sps_bam_enable_irqs(unsigned long dev)
+{
+	return 0;
+}
+
+static inline int sps_bam_disable_irqs(unsigned long dev)
+{
+	return 0;
+}
+
 #endif /* _SPS_H_ */

@@ -5850,7 +5850,7 @@ int qce_f8_req(void *handle, struct qce_f8_req *req,
 	req_info = qce_alloc_req_info(pce_dev);
 	if (req_info < 0)
 		return -EBUSY;
-	req->current_req_info = req_info;
+	/* current_req_info is not in this tree's uapi qcota.h */
 	preq_info = &pce_dev->ce_request_info[req_info];
 	pce_sps_data = &preq_info->ce_sps;
 
@@ -5987,7 +5987,7 @@ int qce_f8_multi_pkt_req(void *handle, struct qce_f8_multi_pkt_req *mreq,
 	req_info = qce_alloc_req_info(pce_dev);
 	if (req_info < 0)
 		return -EBUSY;
-	req->current_req_info = req_info;
+	/* current_req_info is not in this tree's uapi qcota.h */
 	preq_info = &pce_dev->ce_request_info[req_info];
 	pce_sps_data = &preq_info->ce_sps;
 
@@ -6107,7 +6107,7 @@ int qce_f9_req(void *handle, struct qce_f9_req *req, void *cookie,
 	req_info = qce_alloc_req_info(pce_dev);
 	if (req_info < 0)
 		return -EBUSY;
-	req->current_req_info = req_info;
+	/* current_req_info is not in this tree's uapi qcota.h */
 	preq_info = &pce_dev->ce_request_info[req_info];
 	pce_sps_data = &preq_info->ce_sps;
 	switch (req->algorithm) {
@@ -6574,7 +6574,7 @@ static int qce_smmu_init(struct qce_device *pce_dev)
 			return -ENOMEM;
 	}
 	dma_set_max_seg_size(dev, DMA_BIT_MASK(32));
-	dma_set_seg_boundary(dev, (unsigned long)DMA_BIT_MASK(64));
+	dma_set_seg_boundary(dev, ~0UL);
 	return 0;
 }
 

@@ -194,7 +194,7 @@ static void populate_codec_list(struct msm_transcode_loopback *trans,
 	}
 }
 
-static int msm_transcode_loopback_open(struct snd_soc_component *component,
+static int msm_transcode_loopback_open(struct snd_soc_component *soc_component,
 				       struct snd_compr_stream *cstream)
 {
 	int ret = 0;
@@ -304,7 +304,7 @@ static void stop_transcoding(struct msm_transcode_loopback *trans)
 	}
 }
 
-static int msm_transcode_loopback_free(struct snd_soc_component *component,
+static int msm_transcode_loopback_free(struct snd_soc_component *soc_component,
 				       struct snd_compr_stream *cstream)
 {
 	struct snd_compr_runtime *runtime = cstream->runtime;
@@ -346,7 +346,7 @@ static int msm_transcode_loopback_free(struct snd_soc_component *component,
 	return ret;
 }
 
-static int msm_transcode_loopback_trigger(struct snd_soc_component *component,
+static int msm_transcode_loopback_trigger(struct snd_soc_component *soc_component,
 					  struct snd_compr_stream *cstream,
 					  int cmd)
 {
@@ -414,7 +414,7 @@ exit:
 	return ret;
 }
 
-static int msm_transcode_loopback_set_params(struct snd_soc_component *component,
+static int msm_transcode_loopback_set_params(struct snd_soc_component *soc_component,
 				struct snd_compr_stream *cstream,
 				struct snd_compr_params *codec_param)
 {
@@ -586,7 +586,7 @@ exit:
 	return ret;
 }
 
-static int msm_transcode_loopback_get_caps(struct snd_soc_component *component,
+static int msm_transcode_loopback_get_caps(struct snd_soc_component *soc_component,
 				struct snd_compr_stream *cstream,
 				struct snd_compr_caps *arg)
 {
@@ -610,7 +610,7 @@ static int msm_transcode_loopback_get_caps(struct snd_soc_component *component,
 	return 0;
 }
 
-static int msm_transcode_loopback_set_metadata(struct snd_soc_component *component,
+static int msm_transcode_loopback_set_metadata(struct snd_soc_component *soc_component,
 				struct snd_compr_stream *cstream,
 				struct snd_compr_metadata *metadata)
 {
