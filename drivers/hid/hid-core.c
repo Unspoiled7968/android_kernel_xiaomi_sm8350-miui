@@ -1781,17 +1781,6 @@ int hid_report_raw_event(struct hid_device *hid, int type, u8 *data, u32 size,
 	u8 *cdata = data;
 	int ret = 0;
 
-	/*
-	 * v5.10.261 grew a size_t bufsize argument for this check; this tree
-	 * keeps ACK's signature, where only the report size is available.
-	 */
-	if (report_enum->numbered && size < 1) {
-		hid_warn_ratelimited(hid,
-				     "Event data for numbered report is too short (%u)\n",
-				     size);
-		return -EINVAL;
-	}
-
 	report = hid_get_report(report_enum, data);
 	if (!report)
 		goto out;

@@ -798,12 +798,9 @@ static inline struct device_node *dev_of_node(struct device *dev)
 
 static inline bool dev_has_sync_state(struct device *dev)
 {
-	struct device_driver *drv;
-
 	if (!dev)
 		return false;
-	drv = READ_ONCE(dev->driver);
-	if (drv && drv->sync_state)
+	if (dev->driver && dev->driver->sync_state)
 		return true;
 	if (dev->bus && dev->bus->sync_state)
 		return true;

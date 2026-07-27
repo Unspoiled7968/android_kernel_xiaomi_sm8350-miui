@@ -2427,16 +2427,16 @@ static int wacom_parse_and_register(struct wacom *wacom, bool wireless)
 
 	error = wacom_register_inputs(wacom);
 	if (error)
-		goto fail_hw_stop;
+		goto fail;
 
 	if (wacom->wacom_wac.features.device_type & WACOM_DEVICETYPE_PAD) {
 		error = wacom_initialize_leds(wacom);
 		if (error)
-			goto fail_hw_stop;
+			goto fail;
 
 		error = wacom_initialize_remotes(wacom);
 		if (error)
-			goto fail_hw_stop;
+			goto fail;
 	}
 
 	if (!wireless) {
@@ -2450,14 +2450,14 @@ static int wacom_parse_and_register(struct wacom *wacom, bool wireless)
 		cancel_delayed_work_sync(&wacom->init_work);
 		_wacom_query_tablet_data(wacom);
 		error = -ENODEV;
-		goto fail_hw_stop;
+		goto fail_quirks;
 	}
 
 	if (features->device_type & WACOM_DEVICETYPE_WL_MONITOR) {
 		error = hid_hw_open(hdev);
 		if (error) {
 			hid_err(hdev, "hw open failed\n");
-			goto fail_hw_stop;
+			goto fail_quirks;
 		}
 	}
 
@@ -2466,7 +2466,7 @@ static int wacom_parse_and_register(struct wacom *wacom, bool wireless)
 
 	return 0;
 
-fail_hw_stop:
+fail_quirks:
 	hid_hw_stop(hdev);
 fail:
 	wacom_release_resources(wacom);

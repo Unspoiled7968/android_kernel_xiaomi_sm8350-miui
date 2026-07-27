@@ -163,7 +163,7 @@ static int cpuhp_invoke_callback(unsigned int cpu, enum cpuhp_state state,
 	struct cpuhp_step *step = cpuhp_get_step(state);
 	int (*cbm)(unsigned int cpu, struct hlist_node *node);
 	int (*cb)(unsigned int cpu);
-	int ret, cnt, rollback_ret;
+	int ret, cnt;
 
 	if (st->fail == state) {
 		st->fail = CPUHP_INVALID;
@@ -229,12 +229,12 @@ err:
 			break;
 
 		trace_cpuhp_multi_enter(cpu, st->target, state, cbm, node);
-		rollback_ret = cbm(cpu, node);
-		trace_cpuhp_exit(cpu, st->state, state, rollback_ret);
+		ret = cbm(cpu, node);
+		trace_cpuhp_exit(cpu, st->state, state, ret);
 		/*
 		 * Rollback must not fail,
 		 */
-		WARN_ON_ONCE(rollback_ret);
+		WARN_ON_ONCE(ret);
 	}
 	return ret;
 }
