@@ -11,6 +11,7 @@
 #include <linux/types.h>
 #include <media/cam_defs.h>
 #include "cam_smmu_api.h"
+#include "cam_compat_time.h"
 
 /*
  * This file declares Constants, Enums, Structures and APIs to be used as

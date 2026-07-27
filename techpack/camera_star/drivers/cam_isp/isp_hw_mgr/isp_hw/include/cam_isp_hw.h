@@ -14,6 +14,7 @@
 #include "cam_irq_controller.h"
 #include "cam_hw_intf.h"
 #include "cam_cdm_intf_api.h"
+#include "cam_compat_time.h"
 
 /* Maximum length of tag while dumping */
 #define CAM_ISP_HW_DUMP_TAG_MAX_LEN 32

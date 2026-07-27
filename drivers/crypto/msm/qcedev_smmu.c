@@ -8,6 +8,7 @@
 #include <linux/dma-iommu.h>
 #include <linux/dma-mapping.h>
 #include <linux/list.h>
+#include <linux/msm_ion.h>
 #include <linux/qcedev.h>
 #include "qcedevi.h"
 #include "qcedev_smmu.h"
@@ -131,6 +132,7 @@ static int ion_map_buffer(struct qcedev_handle *qce_hndl,
 		struct qcedev_mem_client *mem_client, int fd,
 		unsigned int fd_size, struct qcedev_reg_buf_info *binfo)
 {
+	unsigned long ion_flags = 0;
 	int rc = 0;
 	struct dma_buf *buf = NULL;
 	struct dma_buf_attachment *attach = NULL;
@@ -141,8 +143,19 @@ static int ion_map_buffer(struct qcedev_handle *qce_hndl,
 	if (IS_ERR_OR_NULL(buf))
 		return -EINVAL;
 
+	/*
+	 * Newer CAF picks the context bank from mem-buf ownership; this tree
+	 * has no such tracking, so keep selecting it from the ION secure flag
+	 * the way it always did here.
+	 */
+	rc = dma_buf_get_flags(buf, &ion_flags);
+	if (rc) {
+		pr_err("%s: err: failed to get ion flags: %d\n", __func__, rc);
+		goto map_err;
+	}
+
 	if (is_iommu_present(qce_hndl)) {
-		cb = get_context_bank(qce_hndl, !mem_buf_dma_buf_exclusive_owner(buf));
+		cb = get_context_bank(qce_hndl, ion_flags & ION_FLAG_SECURE);
 		if (!cb) {
 			pr_err("%s: err: failed to get context bank info\n",
 				__func__);
