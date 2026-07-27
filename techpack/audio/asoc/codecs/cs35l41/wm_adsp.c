@@ -3941,7 +3941,10 @@ static void wm_adsp2_set_dspclk(struct wm_adsp *dsp, unsigned int freq)
 		break;
 	}
 }
-EXPORT_SYMBOL_GPL(wm_adsp2_set_dspclk);
+/*
+ * Not exported: this copy's wm_adsp2_set_dspclk() is static and file-local,
+ * and the cs35l45 copy already exports a differently-shaped one.
+ */
 
 int wm_adsp2_preloader_get(struct snd_kcontrol *kcontrol,
 			   struct snd_ctl_elem_value *ucontrol)
