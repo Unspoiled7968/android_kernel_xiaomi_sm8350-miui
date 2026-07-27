@@ -19,6 +19,8 @@
 #include <linux/device.h>
 #include <linux/dma-iommu.h>
 #include <linux/iommu.h>
+#include <linux/qcom-iommu-util.h>
+#include <linux/qcom-dma-mapping.h>
 #include <linux/ktime.h>
 #include <linux/of_iommu.h>
 #include <linux/of_address.h>
@@ -35,8 +37,6 @@
 
 #ifdef CONFIG_ARM64_PTDUMP_CORE
 #include <asm/ptdump.h>
-#include <linux/qcom-iommu-util.h>
-#include <linux/qcom-dma-mapping.h>
 #endif
 
 #if defined(CONFIG_IOMMU_TESTS)

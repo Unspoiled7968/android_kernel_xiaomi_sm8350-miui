@@ -4,10 +4,10 @@
 
 #include <linux/dma-mapping.h>
 #include <asm/pgtable.h>
+#include <linux/qcom-dma-mapping.h>
 
 #ifdef CONFIG_ARCH_HAS_DMA_COHERENCE_H
 #include <asm/dma-coherence.h>
-#include <linux/qcom-dma-mapping.h>
 #elif defined(CONFIG_ARCH_HAS_SYNC_DMA_FOR_DEVICE) || \
 	defined(CONFIG_ARCH_HAS_SYNC_DMA_FOR_CPU) || \
 	defined(CONFIG_ARCH_HAS_SYNC_DMA_FOR_CPU_ALL)

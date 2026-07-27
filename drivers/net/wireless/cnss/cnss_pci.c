@@ -3,6 +3,7 @@
 
 #include <asm/dma-iommu.h>
 #include <linux/iommu.h>
+#include <linux/qcom-iommu-util.h>
 #include <linux/export.h>
 #include <linux/err.h>
 #include <linux/of.h>
@@ -41,7 +42,6 @@
 
 #ifdef CONFIG_WCNSS_MEM_PRE_ALLOC
 #include <net/cnss_prealloc.h>
-#include <linux/qcom-iommu-util.h>
 #endif
 
 #define subsys_to_drv(d) container_of(d, struct cnss_data, subsys_desc)
