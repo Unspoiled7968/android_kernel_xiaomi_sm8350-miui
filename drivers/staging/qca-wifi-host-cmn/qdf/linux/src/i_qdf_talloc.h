@@ -38,7 +38,8 @@
 #define __zalloc_auto(size) \
 	kzalloc(size, __can_sleep() ? GFP_KERNEL : GFP_ATOMIC)
 
-#define __free(ptr) kfree(ptr)
+/* the kernel's cleanup.h owns __free() now */
+#define __qdf_talloc_free(ptr) kfree(ptr)
 
 #define __alloc_size(ptr) ksize(ptr)
 

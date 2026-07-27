@@ -83,7 +83,7 @@ static int sysmeminfo_process(int force_reclaim_type, u64 reclaim_pages, unsigne
 	if (debug) {
 		pr_info("reclaim: reclaim_type=%d total_reclaim_pages=%llu reclaim_pages=%llu real_reclaim=%lu freeram=%llu freeswap=%llu nr_cached=%llu"
 			" Active(anon)=%llu Inactive(anon)=%llu Active(file)=%llu Inactive(file)=%llu KReclaimable=%llu\n",
-			force_reclaim_type, total_reclaim_pages, reclaim_pages, real_reclaim, KB(i.freeram), KB(i.freeswap), KB(nr_cached), KB(pages[LRU_ACTIVE_ANON]), KB(pages[LRU_INACTIVE_ANON]), KB(pages[LRU_ACTIVE_FILE]), KB(pages[LRU_INACTIVE_FILE]), KB(global_node_page_state(NR_SLAB_RECLAIMABLE) + global_node_page_state(NR_KERNEL_MISC_RECLAIMABLE)));
+			force_reclaim_type, total_reclaim_pages, reclaim_pages, real_reclaim, KB(i.freeram), KB(i.freeswap), KB(nr_cached), KB(pages[LRU_ACTIVE_ANON]), KB(pages[LRU_INACTIVE_ANON]), KB(pages[LRU_ACTIVE_FILE]), KB(pages[LRU_INACTIVE_FILE]), KB(global_node_page_state_pages(NR_SLAB_RECLAIMABLE_B) + global_node_page_state(NR_KERNEL_MISC_RECLAIMABLE)));
 	}
 
         if ((force_reclaim_type == 1) && (KB(nr_cached) < 104800)) {

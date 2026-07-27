@@ -7,6 +7,7 @@
 #include <linux/device.h>
 #include <linux/dma-buf.h>
 #include <linux/dma-noncoherent.h>
+#include <linux/dma-map-ops.h>
 #include <linux/err.h>
 #include <linux/export.h>
 #include <linux/file.h>
@@ -461,7 +462,8 @@ static void msm_ion_dma_buf_vunmap(struct dma_buf *dmabuf, void *vaddr)
 	mutex_unlock(&buffer->lock);
 }
 
-static void *msm_ion_dma_buf_kmap(struct dma_buf *dmabuf, unsigned long offset)
+static void __maybe_unused *msm_ion_dma_buf_kmap(struct dma_buf *dmabuf,
+						 unsigned long offset)
 {
 	/*
 	 * TODO: Once clients remove their hacks where they assume kmap(ed)
@@ -475,7 +477,8 @@ static void *msm_ion_dma_buf_kmap(struct dma_buf *dmabuf, unsigned long offset)
 	return vaddr + offset * PAGE_SIZE;
 }
 
-static void msm_ion_dma_buf_kunmap(struct dma_buf *dmabuf, unsigned long offset,
+static void __maybe_unused msm_ion_dma_buf_kunmap(struct dma_buf *dmabuf,
+						  unsigned long offset,
 			       void *ptr)
 {
 	/*
@@ -819,8 +822,7 @@ const struct dma_buf_ops msm_ion_dma_buf_ops = {
 	.end_cpu_access = msm_ion_dma_buf_end_cpu_access,
 	.begin_cpu_access_partial = msm_ion_dma_buf_begin_cpu_access_partial,
 	.end_cpu_access_partial = msm_ion_dma_buf_end_cpu_access_partial,
-	.map = msm_ion_dma_buf_kmap,
-	.unmap = msm_ion_dma_buf_kunmap,
+	/* 5.10 dropped dma_buf_ops::map/unmap (the old kmap pair) */
 	.vmap = msm_ion_dma_buf_vmap,
 	.vunmap = msm_ion_dma_buf_vunmap,
 	.get_flags = msm_ion_dma_buf_get_flags,
