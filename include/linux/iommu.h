@@ -46,9 +46,7 @@
 /* CAF/QC downstream aliases and prot flags (renumbered to avoid clashes) */
 #define IOMMU_QCOM_SYS_CACHE	IOMMU_SYS_CACHE
 /* Use upstream device's bus attribute */
-#define IOMMU_USE_UPSTREAM_HINT	(1 << 8)
 /* Use upstream device's bus attribute with no write-allocate cache policy */
-#define IOMMU_USE_LLC_NWA	(1 << 9)
 
 struct iommu_ops;
 struct iommu_group;
@@ -62,10 +60,6 @@ struct iommu_fault_event;
 /* iommu fault flags */
 #define IOMMU_FAULT_READ                (1 << 0)
 #define IOMMU_FAULT_WRITE               (1 << 1)
-#define IOMMU_FAULT_TRANSLATION         (1 << 2)
-#define IOMMU_FAULT_PERMISSION          (1 << 3)
-#define IOMMU_FAULT_EXTERNAL            (1 << 4)
-#define IOMMU_FAULT_TRANSACTION_STALLED (1 << 5)
 
 typedef int (*iommu_fault_handler_t)(struct iommu_domain *,
 			struct device *, unsigned long, int, void *);
@@ -84,13 +78,8 @@ struct iommu_domain_geometry {
 };
 
 /* iommu transaction flags */
-#define IOMMU_TRANS_WRITE	BIT(0)	/* 1 Write, 0 Read */
-#define IOMMU_TRANS_PRIV	BIT(1)	/* 1 Privileged, 0 Unprivileged */
-#define IOMMU_TRANS_INST	BIT(2)	/* 1 Instruction fetch, 0 Data access */
-#define IOMMU_TRANS_SEC	BIT(3)	/* 1 Secure, 0 Non-secure access*/
 
 /* Non secure unprivileged Data read operation */
-#define IOMMU_TRANS_DEFAULT	(0U)
 
 struct iommu_pgtbl_info {
 	void *ops;
@@ -179,30 +168,12 @@ enum iommu_attr {
 	DOMAIN_ATTR_MAX,
 };
 
-#define EXTENDED_ATTR_BASE			(DOMAIN_ATTR_MAX + 16)
 
 #define DOMAIN_ATTR_PT_BASE_ADDR		(EXTENDED_ATTR_BASE + 0)
-#define DOMAIN_ATTR_CONTEXT_BANK		(EXTENDED_ATTR_BASE + 1)
 #define DOMAIN_ATTR_DYNAMIC			(EXTENDED_ATTR_BASE + 2)
 #define DOMAIN_ATTR_TTBR0			(EXTENDED_ATTR_BASE + 3)
 #define DOMAIN_ATTR_CONTEXTIDR			(EXTENDED_ATTR_BASE + 4)
 #define DOMAIN_ATTR_PROCID			(EXTENDED_ATTR_BASE + 5)
-#define DOMAIN_ATTR_NON_FATAL_FAULTS		(EXTENDED_ATTR_BASE + 6)
-#define DOMAIN_ATTR_S1_BYPASS			(EXTENDED_ATTR_BASE + 7)
-#define DOMAIN_ATTR_ATOMIC			(EXTENDED_ATTR_BASE + 8)
-#define DOMAIN_ATTR_SECURE_VMID			(EXTENDED_ATTR_BASE + 9)
-#define DOMAIN_ATTR_FAST			(EXTENDED_ATTR_BASE + 10)
-#define DOMAIN_ATTR_PGTBL_INFO			(EXTENDED_ATTR_BASE + 11)
-#define DOMAIN_ATTR_USE_UPSTREAM_HINT		(EXTENDED_ATTR_BASE + 12)
-#define DOMAIN_ATTR_EARLY_MAP			(EXTENDED_ATTR_BASE + 13)
-#define DOMAIN_ATTR_PAGE_TABLE_IS_COHERENT	(EXTENDED_ATTR_BASE + 14)
-#define DOMAIN_ATTR_PAGE_TABLE_FORCE_COHERENT	(EXTENDED_ATTR_BASE + 15)
-#define DOMAIN_ATTR_USE_LLC_NWA			(EXTENDED_ATTR_BASE + 16)
-#define DOMAIN_ATTR_SPLIT_TABLES		(EXTENDED_ATTR_BASE + 17)
-#define DOMAIN_ATTR_FAULT_MODEL_NO_CFRE		(EXTENDED_ATTR_BASE + 18)
-#define DOMAIN_ATTR_FAULT_MODEL_NO_STALL	(EXTENDED_ATTR_BASE + 19)
-#define DOMAIN_ATTR_FAULT_MODEL_HUPCF		(EXTENDED_ATTR_BASE + 20)
-#define DOMAIN_ATTR_EXTENDED_MAX		(EXTENDED_ATTR_BASE + 21)
 
 /* These are the possible reserved region types */
 enum iommu_resv_type {
@@ -1290,5 +1261,15 @@ void iommu_debugfs_setup(void);
 #else
 static inline void iommu_debugfs_setup(void) {}
 #endif
+
+
+/*
+ * The QCOM domain attributes and prot flags live in Qualcomm's header now -
+ * they moved there in msm-5.10 and the numbering differs from the 5.4 copy
+ * that used to sit here, so there must be exactly one definition. Included
+ * last, after DOMAIN_ATTR_MAX exists, since EXTENDED_ATTR_BASE is derived
+ * from it. The include guards make the mutual inclusion a no-op.
+ */
+#include <linux/qcom-iommu-util.h>
 
 #endif /* __LINUX_IOMMU_H */
