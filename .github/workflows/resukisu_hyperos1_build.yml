@@ -15,6 +15,15 @@ on:
         options:
           - "balanced"
           - "fast-iterate"
+      runtime_profile:
+        description: "Runtime tuning target (battery = closest to Phantom/stock standby, balanced = current daily build, performance-lab = faster UI/network experiments)"
+        required: true
+        default: "balanced"
+        type: choice
+        options:
+          - "battery"
+          - "balanced"
+          - "performance-lab"
       enable_bpf:
         description: "Apply the 5.10 BPF backport"
         required: true
@@ -111,12 +120,31 @@ jobs:
           fi
           echo "EFFECTIVE_LTO_TYPE=$EFFECTIVE_LTO_TYPE" >> "$GITHUB_ENV"
 
+      - name: Resolve runtime profile
+        run: |
+          EFFECTIVE_HZ="300"
+          PROFILE_SUFFIX="balanced"
+          PROFILE_HINT="daily balance"
+          if [ "${{ inputs.runtime_profile }}" = "battery" ]; then
+            EFFECTIVE_HZ="250"
+            PROFILE_SUFFIX="battery"
+            PROFILE_HINT="closest to stock/Phantom standby behavior"
+          elif [ "${{ inputs.runtime_profile }}" = "performance-lab" ]; then
+            EFFECTIVE_HZ="300"
+            PROFILE_SUFFIX="performance-lab"
+            PROFILE_HINT="higher wake/tick rate for responsiveness testing"
+          fi
+          echo "EFFECTIVE_HZ=$EFFECTIVE_HZ" >> "$GITHUB_ENV"
+          echo "PROFILE_SUFFIX=$PROFILE_SUFFIX" >> "$GITHUB_ENV"
+          echo "PROFILE_HINT=$PROFILE_HINT" >> "$GITHUB_ENV"
+
       - name: Show Selected Profile
         run: |
           echo "ROM target: HyperOS 1"
           echo "Device: ${{ inputs.device_name }}"
           echo "Source ref: ${{ inputs.source_ref }}"
           echo "Build profile: ${{ inputs.build_profile }}"
+          echo "Runtime profile: ${{ inputs.runtime_profile }}"
           echo "Localversion: ${{ inputs.localversion }}"
           echo "BPF backport: ${{ inputs.enable_bpf }}"
           echo "BBR: ${{ inputs.bbr_enable }}"
@@ -124,6 +152,8 @@ jobs:
           echo "WireGuard: ${{ inputs.wireguard }}"
           echo "Requested LTO: ${{ inputs.lto_type }}"
           echo "Effective LTO: $EFFECTIVE_LTO_TYPE"
+          echo "Effective HZ: $EFFECTIVE_HZ"
+          echo "Runtime hint: $PROFILE_HINT"
 
       - name: Fetch BPF backport patch (build branch)
         if: ${{ inputs.enable_bpf }}
@@ -242,8 +272,19 @@ jobs:
             echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y"
             echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
             echo "CONFIG_KSU_SUSFS_SUS_MAP=y"
-            echo "CONFIG_HZ_300=y"
           } >> "$DEFCONFIG"
+
+          if [ "$EFFECTIVE_HZ" = "250" ]; then
+            {
+              echo "CONFIG_HZ_250=y"
+              echo "# CONFIG_HZ_300 is not set"
+            } >> "$DEFCONFIG"
+          else
+            {
+              echo "# CONFIG_HZ_250 is not set"
+              echo "CONFIG_HZ_300=y"
+            } >> "$DEFCONFIG"
+          fi
 
           if [ "${{ inputs.huawei_lz4ko }}" = "true" ]; then
             {
@@ -394,16 +435,16 @@ jobs:
             exit 1
           fi
           DEVICE="${{ inputs.device_name || 'star' }}"
-          NEW="$(dirname "$AK3")/${DEVICE}-5.4_ReSukiSU-HyperOS1.zip"
+          NEW="$(dirname "$AK3")/${DEVICE}-5.4_ReSukiSU-HyperOS1-${PROFILE_SUFFIX}.zip"
           mv "$AK3" "$NEW"
-          cp "$NEW" "$GITHUB_WORKSPACE/${DEVICE}-5.4_ReSukiSU-HyperOS1.zip"
-          echo "AK3_ZIP=$GITHUB_WORKSPACE/${DEVICE}-5.4_ReSukiSU-HyperOS1.zip" >> "$GITHUB_ENV"
+          cp "$NEW" "$GITHUB_WORKSPACE/${DEVICE}-5.4_ReSukiSU-HyperOS1-${PROFILE_SUFFIX}.zip"
+          echo "AK3_ZIP=$GITHUB_WORKSPACE/${DEVICE}-5.4_ReSukiSU-HyperOS1-${PROFILE_SUFFIX}.zip" >> "$GITHUB_ENV"
 
       - name: Upload flashable zip
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: ReSukiSU-SuSFS-HyperOS1-${{ inputs.device_name }}
+          name: ReSukiSU-SuSFS-HyperOS1-${{ inputs.device_name }}-${{ inputs.runtime_profile }}
           path: ${{ env.AK3_ZIP }}
 
       - name: Preserve build log on failure
