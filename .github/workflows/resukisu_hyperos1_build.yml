@@ -24,6 +24,15 @@ on:
           - "battery"
           - "balanced"
           - "performance-lab"
+      feature_profile:
+        description: "Feature bundle (daily-plus enables BPF, WireGuard, Full Netfilter, and BBR by default)"
+        required: true
+        default: "daily-plus"
+        type: choice
+        options:
+          - "daily-plus"
+          - "minimal"
+          - "custom"
       enable_bpf:
         description: "Apply the 5.10 BPF backport"
         required: true
@@ -138,6 +147,38 @@ jobs:
           echo "PROFILE_SUFFIX=$PROFILE_SUFFIX" >> "$GITHUB_ENV"
           echo "PROFILE_HINT=$PROFILE_HINT" >> "$GITHUB_ENV"
 
+      - name: Resolve feature profile
+        run: |
+          EFFECTIVE_ENABLE_BPF="${{ inputs.enable_bpf }}"
+          EFFECTIVE_WIREGUARD="${{ inputs.wireguard }}"
+          EFFECTIVE_NETFILTER_FULL="${{ inputs.netfilter_full }}"
+          EFFECTIVE_BBR_ENABLE="${{ inputs.bbr_enable }}"
+          FEATURE_SUFFIX="custom"
+          FEATURE_HINT="manual feature selection"
+
+          if [ "${{ inputs.feature_profile }}" = "minimal" ]; then
+            EFFECTIVE_ENABLE_BPF="false"
+            EFFECTIVE_WIREGUARD="false"
+            EFFECTIVE_NETFILTER_FULL="false"
+            EFFECTIVE_BBR_ENABLE="false"
+            FEATURE_SUFFIX="minimal"
+            FEATURE_HINT="closest to the conservative baseline"
+          elif [ "${{ inputs.feature_profile }}" = "daily-plus" ]; then
+            EFFECTIVE_ENABLE_BPF="true"
+            EFFECTIVE_WIREGUARD="true"
+            EFFECTIVE_NETFILTER_FULL="true"
+            EFFECTIVE_BBR_ENABLE="default"
+            FEATURE_SUFFIX="daily-plus"
+            FEATURE_HINT="BPF + WireGuard + Full Netfilter + BBR default"
+          fi
+
+          echo "EFFECTIVE_ENABLE_BPF=$EFFECTIVE_ENABLE_BPF" >> "$GITHUB_ENV"
+          echo "EFFECTIVE_WIREGUARD=$EFFECTIVE_WIREGUARD" >> "$GITHUB_ENV"
+          echo "EFFECTIVE_NETFILTER_FULL=$EFFECTIVE_NETFILTER_FULL" >> "$GITHUB_ENV"
+          echo "EFFECTIVE_BBR_ENABLE=$EFFECTIVE_BBR_ENABLE" >> "$GITHUB_ENV"
+          echo "FEATURE_SUFFIX=$FEATURE_SUFFIX" >> "$GITHUB_ENV"
+          echo "FEATURE_HINT=$FEATURE_HINT" >> "$GITHUB_ENV"
+
       - name: Apply Phantom cpuctl ramdisk tweak
         run: |
           AK3_SCRIPT="scripts/ak3/anykernel.sh"
@@ -177,18 +218,21 @@ jobs:
           echo "Source ref: ${{ inputs.source_ref }}"
           echo "Build profile: ${{ inputs.build_profile }}"
           echo "Runtime profile: ${{ inputs.runtime_profile }}"
+          echo "Feature profile: ${{ inputs.feature_profile }}"
           echo "Localversion: ${{ inputs.localversion }}"
-          echo "BPF backport: ${{ inputs.enable_bpf }}"
-          echo "BBR: ${{ inputs.bbr_enable }}"
+          echo "BPF backport: $EFFECTIVE_ENABLE_BPF"
+          echo "BBR: $EFFECTIVE_BBR_ENABLE"
           echo "ADIOS: ${{ inputs.adios_enable }}"
-          echo "WireGuard: ${{ inputs.wireguard }}"
+          echo "WireGuard: $EFFECTIVE_WIREGUARD"
+          echo "Full Netfilter: $EFFECTIVE_NETFILTER_FULL"
           echo "Requested LTO: ${{ inputs.lto_type }}"
           echo "Effective LTO: $EFFECTIVE_LTO_TYPE"
           echo "Effective HZ: $EFFECTIVE_HZ"
           echo "Runtime hint: $PROFILE_HINT"
+          echo "Feature hint: $FEATURE_HINT"
 
       - name: Fetch BPF backport patch (build branch)
-        if: ${{ inputs.enable_bpf }}
+        if: ${{ inputs.feature_profile == 'daily-plus' || (inputs.feature_profile == 'custom' && inputs.enable_bpf) }}
         uses: actions/checkout@v4
         with:
           ref: build
@@ -197,7 +241,7 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Apply BPF backport
-        if: ${{ inputs.enable_bpf }}
+        if: ${{ inputs.feature_profile == 'daily-plus' || (inputs.feature_profile == 'custom' && inputs.enable_bpf) }}
         run: |
           set -e
           shopt -s nullglob
@@ -340,14 +384,14 @@ jobs:
           patch -p1 -F 3 < lz4ko.patch || echo "Patch had minor conflicts"
 
       - name: Enable WireGuard
-        if: inputs.wireguard
+        if: ${{ inputs.feature_profile == 'daily-plus' || (inputs.feature_profile == 'custom' && inputs.wireguard) }}
         run: |
           cat >> "$DEFCONFIG" << 'EOF'
           CONFIG_WIREGUARD=y
           EOF
 
       - name: Enable Full Netfilter
-        if: inputs.netfilter_full
+        if: ${{ inputs.feature_profile == 'daily-plus' || (inputs.feature_profile == 'custom' && inputs.netfilter_full) }}
         run: |
           cat >> "$DEFCONFIG" << 'EOF'
           CONFIG_NF_CONNTRACK=y
@@ -390,7 +434,7 @@ jobs:
 
       - name: Configure BBR & Brutal
         run: |
-          if [[ "${{ github.event.inputs.bbr_enable }}" != "false" ]]; then
+          if [[ "$EFFECTIVE_BBR_ENABLE" != "false" ]]; then
             {
               echo "CONFIG_TCP_CONG_ADVANCED=y"
               echo "CONFIG_TCP_CONG_BBR=y"
@@ -401,7 +445,7 @@ jobs:
               echo "CONFIG_TCP_CONG_HTCP=y"
               echo "CONFIG_TCP_CONG_BRUTAL=y"
             } >> "$DEFCONFIG"
-            if [[ "${{ github.event.inputs.bbr_enable }}" == "default" ]]; then
+            if [[ "$EFFECTIVE_BBR_ENABLE" == "default" ]]; then
               echo "CONFIG_DEFAULT_TCP_CONG=bbr" >> "$DEFCONFIG"
             else
               echo "CONFIG_DEFAULT_TCP_CONG=cubic" >> "$DEFCONFIG"
@@ -467,17 +511,43 @@ jobs:
             exit 1
           fi
           DEVICE="${{ inputs.device_name || 'star' }}"
-          NEW="$(dirname "$AK3")/${DEVICE}-5.4_ReSukiSU-HyperOS1-${PROFILE_SUFFIX}.zip"
+          NEW="$(dirname "$AK3")/${DEVICE}-5.4_ReSukiSU-HyperOS1-${PROFILE_SUFFIX}-${FEATURE_SUFFIX}.zip"
           mv "$AK3" "$NEW"
-          cp "$NEW" "$GITHUB_WORKSPACE/${DEVICE}-5.4_ReSukiSU-HyperOS1-${PROFILE_SUFFIX}.zip"
-          echo "AK3_ZIP=$GITHUB_WORKSPACE/${DEVICE}-5.4_ReSukiSU-HyperOS1-${PROFILE_SUFFIX}.zip" >> "$GITHUB_ENV"
+          cp "$NEW" "$GITHUB_WORKSPACE/${DEVICE}-5.4_ReSukiSU-HyperOS1-${PROFILE_SUFFIX}-${FEATURE_SUFFIX}.zip"
+          echo "AK3_ZIP=$GITHUB_WORKSPACE/${DEVICE}-5.4_ReSukiSU-HyperOS1-${PROFILE_SUFFIX}-${FEATURE_SUFFIX}.zip" >> "$GITHUB_ENV"
+
+      - name: Write build manifest
+        run: |
+          cat > "$GITHUB_WORKSPACE/build-manifest.txt" <<EOF
+          rom=HyperOS1
+          device=${{ inputs.device_name }}
+          source_ref=${{ inputs.source_ref }}
+          build_profile=${{ inputs.build_profile }}
+          runtime_profile=${{ inputs.runtime_profile }}
+          feature_profile=${{ inputs.feature_profile }}
+          localversion=${{ inputs.localversion }}
+          effective_hz=$EFFECTIVE_HZ
+          effective_lto=$EFFECTIVE_LTO_TYPE
+          bpf_backport=$EFFECTIVE_ENABLE_BPF
+          wireguard=$EFFECTIVE_WIREGUARD
+          full_netfilter=$EFFECTIVE_NETFILTER_FULL
+          bbr=$EFFECTIVE_BBR_ENABLE
+          adios=${{ inputs.adios_enable }}
+          huawei_lz4ko=${{ inputs.huawei_lz4ko }}
+          wakelock_blocker=${{ inputs.wakelock_blocker }}
+          unicode_fix=${{ inputs.unicode_fix }}
+          feature_hint=$FEATURE_HINT
+          runtime_hint=$PROFILE_HINT
+          EOF
 
       - name: Upload flashable zip
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: ReSukiSU-SuSFS-HyperOS1-${{ inputs.device_name }}-${{ inputs.runtime_profile }}
-          path: ${{ env.AK3_ZIP }}
+          name: ReSukiSU-SuSFS-HyperOS1-${{ inputs.device_name }}-${{ inputs.runtime_profile }}-${{ inputs.feature_profile }}
+          path: |
+            ${{ env.AK3_ZIP }}
+            ${{ github.workspace }}/build-manifest.txt
 
       - name: Preserve build log on failure
         if: failure()
