@@ -7,6 +7,14 @@ on:
         description: "Kernel source branch/ref to build (hyper-17 recommended for HyperOS1)"
         required: true
         default: "hyper-17"
+      build_profile:
+        description: "Build tuning profile (balanced keeps current behavior; fast-iterate trades compile-time for less optimization)"
+        required: true
+        default: "balanced"
+        type: choice
+        options:
+          - "balanced"
+          - "fast-iterate"
       enable_bpf:
         description: "Apply the 5.10 BPF backport"
         required: true
@@ -95,16 +103,27 @@ jobs:
         with:
           ref: ${{ inputs.source_ref || 'hyper-17' }}
 
+      - name: Resolve build tuning profile
+        run: |
+          EFFECTIVE_LTO_TYPE="${{ inputs.lto_type }}"
+          if [ "${{ inputs.build_profile }}" = "fast-iterate" ]; then
+            EFFECTIVE_LTO_TYPE="none"
+          fi
+          echo "EFFECTIVE_LTO_TYPE=$EFFECTIVE_LTO_TYPE" >> "$GITHUB_ENV"
+
       - name: Show Selected Profile
         run: |
           echo "ROM target: HyperOS 1"
           echo "Device: ${{ inputs.device_name }}"
           echo "Source ref: ${{ inputs.source_ref }}"
+          echo "Build profile: ${{ inputs.build_profile }}"
           echo "Localversion: ${{ inputs.localversion }}"
           echo "BPF backport: ${{ inputs.enable_bpf }}"
           echo "BBR: ${{ inputs.bbr_enable }}"
           echo "ADIOS: ${{ inputs.adios_enable }}"
           echo "WireGuard: ${{ inputs.wireguard }}"
+          echo "Requested LTO: ${{ inputs.lto_type }}"
+          echo "Effective LTO: $EFFECTIVE_LTO_TYPE"
 
       - name: Fetch BPF backport patch (build branch)
         if: ${{ inputs.enable_bpf }}
@@ -145,8 +164,20 @@ jobs:
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
-          max-size: 5G
-          key: hyperos1-${{ inputs.device_name }}-${{ inputs.lto_type }}
+          max-size: 10G
+          key: hyperos1-${{ inputs.device_name }}-${{ inputs.source_ref }}
+
+      - name: Tune ccache for repeated kernel builds
+        run: |
+          {
+            echo "CCACHE_DIR=$HOME/.ccache"
+            echo "CCACHE_BASEDIR=$GITHUB_WORKSPACE"
+            echo "CCACHE_COMPILERCHECK=content"
+            echo "CCACHE_NOHASHDIR=true"
+            echo "CCACHE_SLOPPINESS=time_macros"
+          } >> "$GITHUB_ENV"
+          ccache --set-config=max_size=10G
+          ccache --show-stats || true
 
       - name: Create clang ccache wrappers
         run: |
@@ -306,9 +337,9 @@ jobs:
 
       - name: Configure LTO
         run: |
-          if [[ "${{ github.event.inputs.lto_type }}" == "none" ]]; then
+          if [[ "$EFFECTIVE_LTO_TYPE" == "none" ]]; then
             echo "CONFIG_LTO_CLANG_NONE=y" >> "$DEFCONFIG"
-          elif [[ "${{ github.event.inputs.lto_type }}" == "full" ]]; then
+          elif [[ "$EFFECTIVE_LTO_TYPE" == "full" ]]; then
             echo "CONFIG_LTO_CLANG_FULL=y" >> "$DEFCONFIG"
           else
             echo "CONFIG_LTO_CLANG_THIN=y" >> "$DEFCONFIG"
@@ -338,6 +369,8 @@ jobs:
           git config --global user.name "Codex"
           export LOCALVERSION="${{ inputs.localversion }}"
           echo "clang -> $(which clang)"
+          echo "ccache dir -> ${CCACHE_DIR:-$HOME/.ccache}"
+          ccache --show-stats || true
           ccache --zero-stats > /dev/null 2>&1 || true
           chmod +x ./build.sh
           ./build.sh all ${{ inputs.device_name }} 2>&1 | tee /tmp/kbuild.log
@@ -347,6 +380,11 @@ jobs:
             grep -E "error:|FAILED" /tmp/kbuild.log | tail -50
             exit 1
           fi
+
+      - name: Show ccache stats
+        if: always()
+        run: |
+          ccache --show-stats || true
 
       - name: Locate & rename flashable AK3 zip
         run: |
