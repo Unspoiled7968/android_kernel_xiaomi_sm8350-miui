@@ -209,6 +209,70 @@ static void __init reserve_elfcorehdr(void)
 #endif /* CONFIG_CRASH_DUMP */
 
 /*
+ * ramoops needs its backing RAM kept away from the page allocator, which
+ * normally happens through a /reserved-memory node. Some platforms (lahaina
+ * among them) ship no such node, and on those the region has to be carved out
+ * from the same "ramoops.mem_address=/ramoops.mem_size=" command line that
+ * configures the driver itself - otherwise the buddy allocator hands the pages
+ * out and the log is overwritten before anyone can read it.
+ *
+ * Parsing the driver's own parameters here keeps the address in exactly one
+ * place, so a writer kernel and a reader kernel configured from the same
+ * command line always agree on where the log lives.
+ */
+static phys_addr_t ramoops_carveout_base __initdata;
+static phys_addr_t ramoops_carveout_size __initdata;
+
+static int __init early_ramoops_mem_address(char *p)
+{
+	if (!p)
+		return -EINVAL;
+	ramoops_carveout_base = memparse(p, NULL);
+	return 0;
+}
+early_param("ramoops.mem_address", early_ramoops_mem_address);
+
+static int __init early_ramoops_mem_size(char *p)
+{
+	if (!p)
+		return -EINVAL;
+	ramoops_carveout_size = memparse(p, NULL);
+	return 0;
+}
+early_param("ramoops.mem_size", early_ramoops_mem_size);
+
+static void __init reserve_ramoops_carveout(void)
+{
+	phys_addr_t base = ramoops_carveout_base;
+	phys_addr_t size = ramoops_carveout_size;
+
+	if (!base || !size)
+		return;
+
+	/*
+	 * Refuse rather than corrupt: an address outside DRAM, or one already
+	 * spoken for by a firmware carve-out, means the command line is wrong
+	 * for this board.
+	 */
+	if (!memblock_is_region_memory(base, size)) {
+		pr_warn("ramoops: 0x%llx+0x%llx is not usable DRAM, not reserving\n",
+			(u64)base, (u64)size);
+		return;
+	}
+
+	if (memblock_is_region_reserved(base, size)) {
+		pr_warn("ramoops: 0x%llx+0x%llx overlaps an existing reservation, not reserving\n",
+			(u64)base, (u64)size);
+		return;
+	}
+
+	memblock_reserve(base, size);
+
+	pr_info("ramoops: reserved %lluKB at 0x%llx for persistent log\n",
+		(u64)size >> 10, (u64)base);
+}
+
+/*
  * Return the maximum physical address for a zone accessible by the given bits
  * limit. If DRAM starts above 32-bit, expand the zone to the maximum
  * available memory, otherwise cap it at 32-bit.
@@ -560,6 +624,8 @@ void __init arm64_memblock_init(void)
 	}
 
 	early_init_fdt_scan_reserved_mem();
+
+	reserve_ramoops_carveout();
 
 	reserve_elfcorehdr();
 

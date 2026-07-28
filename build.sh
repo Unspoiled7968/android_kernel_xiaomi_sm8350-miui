@@ -137,10 +137,6 @@ generate_flashable(){
     echo ' Copying Kernel File '; 
     cp -r $TARGET_KERNEL_FILE $ANYKERNEL_PATH/;
     # DIAGNOSTIC: ship the base DTB so the ramoops region reaches the device.
-    # star-sm8350-overlay.dtbo is applied on top of lahaina.dtb, so that is the
-    # base that carries /reserved-memory. AnyKernel3 routes a file named "dtb"
-    # into vendor_boot on this header version.
-    cp -r arch/arm64/boot/dts/vendor/qcom/lahaina.dtb $ANYKERNEL_PATH/dtb;
     # cp -r $TARGET_KERNEL_DTB $ANYKERNEL_PATH/;
     # cp -r $TARGET_KERNEL_DTBO $ANYKERNEL_PATH/;
 
