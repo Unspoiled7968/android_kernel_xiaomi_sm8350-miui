@@ -152,21 +152,21 @@ jobs:
           fi
 
           python3 - <<'PY'
-from pathlib import Path
+          from pathlib import Path
 
-path = Path("scripts/ak3/anykernel.sh")
-text = path.read_text(encoding="utf-8")
-needle = "dump_boot; # use split_boot to skip ramdisk unpack, e.g. for devices with init_boot ramdisk\n"
-replacement = needle + (
-    "backup_file init.rc;\n"
-    "replace_string init.rc \"cpuctl cpu,timer_slack\" "
-    "\"mount cgroup none /dev/cpuctl cpu\" "
-    "\"mount cgroup none /dev/cpuctl cpu,timer_slack\";\n"
-)
-if needle not in text:
-    raise SystemExit("Unable to locate dump_boot line in AnyKernel script")
-path.write_text(text.replace(needle, replacement, 1), encoding="utf-8", newline="\n")
-PY
+          path = Path("scripts/ak3/anykernel.sh")
+          text = path.read_text(encoding="utf-8")
+          needle = "dump_boot; # use split_boot to skip ramdisk unpack, e.g. for devices with init_boot ramdisk\n"
+          replacement = needle + (
+              "backup_file init.rc;\n"
+              "replace_string init.rc \"cpuctl cpu,timer_slack\" "
+              "\"mount cgroup none /dev/cpuctl cpu\" "
+              "\"mount cgroup none /dev/cpuctl cpu,timer_slack\";\n"
+          )
+          if needle not in text:
+              raise SystemExit("Unable to locate dump_boot line in AnyKernel script")
+          path.write_text(text.replace(needle, replacement, 1), encoding="utf-8", newline="\n")
+          PY
 
           grep -n 'backup_file init.rc\|cpuctl cpu,timer_slack' "$AK3_SCRIPT"
 
