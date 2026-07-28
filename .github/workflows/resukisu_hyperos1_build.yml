@@ -18,7 +18,7 @@ on:
       runtime_profile:
         description: "Runtime tuning target (battery = closest to Phantom/stock standby, balanced = current daily build, performance-lab = faster UI/network experiments)"
         required: true
-        default: "balanced"
+        default: "battery"
         type: choice
         options:
           - "battery"
@@ -137,6 +137,38 @@ jobs:
           echo "EFFECTIVE_HZ=$EFFECTIVE_HZ" >> "$GITHUB_ENV"
           echo "PROFILE_SUFFIX=$PROFILE_SUFFIX" >> "$GITHUB_ENV"
           echo "PROFILE_HINT=$PROFILE_HINT" >> "$GITHUB_ENV"
+
+      - name: Apply Phantom cpuctl ramdisk tweak
+        run: |
+          AK3_SCRIPT="scripts/ak3/anykernel.sh"
+          if [ ! -f "$AK3_SCRIPT" ]; then
+            echo "AnyKernel script not found: $AK3_SCRIPT"
+            exit 1
+          fi
+
+          if grep -q 'backup_file init.rc' "$AK3_SCRIPT"; then
+            echo "Phantom-style ramdisk tweak already present"
+            exit 0
+          fi
+
+          python3 - <<'PY'
+from pathlib import Path
+
+path = Path("scripts/ak3/anykernel.sh")
+text = path.read_text(encoding="utf-8")
+needle = "dump_boot; # use split_boot to skip ramdisk unpack, e.g. for devices with init_boot ramdisk\n"
+replacement = needle + (
+    "backup_file init.rc;\n"
+    "replace_string init.rc \"cpuctl cpu,timer_slack\" "
+    "\"mount cgroup none /dev/cpuctl cpu\" "
+    "\"mount cgroup none /dev/cpuctl cpu,timer_slack\";\n"
+)
+if needle not in text:
+    raise SystemExit("Unable to locate dump_boot line in AnyKernel script")
+path.write_text(text.replace(needle, replacement, 1), encoding="utf-8", newline="\n")
+PY
+
+          grep -n 'backup_file init.rc\|cpuctl cpu,timer_slack' "$AK3_SCRIPT"
 
       - name: Show Selected Profile
         run: |
