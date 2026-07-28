@@ -37,6 +37,21 @@ struct qcom_dload {
 
 static bool enable_dump =
 	IS_ENABLED(CONFIG_POWER_RESET_QCOM_DOWNLOAD_MODE_DEFAULT);
+
+/*
+ * Where the boot firmware puts a crash dump. The default (QPST) waits for a
+ * host to pull it over EDL, which is useless on a board that cannot reach
+ * userspace to be told otherwise - the emmc_dload sysfs knob is the only way
+ * to change it, and nothing is alive to write to it.
+ *
+ * Selecting the storage destination here instead makes the firmware write the
+ * dump into the rawdump partition on reset, where it can simply be read back
+ * with dd from a kernel that does boot.
+ */
+static bool dump_to_storage = true;
+module_param(dump_to_storage, bool, 0644);
+MODULE_PARM_DESC(dump_to_storage,
+		 "write crash dumps to the rawdump partition instead of waiting for EDL");
 static enum qcom_download_mode current_download_mode = QCOM_DOWNLOAD_NODUMP;
 static enum qcom_download_mode dump_mode = QCOM_DOWNLOAD_BOTHDUMP;
 static bool early_pcie_init_enable;
@@ -376,6 +391,14 @@ static int qcom_dload_probe(struct platform_device *pdev)
 	}
 
 	poweroff->dload_dest_addr = map_prop_mem("qcom,msm-imem-dload-type");
+	if (dump_to_storage) {
+		if (poweroff->dload_dest_addr) {
+			set_download_dest(poweroff, QCOM_DOWNLOAD_DEST_EMMC);
+			pr_info("crash dumps will be written to storage\n");
+		} else {
+			pr_warn("no qcom,msm-imem-dload-type, cannot select storage for dumps\n");
+		}
+	}
 	store_kaslr_offset();
 	check_pci_edl(pdev->dev.of_node);
 	clear_display_config();

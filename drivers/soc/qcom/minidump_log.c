@@ -1349,6 +1349,21 @@ static void md_register_module_data(void)
 #endif	/* CONFIG_MODULES */
 #endif	/* CONFIG_QCOM_MINIDUMP_PANIC_DUMP */
 
+/*
+ * The kernel log is the one region worth having when a board fails to boot at
+ * all, and late_initcall is far too late for that - a hang in an arch_ or
+ * subsys_initcall would leave the dump with no log in it. Register it on its
+ * own as early as an initcall can run: log_buf_addr_get() is already valid
+ * (setup_log_buf() runs from start_kernel), and msm_minidump_add_region()
+ * queues entries until the minidump core comes up at subsys_initcall.
+ */
+static int __init msm_minidump_log_buf_init(void)
+{
+	register_log_buf();
+	return 0;
+}
+early_initcall(msm_minidump_log_buf_init);
+
 static int __init msm_minidump_log_init(void)
 {
 	register_kernel_sections();
@@ -1358,7 +1373,6 @@ static int __init msm_minidump_log_init(void)
 	register_current_stack();
 	register_suspend_context();
 #endif
-	register_log_buf();
 #ifdef CONFIG_QCOM_MINIDUMP_FTRACE
 	md_register_trace_buf();
 #endif
