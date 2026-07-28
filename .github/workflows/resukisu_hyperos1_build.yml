@@ -25,13 +25,13 @@ on:
           - "balanced"
           - "performance-lab"
       feature_profile:
-        description: "Feature bundle (daily-plus enables BPF, WireGuard, Full Netfilter, and BBR by default)"
+        description: "Feature bundle (minimal = recommended daily-use baseline; daily-plus = extra networking/features lab)"
         required: true
-        default: "daily-plus"
+        default: "minimal"
         type: choice
         options:
-          - "daily-plus"
           - "minimal"
+          - "daily-plus"
           - "custom"
       enable_bpf:
         description: "Apply the 5.10 BPF backport"
