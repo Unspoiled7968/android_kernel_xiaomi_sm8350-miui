@@ -1,0 +1,382 @@
+name: Build ReSukiSU + SuSFS (HyperOS1 Conservative)
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Kernel source branch/ref to build (hyper-17 recommended for HyperOS1)"
+        required: true
+        default: "hyper-17"
+      enable_bpf:
+        description: "Apply the 5.10 BPF backport"
+        required: true
+        type: boolean
+        default: false
+      device_name:
+        description: "Select target device"
+        required: true
+        default: "star"
+        type: choice
+        options: [star, mars, venus]
+      localversion:
+        description: "Custom version suffix"
+        required: true
+        default: "-11U-HyperOS1-ReSukiSU"
+      bbr_enable:
+        description: "Enable TCP BBR/Brutal (false=off, true=add, default=set as default)"
+        required: true
+        type: choice
+        default: "false"
+        options:
+          - "false"
+          - "true"
+          - "default"
+      huawei_lz4ko:
+        description: "Huawei LZ4KO patch"
+        required: true
+        type: boolean
+        default: false
+      adios_enable:
+        description: "Enable ADIOS IO scheduler"
+        required: true
+        type: boolean
+        default: false
+      rekernel_enable:
+        description: "Enable Re-Kernel support"
+        required: true
+        type: boolean
+        default: false
+      baseband_guard:
+        description: "Enable Baseband Guard"
+        required: true
+        type: boolean
+        default: false
+      lto_type:
+        description: "LTO optimization (none = fast compile, thin = default, full = slow)"
+        required: true
+        type: choice
+        default: "thin"
+        options:
+          - "none"
+          - "thin"
+          - "full"
+      unicode_fix:
+        description: "Enable Unicode bypass fix"
+        required: true
+        type: boolean
+        default: true
+      wireguard:
+        description: "Enable WireGuard VPN support"
+        required: true
+        type: boolean
+        default: false
+      netfilter_full:
+        description: "Full Netfilter (conntrack, NAT, hashlimit)"
+        required: true
+        type: boolean
+        default: false
+      wakelock_blocker:
+        description: "Enable Wakelock Blocker"
+        required: true
+        type: boolean
+        default: false
+      swap_size:
+        description: "Swap size in GB"
+        required: true
+        default: "16"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || 'hyper-17' }}
+
+      - name: Show Selected Profile
+        run: |
+          echo "ROM target: HyperOS 1"
+          echo "Device: ${{ inputs.device_name }}"
+          echo "Source ref: ${{ inputs.source_ref }}"
+          echo "Localversion: ${{ inputs.localversion }}"
+          echo "BPF backport: ${{ inputs.enable_bpf }}"
+          echo "BBR: ${{ inputs.bbr_enable }}"
+          echo "ADIOS: ${{ inputs.adios_enable }}"
+          echo "WireGuard: ${{ inputs.wireguard }}"
+
+      - name: Fetch BPF backport patch (build branch)
+        if: ${{ inputs.enable_bpf }}
+        uses: actions/checkout@v4
+        with:
+          ref: build
+          path: .bpf-patch
+          sparse-checkout: patches
+          sparse-checkout-cone-mode: false
+
+      - name: Apply BPF backport
+        if: ${{ inputs.enable_bpf }}
+        run: |
+          set -e
+          shopt -s nullglob
+          patches=(.bpf-patch/patches/bpf/*.patch)
+          if [ ${#patches[@]} -eq 0 ]; then
+            echo "No BPF patches found"
+            exit 1
+          fi
+          for p in "${patches[@]}"; do
+            echo "Applying $(basename "$p")"
+            git apply --whitespace=nowarn "$p"
+          done
+          echo "BPF backport applied (${#patches[@]} patches)"
+
+      - name: Dynamic Memory Allocation (Swap)
+        uses: pierotofy/set-swap-space@master
+        with:
+          swap-size-gb: ${{ inputs.swap_size || '16' }}
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get install -y clang lld llvm git make gcc flex bison bc \
+            libssl-dev ccache libncurses5-dev libncursesw5-dev cmake \
+            python3 python-is-python3 cpio curl patch rsync
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          max-size: 5G
+          key: hyperos1-${{ inputs.device_name }}-${{ inputs.lto_type }}
+
+      - name: Create clang ccache wrappers
+        run: |
+          mkdir -p "$HOME/.ccache_wrappers"
+          printf '#!/bin/sh\nexec ccache /usr/bin/clang "$@"\n' > "$HOME/.ccache_wrappers/clang"
+          printf '#!/bin/sh\nexec ccache /usr/bin/clang++ "$@"\n' > "$HOME/.ccache_wrappers/clang++"
+          chmod +x "$HOME/.ccache_wrappers/clang" "$HOME/.ccache_wrappers/clang++"
+          echo "$HOME/.ccache_wrappers" >> "$GITHUB_PATH"
+
+      - name: Setup ReSukiSU
+        run: |
+          set -e
+          KERNEL_REPO="$(pwd)"
+          git clone --depth=1 -b main https://github.com/ReSukiSU/ReSukiSU.git ReSukiSU
+          bash ReSukiSU/kernel/setup.sh "$KERNEL_REPO"
+          echo "ReSukiSU integrated"
+
+      - name: Setup SuSFS for ReSukiSU
+        run: |
+          set -e
+          git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git ../jacka_repo
+          PATCH_FILE="../jacka_repo/Patches/Patch/susfs_patch_to_5.4.patch"
+
+          if [ ! -f "$PATCH_FILE" ]; then
+            echo "Patch not found: $PATCH_FILE"
+            exit 1
+          fi
+
+          patch -p1 --forward --batch < "$PATCH_FILE" || echo "Patch partially applied"
+          echo "SuSFS patch applied"
+
+      - name: Add inline hooks for SuSFS
+        run: |
+          set -e
+          bash "../jacka_repo/Patches/susfs_inline_hook_patches.sh"
+
+      - name: Append Defconfig Flags
+        run: |
+          set -e
+
+          DEVICE="${{ inputs.device_name || 'star' }}"
+          DEFCONFIG="arch/arm64/configs/vendor/${DEVICE}_QGKI.config"
+
+          echo "DEFCONFIG=$DEFCONFIG" >> "$GITHUB_ENV"
+
+          if [ ! -f "$DEFCONFIG" ]; then
+            echo "Defconfig fragment not found: $DEFCONFIG"
+            exit 1
+          fi
+
+          {
+            echo "CONFIG_KSU=y"
+            echo "CONFIG_TMPFS_XATTR=y"
+            echo "CONFIG_TMPFS_POSIX_ACL=y"
+            echo "CONFIG_KSU_SUSFS=y"
+            echo "CONFIG_KSU_SUSFS_SUS_PATH=y"
+            echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y"
+            echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y"
+            echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y"
+            echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y"
+            echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y"
+            echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y"
+            echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
+            echo "CONFIG_KSU_SUSFS_SUS_MAP=y"
+            echo "CONFIG_HZ_300=y"
+          } >> "$DEFCONFIG"
+
+          if [ "${{ inputs.huawei_lz4ko }}" = "true" ]; then
+            {
+              echo "CONFIG_ZSMALLOC=y"
+              echo "CONFIG_CRYPTO_LZ4=y"
+              echo "CONFIG_CRYPTO_LZ4K=y"
+            } >> "$DEFCONFIG"
+          fi
+
+      - name: Apply Unicode Bypass Fix
+        if: inputs.unicode_fix
+        run: |
+          PATCH_URL="https://github.com/TheWildJames/kernel_patches/raw/main/common/unicode_bypass_fix_6.1-.patch"
+          wget -qO /tmp/ub_fix.patch "$PATCH_URL" 2>/dev/null && patch -p1 --forward < /tmp/ub_fix.patch || true
+          echo "Unicode fix applied"
+
+      - name: Apply Huawei LZ4KO ZRAM Patch
+        if: inputs.huawei_lz4ko
+        run: |
+          curl -sSL "https://github.com/crdroidandroid/android_kernel_xiaomi_courbet/commit/94caa27.patch" -o lz4ko.patch
+          patch -p1 -F 3 < lz4ko.patch || echo "Patch had minor conflicts"
+
+      - name: Enable WireGuard
+        if: inputs.wireguard
+        run: |
+          cat >> "$DEFCONFIG" << 'EOF'
+          CONFIG_WIREGUARD=y
+          EOF
+
+      - name: Enable Full Netfilter
+        if: inputs.netfilter_full
+        run: |
+          cat >> "$DEFCONFIG" << 'EOF'
+          CONFIG_NF_CONNTRACK=y
+          CONFIG_NF_CONNTRACK_MARK=y
+          CONFIG_NF_CONNTRACK_ZONES=y
+          CONFIG_NF_CONNTRACK_TIMESTAMP=y
+          CONFIG_NF_CONNTRACK_EVENTS=y
+          CONFIG_NF_CONNTRACK_TIMEOUT=y
+          CONFIG_NF_CONNTRACK_LABELS=y
+          CONFIG_NF_NAT=y
+          CONFIG_NF_NAT_MASQUERADE=y
+          CONFIG_NETFILTER_XT_MATCH_HASHLIMIT=y
+          CONFIG_NETFILTER_XT_MATCH_CONNTRACK=y
+          CONFIG_NETFILTER_XT_MATCH_CONNLIMIT=y
+          CONFIG_NETFILTER_XT_MATCH_STATE=y
+          CONFIG_NETFILTER_XT_TARGET_MASQUERADE=y
+          CONFIG_NETFILTER_XT_TARGET_REDIRECT=y
+          EOF
+
+      - name: Enable Wakelock Blocker
+        if: inputs.wakelock_blocker
+        run: |
+          cat >> "$DEFCONFIG" << 'EOF'
+          CONFIG_PM_WAKELOCKS=y
+          CONFIG_PM_WAKELOCKS_GC=y
+          CONFIG_PM_WAKELOCKS_LIMIT=100
+          EOF
+          WAKELOCK_C="kernel/power/wakelock.c"
+          if [ -f "$WAKELOCK_C" ]; then
+            cat >> "$WAKELOCK_C" << 'WLEOF'
+          /* hyperos1 profile: wakelock blocker list */
+          static const char * const blocked_wakelocks[] = {
+              "WLAN_pm_wlock",
+              "IPA_WS",
+              "qcom_rx_wakelock",
+              "event0",
+          };
+          WLEOF
+          fi
+
+      - name: Configure BBR & Brutal
+        run: |
+          if [[ "${{ github.event.inputs.bbr_enable }}" != "false" ]]; then
+            {
+              echo "CONFIG_TCP_CONG_ADVANCED=y"
+              echo "CONFIG_TCP_CONG_BBR=y"
+              echo "CONFIG_TCP_CONG_CUBIC=y"
+              echo "CONFIG_TCP_CONG_VEGAS=y"
+              echo "CONFIG_TCP_CONG_NV=y"
+              echo "CONFIG_TCP_CONG_WESTWOOD=y"
+              echo "CONFIG_TCP_CONG_HTCP=y"
+              echo "CONFIG_TCP_CONG_BRUTAL=y"
+            } >> "$DEFCONFIG"
+            if [[ "${{ github.event.inputs.bbr_enable }}" == "default" ]]; then
+              echo "CONFIG_DEFAULT_TCP_CONG=bbr" >> "$DEFCONFIG"
+            else
+              echo "CONFIG_DEFAULT_TCP_CONG=cubic" >> "$DEFCONFIG"
+            fi
+          fi
+
+      - name: Configure LTO
+        run: |
+          if [[ "${{ github.event.inputs.lto_type }}" == "none" ]]; then
+            echo "CONFIG_LTO_CLANG_NONE=y" >> "$DEFCONFIG"
+          elif [[ "${{ github.event.inputs.lto_type }}" == "full" ]]; then
+            echo "CONFIG_LTO_CLANG_FULL=y" >> "$DEFCONFIG"
+          else
+            echo "CONFIG_LTO_CLANG_THIN=y" >> "$DEFCONFIG"
+          fi
+
+      - name: Configure ADIOS IO
+        if: inputs.adios_enable
+        run: |
+          echo "CONFIG_MQ_IOSCHED_ADIOS=y" >> "$DEFCONFIG"
+          echo "CONFIG_MQ_IOSCHED_DEFAULT_ADIOS=y" >> "$DEFCONFIG"
+
+      - name: Configure Re-Kernel
+        if: inputs.rekernel_enable
+        run: |
+          echo "CONFIG_REKERNEL=y" >> "$DEFCONFIG"
+
+      - name: Configure Baseband Guard
+        if: inputs.baseband_guard
+        run: |
+          echo "CONFIG_BBG=y" >> "$DEFCONFIG"
+          curl -sSL https://github.com/cctv18/Baseband-guard/raw/master/setup.sh | bash
+          sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' security/Kconfig
+
+      - name: Build Project
+        run: |
+          git config --global user.email "bot@example.com"
+          git config --global user.name "Codex"
+          export LOCALVERSION="${{ inputs.localversion }}"
+          echo "clang -> $(which clang)"
+          ccache --zero-stats > /dev/null 2>&1 || true
+          chmod +x ./build.sh
+          ./build.sh all ${{ inputs.device_name }} 2>&1 | tee /tmp/kbuild.log
+
+          if [ ! -f out/arch/arm64/boot/Image ] && [ ! -f ../out/arch/arm64/boot/Image ]; then
+            echo "BUILD FAILED"
+            grep -E "error:|FAILED" /tmp/kbuild.log | tail -50
+            exit 1
+          fi
+
+      - name: Locate & rename flashable AK3 zip
+        run: |
+          AK3=$(find ../out/anykernel out/anykernel -name "*.zip" 2>/dev/null | head -n1)
+          if [ -z "$AK3" ]; then
+            echo "No AK3 flashable zip found"
+            exit 1
+          fi
+          DEVICE="${{ inputs.device_name || 'star' }}"
+          NEW="$(dirname "$AK3")/${DEVICE}-5.4_ReSukiSU-HyperOS1.zip"
+          mv "$AK3" "$NEW"
+          cp "$NEW" "$GITHUB_WORKSPACE/${DEVICE}-5.4_ReSukiSU-HyperOS1.zip"
+          echo "AK3_ZIP=$GITHUB_WORKSPACE/${DEVICE}-5.4_ReSukiSU-HyperOS1.zip" >> "$GITHUB_ENV"
+
+      - name: Upload flashable zip
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReSukiSU-SuSFS-HyperOS1-${{ inputs.device_name }}
+          path: ${{ env.AK3_ZIP }}
+
+      - name: Preserve build log on failure
+        if: failure()
+        run: |
+          cp /tmp/kbuild.log "$GITHUB_WORKSPACE/kbuild.log" 2>/dev/null || true
+
+      - name: Upload build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReSukiSU-HyperOS1-build-log-${{ inputs.device_name }}
+          path: ${{ github.workspace }}/kbuild.log
+          if-no-files-found: ignore
