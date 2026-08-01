@@ -1,4 +1,4 @@
-name: Build ReSukiSU + SuSFS (HyperOS1 Conservative)
+name: Build 11U HyperOS1 Daily Kernel
 
 on:
   workflow_dispatch:
@@ -45,9 +45,9 @@ on:
         type: choice
         options: [star, mars, venus]
       localversion:
-        description: "Custom version suffix"
+        description: "Custom version suffix (default keeps the running kernel name low-profile)"
         required: true
-        default: "-11U-HyperOS1-ReSukiSU"
+        default: "-11U"
       bbr_enable:
         description: "Enable TCP BBR/Brutal (false=off, true=add, default=set as default)"
         required: true
@@ -511,10 +511,10 @@ jobs:
             exit 1
           fi
           DEVICE="${{ inputs.device_name || 'star' }}"
-          NEW="$(dirname "$AK3")/${DEVICE}-5.4_ReSukiSU-HyperOS1-${PROFILE_SUFFIX}-${FEATURE_SUFFIX}.zip"
+          NEW="$(dirname "$AK3")/${DEVICE}-5.4_11U-${PROFILE_SUFFIX}-${FEATURE_SUFFIX}.zip"
           mv "$AK3" "$NEW"
-          cp "$NEW" "$GITHUB_WORKSPACE/${DEVICE}-5.4_ReSukiSU-HyperOS1-${PROFILE_SUFFIX}-${FEATURE_SUFFIX}.zip"
-          echo "AK3_ZIP=$GITHUB_WORKSPACE/${DEVICE}-5.4_ReSukiSU-HyperOS1-${PROFILE_SUFFIX}-${FEATURE_SUFFIX}.zip" >> "$GITHUB_ENV"
+          cp "$NEW" "$GITHUB_WORKSPACE/${DEVICE}-5.4_11U-${PROFILE_SUFFIX}-${FEATURE_SUFFIX}.zip"
+          echo "AK3_ZIP=$GITHUB_WORKSPACE/${DEVICE}-5.4_11U-${PROFILE_SUFFIX}-${FEATURE_SUFFIX}.zip" >> "$GITHUB_ENV"
 
       - name: Write build manifest
         run: |
@@ -544,7 +544,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: ReSukiSU-SuSFS-HyperOS1-${{ inputs.device_name }}-${{ inputs.runtime_profile }}-${{ inputs.feature_profile }}
+          name: 11U-HyperOS1-${{ inputs.device_name }}-${{ inputs.runtime_profile }}-${{ inputs.feature_profile }}
           path: |
             ${{ env.AK3_ZIP }}
             ${{ github.workspace }}/build-manifest.txt
@@ -558,6 +558,6 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: ReSukiSU-HyperOS1-build-log-${{ inputs.device_name }}
+          name: 11U-HyperOS1-build-log-${{ inputs.device_name }}
           path: ${{ github.workspace }}/kbuild.log
           if-no-files-found: ignore
