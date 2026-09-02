@@ -45,9 +45,9 @@ on:
         type: choice
         options: [star, mars, venus]
       localversion:
-        description: "Custom version suffix (default matches the stock qgki naming style)"
+        description: "Custom version suffix after the stock qgki prefix"
         required: true
-        default: "-qgki-g0f210a29bd7d"
+        default: "-g0f210a29bd7d"
       bbr_enable:
         description: "Enable TCP BBR/Brutal (false=off, true=add, default=set as default)"
         required: true
@@ -335,6 +335,8 @@ jobs:
           fi
 
           {
+            echo 'CONFIG_LOCALVERSION="-qgki"'
+            echo "# CONFIG_LOCALVERSION_AUTO is not set"
             echo "CONFIG_KSU=y"
             echo "CONFIG_TMPFS_XATTR=y"
             echo "CONFIG_TMPFS_POSIX_ACL=y"
