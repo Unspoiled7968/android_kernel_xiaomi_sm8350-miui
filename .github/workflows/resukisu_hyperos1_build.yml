@@ -45,9 +45,9 @@ on:
         type: choice
         options: [star, mars, venus]
       localversion:
-        description: "Custom version suffix (default keeps the running kernel name low-profile)"
+        description: "Custom version suffix (default matches the stock qgki naming style)"
         required: true
-        default: "-11U"
+        default: "-qgki-g0f210a29bd7d"
       bbr_enable:
         description: "Enable TCP BBR/Brutal (false=off, true=add, default=set as default)"
         required: true
