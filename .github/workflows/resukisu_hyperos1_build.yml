@@ -394,7 +394,7 @@ jobs:
           patch -p1 -F 3 < lz4ko.patch || echo "Patch had minor conflicts"
 
       - name: Enable WireGuard
-        if: ${{ inputs.feature_profile == 'daily-plus' || (inputs.feature_profile == 'custom' && inputs.wireguard) }}
+        if: ${{ inputs.feature_profile == 'daily-network' || inputs.feature_profile == 'daily-plus' || (inputs.feature_profile == 'custom' && inputs.wireguard) }}
         run: |
           cat >> "$DEFCONFIG" << 'EOF'
           CONFIG_WIREGUARD=y
