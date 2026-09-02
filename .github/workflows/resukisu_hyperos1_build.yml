@@ -25,11 +25,12 @@ on:
           - "balanced"
           - "performance-lab"
       feature_profile:
-        description: "Feature bundle (minimal = recommended daily-use baseline; daily-plus = extra networking/features lab)"
+        description: "Feature bundle (daily-network = WireGuard + BBR; minimal = conservative; daily-plus = full networking/features lab)"
         required: true
-        default: "minimal"
+        default: "daily-network"
         type: choice
         options:
+          - "daily-network"
           - "minimal"
           - "daily-plus"
           - "custom"
@@ -156,7 +157,14 @@ jobs:
           FEATURE_SUFFIX="custom"
           FEATURE_HINT="manual feature selection"
 
-          if [ "${{ inputs.feature_profile }}" = "minimal" ]; then
+          if [ "${{ inputs.feature_profile }}" = "daily-network" ]; then
+            EFFECTIVE_ENABLE_BPF="false"
+            EFFECTIVE_WIREGUARD="true"
+            EFFECTIVE_NETFILTER_FULL="false"
+            EFFECTIVE_BBR_ENABLE="default"
+            FEATURE_SUFFIX="daily-network"
+            FEATURE_HINT="WireGuard + BBR default; BPF and Full Netfilter off"
+          elif [ "${{ inputs.feature_profile }}" = "minimal" ]; then
             EFFECTIVE_ENABLE_BPF="false"
             EFFECTIVE_WIREGUARD="false"
             EFFECTIVE_NETFILTER_FULL="false"
