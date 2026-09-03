@@ -466,9 +466,7 @@ jobs:
               echo "CONFIG_TCP_CONG_HTCP=y"
             } >> "$DEFCONFIG"
             if [[ "$EFFECTIVE_BBR_ENABLE" == "default" ]]; then
-              echo 'CONFIG_DEFAULT_TCP_CONG="bbr"' >> "$DEFCONFIG"
-            else
-              echo 'CONFIG_DEFAULT_TCP_CONG="cubic"' >> "$DEFCONFIG"
+              echo "CONFIG_DEFAULT_BBR=y" >> "$DEFCONFIG"
             fi
           fi
 
@@ -526,10 +524,11 @@ jobs:
           fi
 
           echo "Using effective config: $CONFIG_FILE"
-          grep -E '^(CONFIG_WIREGUARD|CONFIG_TCP_CONG_BBR|CONFIG_DEFAULT_TCP_CONG)=' "$CONFIG_FILE" || true
+          grep -E '^(CONFIG_WIREGUARD|CONFIG_TCP_CONG_BBR|CONFIG_DEFAULT_BBR|CONFIG_DEFAULT_TCP_CONG)=' "$CONFIG_FILE" || true
 
           wireguard_state="$(sed -n 's/^CONFIG_WIREGUARD=//p' "$CONFIG_FILE")"
           bbr_state="$(sed -n 's/^CONFIG_TCP_CONG_BBR=//p' "$CONFIG_FILE")"
+          default_bbr_state="$(sed -n 's/^CONFIG_DEFAULT_BBR=//p' "$CONFIG_FILE")"
           default_cong="$(sed -n 's/^CONFIG_DEFAULT_TCP_CONG=//p' "$CONFIG_FILE" | tr -d '"')"
 
           if [ "$wireguard_state" != "y" ]; then
@@ -538,6 +537,10 @@ jobs:
           fi
           if [ "$bbr_state" != "y" ]; then
             echo "CONFIG_TCP_CONG_BBR is not enabled: '$bbr_state'"
+            exit 1
+          fi
+          if [ "$default_bbr_state" != "y" ]; then
+            echo "CONFIG_DEFAULT_BBR is not selected: '$default_bbr_state'"
             exit 1
           fi
           if [ "$default_cong" != "bbr" ]; then
