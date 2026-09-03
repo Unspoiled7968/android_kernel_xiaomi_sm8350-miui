@@ -513,11 +513,38 @@ jobs:
           ./build.sh all ${{ inputs.device_name }} 2>&1 | tee /tmp/kbuild.log
 
           echo "Verifying effective network configuration..."
-          test -f ../out/.config
-          grep -qx 'CONFIG_WIREGUARD=y' ../out/.config
-          grep -qx 'CONFIG_TCP_CONG_BBR=y' ../out/.config
-          grep -qx 'CONFIG_DEFAULT_TCP_CONG="bbr"' ../out/.config
-          echo "Effective config contains WireGuard and BBR default"
+          CONFIG_FILE=""
+          for candidate in ../out/.config out/.config; do
+            if [ -f "$candidate" ]; then
+              CONFIG_FILE="$candidate"
+              break
+            fi
+          done
+          if [ -z "$CONFIG_FILE" ]; then
+            echo "Effective kernel .config not found"
+            exit 1
+          fi
+
+          echo "Using effective config: $CONFIG_FILE"
+          grep -E '^(CONFIG_WIREGUARD|CONFIG_TCP_CONG_BBR|CONFIG_DEFAULT_TCP_CONG)=' "$CONFIG_FILE" || true
+
+          wireguard_state="$(sed -n 's/^CONFIG_WIREGUARD=//p' "$CONFIG_FILE")"
+          bbr_state="$(sed -n 's/^CONFIG_TCP_CONG_BBR=//p' "$CONFIG_FILE")"
+          default_cong="$(sed -n 's/^CONFIG_DEFAULT_TCP_CONG=//p' "$CONFIG_FILE" | tr -d '"')"
+
+          if [ "$wireguard_state" != "y" ]; then
+            echo "CONFIG_WIREGUARD is not built-in: '$wireguard_state'"
+            exit 1
+          fi
+          if [ "$bbr_state" != "y" ]; then
+            echo "CONFIG_TCP_CONG_BBR is not enabled: '$bbr_state'"
+            exit 1
+          fi
+          if [ "$default_cong" != "bbr" ]; then
+            echo "Default TCP congestion control is not bbr: '$default_cong'"
+            exit 1
+          fi
+          echo "Effective config contains built-in WireGuard and BBR default"
 
           if [ ! -f out/arch/arm64/boot/Image ] && [ ! -f ../out/arch/arm64/boot/Image ]; then
             echo "BUILD FAILED"
