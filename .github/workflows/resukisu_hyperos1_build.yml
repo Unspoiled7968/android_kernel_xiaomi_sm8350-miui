@@ -328,6 +328,17 @@ jobs:
           set -e
           bash "../jacka_repo/Patches/susfs_inline_hook_patches.sh"
 
+      - name: Integrate WireGuard compat for 5.4
+        if: ${{ inputs.feature_profile == 'daily-network' || inputs.feature_profile == 'daily-plus' || (inputs.feature_profile == 'custom' && inputs.wireguard) }}
+        run: |
+          set -e
+          git clone --depth=1 https://git.zx2c4.com/wireguard-linux-compat ../wireguard-linux-compat
+          bash ../wireguard-linux-compat/kernel-tree-scripts/jury-rig.sh "$GITHUB_WORKSPACE"
+          test -L net/wireguard
+          grep -q 'net/wireguard/Kconfig' net/Kconfig
+          grep -q 'CONFIG_WIREGUARD' net/Makefile
+          echo "WireGuard compat integrated into the kernel tree"
+
       - name: Append Defconfig Flags
         run: |
           set -e
@@ -453,12 +464,11 @@ jobs:
               echo "CONFIG_TCP_CONG_NV=y"
               echo "CONFIG_TCP_CONG_WESTWOOD=y"
               echo "CONFIG_TCP_CONG_HTCP=y"
-              echo "CONFIG_TCP_CONG_BRUTAL=y"
             } >> "$DEFCONFIG"
             if [[ "$EFFECTIVE_BBR_ENABLE" == "default" ]]; then
-              echo "CONFIG_DEFAULT_TCP_CONG=bbr" >> "$DEFCONFIG"
+              echo 'CONFIG_DEFAULT_TCP_CONG="bbr"' >> "$DEFCONFIG"
             else
-              echo "CONFIG_DEFAULT_TCP_CONG=cubic" >> "$DEFCONFIG"
+              echo 'CONFIG_DEFAULT_TCP_CONG="cubic"' >> "$DEFCONFIG"
             fi
           fi
 
@@ -501,6 +511,13 @@ jobs:
           ccache --zero-stats > /dev/null 2>&1 || true
           chmod +x ./build.sh
           ./build.sh all ${{ inputs.device_name }} 2>&1 | tee /tmp/kbuild.log
+
+          echo "Verifying effective network configuration..."
+          test -f ../out/.config
+          grep -qx 'CONFIG_WIREGUARD=y' ../out/.config
+          grep -qx 'CONFIG_TCP_CONG_BBR=y' ../out/.config
+          grep -qx 'CONFIG_DEFAULT_TCP_CONG="bbr"' ../out/.config
+          echo "Effective config contains WireGuard and BBR default"
 
           if [ ! -f out/arch/arm64/boot/Image ] && [ ! -f ../out/arch/arm64/boot/Image ]; then
             echo "BUILD FAILED"
