@@ -98,6 +98,127 @@ static const char * const qc_power_supply_usb_type_text[] = {
 	"HVDCP", "HVDCP_3", "HVDCP_3P5","USB_FLOAT","HVDCP_3"
 };
 
+#define CAPACITY_COMPAT_DEFAULT_EMPTY_UV	3150000
+#define CAPACITY_COMPAT_DEFAULT_RESERVE_PCT	2
+#define CAPACITY_COMPAT_TAIL_WINDOW_UV		250000
+
+static int battery_chg_compat_refresh(struct battery_chg_dev *bcdev);
+
+bool battery_chg_compat_ready(struct battery_chg_dev *bcdev)
+{
+	return bcdev->capacity_compat_enabled &&
+		bcdev->capacity_compat_design_uah > 0 &&
+		bcdev->capacity_compat_full_uah > 0 &&
+		bcdev->capacity_compat_design_uah >=
+			bcdev->capacity_compat_full_uah;
+}
+
+int battery_chg_compat_raw_capacity(struct psy_state *pst)
+{
+	return DIV_ROUND_CLOSEST(pst->prop[BATT_CAPACITY], 100);
+}
+
+int battery_chg_compat_raw_charge_counter(struct psy_state *pst)
+{
+#if defined(CONFIG_BQ_FUEL_GAUGE)
+	return pst->prop[BATT_CHG_COUNTER];
+#else
+	return DIV_ROUND_CLOSEST(pst->prop[BATT_CHG_COUNTER], 100);
+#endif
+}
+
+int battery_chg_compat_raw_charge_full(struct psy_state *pst)
+{
+	return pst->prop[BATT_CHG_FULL];
+}
+
+int battery_chg_compat_raw_charge_full_design(struct psy_state *pst)
+{
+	return pst->prop[BATT_CHG_FULL_DESIGN];
+}
+
+int battery_chg_compat_adjust_capacity(struct battery_chg_dev *bcdev,
+				       struct psy_state *pst)
+{
+	int raw_soc, adjusted_soc, reserve_pct, voltage_uv;
+	int tail_soc = 0;
+
+	raw_soc = battery_chg_compat_raw_capacity(pst);
+	if (!battery_chg_compat_ready(bcdev))
+		return clamp(raw_soc, 0, 100);
+
+	voltage_uv = pst->prop[BATT_VOLT_NOW];
+	reserve_pct = clamp(bcdev->capacity_compat_reserve_pct, 0, 15);
+	adjusted_soc = raw_soc;
+
+	if (reserve_pct > 0 && raw_soc <= reserve_pct &&
+	    voltage_uv > bcdev->capacity_compat_empty_uv) {
+		tail_soc = DIV_ROUND_CLOSEST(
+			(voltage_uv - bcdev->capacity_compat_empty_uv) *
+			 reserve_pct,
+			CAPACITY_COMPAT_TAIL_WINDOW_UV);
+		tail_soc = clamp(tail_soc, 0, reserve_pct);
+		adjusted_soc = max(adjusted_soc, tail_soc);
+	}
+
+	return clamp(adjusted_soc, 0, 100);
+}
+
+int battery_chg_compat_adjust_charge_counter(struct battery_chg_dev *bcdev,
+					     struct psy_state *pst)
+{
+	int raw_counter, raw_full, adjusted_soc, adjusted_counter;
+	u64 adjusted;
+
+	raw_counter = battery_chg_compat_raw_charge_counter(pst);
+	if (!battery_chg_compat_ready(bcdev))
+		return raw_counter;
+
+	raw_full = battery_chg_compat_raw_charge_full(pst);
+	if (raw_full <= 0)
+		return raw_counter;
+
+	if (raw_counter > 0) {
+		adjusted = (u64)raw_counter * bcdev->capacity_compat_full_uah;
+		do_div(adjusted, raw_full);
+		adjusted_counter = clamp_val((int)adjusted, 0,
+					     bcdev->capacity_compat_full_uah);
+	} else {
+		adjusted_counter = 0;
+	}
+
+	adjusted_soc = battery_chg_compat_adjust_capacity(bcdev, pst);
+	adjusted = (u64)adjusted_soc * bcdev->capacity_compat_full_uah;
+	do_div(adjusted, 100);
+	adjusted_counter = max(adjusted_counter, (int)adjusted);
+
+	return clamp_val(adjusted_counter, 0, bcdev->capacity_compat_full_uah);
+}
+
+int battery_chg_compat_adjust_charge_full(struct battery_chg_dev *bcdev,
+					  struct psy_state *pst)
+{
+	int raw_full;
+
+	raw_full = battery_chg_compat_raw_charge_full(pst);
+	if (!battery_chg_compat_ready(bcdev))
+		return raw_full;
+
+	return bcdev->capacity_compat_full_uah;
+}
+
+int battery_chg_compat_adjust_charge_full_design(struct battery_chg_dev *bcdev,
+						 struct psy_state *pst)
+{
+	int raw_design;
+
+	raw_design = battery_chg_compat_raw_charge_full_design(pst);
+	if (!battery_chg_compat_ready(bcdev))
+		return raw_design;
+
+	return bcdev->capacity_compat_design_uah;
+}
+
 static int battery_chg_fw_write(struct battery_chg_dev *bcdev, void *data,
 				int len)
 {
@@ -1101,12 +1222,22 @@ static int battery_psy_get_prop(struct power_supply *psy,
 	if (rc < 0)
 		return rc;
 
+	if (battery_chg_compat_ready(bcdev) &&
+	    (prop == POWER_SUPPLY_PROP_CAPACITY ||
+	     prop == POWER_SUPPLY_PROP_CHARGE_COUNTER ||
+	     prop == POWER_SUPPLY_PROP_CHARGE_FULL ||
+	     prop == POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN)) {
+		rc = battery_chg_compat_refresh(bcdev);
+		if (rc < 0)
+			return rc;
+	}
+
 	switch (prop) {
 	case POWER_SUPPLY_PROP_MODEL_NAME:
 		pval->strval = pst->model;
 		break;
 	case POWER_SUPPLY_PROP_CAPACITY:
-		pval->intval = DIV_ROUND_CLOSEST(pst->prop[prop_id], 100);
+		pval->intval = battery_chg_compat_adjust_capacity(bcdev, pst);
 		if (IS_ENABLED(CONFIG_QTI_PMIC_GLINK_CLIENT_DEBUG) &&
 		   (bcdev->fake_soc >= 0 && bcdev->fake_soc <= 100))
 			pval->intval = bcdev->fake_soc;
@@ -1120,11 +1251,16 @@ static int battery_psy_get_prop(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_CHARGE_CONTROL_LIMIT_MAX:
 		pval->intval = bcdev->num_thermal_levels;
 		break;
-#if !defined(CONFIG_BQ_FUEL_GAUGE)
 	case POWER_SUPPLY_PROP_CHARGE_COUNTER:
-		pval->intval = DIV_ROUND_CLOSEST(pst->prop[prop_id], 100);
+		pval->intval = battery_chg_compat_adjust_charge_counter(bcdev, pst);
 		break;
-#endif
+	case POWER_SUPPLY_PROP_CHARGE_FULL:
+		pval->intval = battery_chg_compat_adjust_charge_full(bcdev, pst);
+		break;
+	case POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN:
+		pval->intval =
+			battery_chg_compat_adjust_charge_full_design(bcdev, pst);
+		break;
 #ifdef CONFIG_BQ_FUEL_GAUGE
 	case POWER_SUPPLY_PROP_TIME_TO_FULL_AVG:
 		pval->intval = (pst->prop[prop_id] * 60) >= 65535 ?
@@ -1859,6 +1995,262 @@ static ssize_t ship_mode_en_show(struct class *c, struct class_attribute *attr,
 }
 static CLASS_ATTR_RW(ship_mode_en);
 
+static int battery_chg_compat_refresh(struct battery_chg_dev *bcdev)
+{
+	struct psy_state *pst = &bcdev->psy_list[PSY_TYPE_BATTERY];
+	int rc;
+
+	rc = read_property_id(bcdev, pst, BATT_CAPACITY);
+	if (rc < 0)
+		return rc;
+
+	rc = read_property_id(bcdev, pst, BATT_CHG_COUNTER);
+	if (rc < 0)
+		return rc;
+
+	rc = read_property_id(bcdev, pst, BATT_CHG_FULL);
+	if (rc < 0)
+		return rc;
+
+	rc = read_property_id(bcdev, pst, BATT_CHG_FULL_DESIGN);
+	if (rc < 0)
+		return rc;
+
+	rc = read_property_id(bcdev, pst, BATT_VOLT_NOW);
+	if (rc < 0)
+		return rc;
+
+	return 0;
+}
+
+static void battery_chg_compat_notify(struct battery_chg_dev *bcdev)
+{
+	struct power_supply *psy = bcdev->psy_list[PSY_TYPE_BATTERY].psy;
+
+	if (psy)
+		power_supply_changed(psy);
+}
+
+static ssize_t capacity_compat_enable_store(struct class *c,
+					struct class_attribute *attr,
+					const char *buf, size_t count)
+{
+	struct battery_chg_dev *bcdev = container_of(c, struct battery_chg_dev,
+						battery_class);
+	bool val;
+
+	if (kstrtobool(buf, &val))
+		return -EINVAL;
+
+	mutex_lock(&bcdev->rw_lock);
+	bcdev->capacity_compat_enabled = val;
+	mutex_unlock(&bcdev->rw_lock);
+	battery_chg_compat_notify(bcdev);
+
+	return count;
+}
+
+static ssize_t capacity_compat_enable_show(struct class *c,
+				       struct class_attribute *attr, char *buf)
+{
+	struct battery_chg_dev *bcdev = container_of(c, struct battery_chg_dev,
+						battery_class);
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n",
+			 bcdev->capacity_compat_enabled);
+}
+static CLASS_ATTR_RW(capacity_compat_enable);
+
+static ssize_t capacity_compat_full_uah_store(struct class *c,
+					  struct class_attribute *attr,
+					  const char *buf, size_t count)
+{
+	struct battery_chg_dev *bcdev = container_of(c, struct battery_chg_dev,
+						battery_class);
+	int val;
+
+	if (kstrtoint(buf, 0, &val) || val < 0 || val > 10000000)
+		return -EINVAL;
+
+	mutex_lock(&bcdev->rw_lock);
+	bcdev->capacity_compat_full_uah = val;
+	mutex_unlock(&bcdev->rw_lock);
+	battery_chg_compat_notify(bcdev);
+
+	return count;
+}
+
+static ssize_t capacity_compat_full_uah_show(struct class *c,
+					 struct class_attribute *attr, char *buf)
+{
+	struct battery_chg_dev *bcdev = container_of(c, struct battery_chg_dev,
+						battery_class);
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n",
+			 bcdev->capacity_compat_full_uah);
+}
+static CLASS_ATTR_RW(capacity_compat_full_uah);
+
+static ssize_t capacity_compat_design_uah_store(struct class *c,
+					    struct class_attribute *attr,
+					    const char *buf, size_t count)
+{
+	struct battery_chg_dev *bcdev = container_of(c, struct battery_chg_dev,
+						battery_class);
+	int val;
+
+	if (kstrtoint(buf, 0, &val) || val < 0 || val > 10000000)
+		return -EINVAL;
+
+	mutex_lock(&bcdev->rw_lock);
+	bcdev->capacity_compat_design_uah = val;
+	mutex_unlock(&bcdev->rw_lock);
+	battery_chg_compat_notify(bcdev);
+
+	return count;
+}
+
+static ssize_t capacity_compat_design_uah_show(struct class *c,
+					   struct class_attribute *attr,
+					   char *buf)
+{
+	struct battery_chg_dev *bcdev = container_of(c, struct battery_chg_dev,
+						battery_class);
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n",
+			 bcdev->capacity_compat_design_uah);
+}
+static CLASS_ATTR_RW(capacity_compat_design_uah);
+
+static ssize_t capacity_compat_empty_uv_store(struct class *c,
+					  struct class_attribute *attr,
+					  const char *buf, size_t count)
+{
+	struct battery_chg_dev *bcdev = container_of(c, struct battery_chg_dev,
+						battery_class);
+	int val;
+
+	if (kstrtoint(buf, 0, &val) || val < 2800000 || val > 3600000)
+		return -EINVAL;
+
+	mutex_lock(&bcdev->rw_lock);
+	bcdev->capacity_compat_empty_uv = val;
+	mutex_unlock(&bcdev->rw_lock);
+	battery_chg_compat_notify(bcdev);
+
+	return count;
+}
+
+static ssize_t capacity_compat_empty_uv_show(struct class *c,
+					 struct class_attribute *attr, char *buf)
+{
+	struct battery_chg_dev *bcdev = container_of(c, struct battery_chg_dev,
+						battery_class);
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n",
+			 bcdev->capacity_compat_empty_uv);
+}
+static CLASS_ATTR_RW(capacity_compat_empty_uv);
+
+static ssize_t capacity_compat_reserve_pct_store(struct class *c,
+					     struct class_attribute *attr,
+					     const char *buf, size_t count)
+{
+	struct battery_chg_dev *bcdev = container_of(c, struct battery_chg_dev,
+						battery_class);
+	int val;
+
+	if (kstrtoint(buf, 0, &val) || val < 0 || val > 15)
+		return -EINVAL;
+
+	mutex_lock(&bcdev->rw_lock);
+	bcdev->capacity_compat_reserve_pct = val;
+	mutex_unlock(&bcdev->rw_lock);
+	battery_chg_compat_notify(bcdev);
+
+	return count;
+}
+
+static ssize_t capacity_compat_reserve_pct_show(struct class *c,
+					    struct class_attribute *attr,
+					    char *buf)
+{
+	struct battery_chg_dev *bcdev = container_of(c, struct battery_chg_dev,
+						battery_class);
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n",
+			 bcdev->capacity_compat_reserve_pct);
+}
+static CLASS_ATTR_RW(capacity_compat_reserve_pct);
+
+static ssize_t capacity_compat_status_show(struct class *c,
+				       struct class_attribute *attr, char *buf)
+{
+	struct battery_chg_dev *bcdev = container_of(c, struct battery_chg_dev,
+						battery_class);
+	struct psy_state *pst = &bcdev->psy_list[PSY_TYPE_BATTERY];
+	int rc;
+
+	rc = battery_chg_compat_refresh(bcdev);
+	if (rc < 0)
+		return rc;
+
+	return scnprintf(
+		buf, PAGE_SIZE,
+		"enabled=%d\nready=%d\nfull_uah=%d\ndesign_uah=%d\nempty_uv=%d\nreserve_pct=%d\nraw_capacity=%d\nraw_charge_counter_uah=%d\nraw_charge_full_uah=%d\nraw_charge_full_design_uah=%d\nadjusted_capacity=%d\nadjusted_charge_counter_uah=%d\nadjusted_charge_full_uah=%d\nadjusted_charge_full_design_uah=%d\nvoltage_now_uv=%d\n",
+		bcdev->capacity_compat_enabled,
+		battery_chg_compat_ready(bcdev),
+		bcdev->capacity_compat_full_uah,
+		bcdev->capacity_compat_design_uah,
+		bcdev->capacity_compat_empty_uv,
+		bcdev->capacity_compat_reserve_pct,
+		battery_chg_compat_raw_capacity(pst),
+		battery_chg_compat_raw_charge_counter(pst),
+		battery_chg_compat_raw_charge_full(pst),
+		battery_chg_compat_raw_charge_full_design(pst),
+		battery_chg_compat_adjust_capacity(bcdev, pst),
+		battery_chg_compat_adjust_charge_counter(bcdev, pst),
+		battery_chg_compat_adjust_charge_full(bcdev, pst),
+		battery_chg_compat_adjust_charge_full_design(bcdev, pst),
+		pst->prop[BATT_VOLT_NOW]);
+}
+static CLASS_ATTR_RO(capacity_compat_status);
+
+#define BATTERY_COMPAT_VALUE_SHOW(_name, _expr)				      \
+static ssize_t _name##_show(struct class *c,				      \
+			    struct class_attribute *attr, char *buf)	      \
+{									      \
+	struct battery_chg_dev *bcdev =					      \
+		container_of(c, struct battery_chg_dev, battery_class);      \
+	struct psy_state *pst = &bcdev->psy_list[PSY_TYPE_BATTERY];	      \
+	int rc;								      \
+									      \
+	rc = battery_chg_compat_refresh(bcdev);				      \
+	if (rc < 0)							      \
+		return rc;						      \
+									      \
+	return scnprintf(buf, PAGE_SIZE, "%d\n", (_expr));		      \
+}									      \
+static CLASS_ATTR_RO(_name)
+
+BATTERY_COMPAT_VALUE_SHOW(capacity_compat_raw_capacity,
+			  battery_chg_compat_raw_capacity(pst));
+BATTERY_COMPAT_VALUE_SHOW(capacity_compat_raw_charge_counter_uah,
+			  battery_chg_compat_raw_charge_counter(pst));
+BATTERY_COMPAT_VALUE_SHOW(capacity_compat_raw_charge_full_uah,
+			  battery_chg_compat_raw_charge_full(pst));
+BATTERY_COMPAT_VALUE_SHOW(capacity_compat_raw_charge_full_design_uah,
+			  battery_chg_compat_raw_charge_full_design(pst));
+BATTERY_COMPAT_VALUE_SHOW(capacity_compat_adjusted_capacity,
+			  battery_chg_compat_adjust_capacity(bcdev, pst));
+BATTERY_COMPAT_VALUE_SHOW(capacity_compat_adjusted_charge_counter_uah,
+			  battery_chg_compat_adjust_charge_counter(bcdev, pst));
+BATTERY_COMPAT_VALUE_SHOW(capacity_compat_adjusted_charge_full_uah,
+			  battery_chg_compat_adjust_charge_full(bcdev, pst));
+BATTERY_COMPAT_VALUE_SHOW(capacity_compat_adjusted_charge_full_design_uah,
+			  battery_chg_compat_adjust_charge_full_design(
+				  bcdev, pst));
+
 static struct attribute *battery_class_attrs[] = {
 	&class_attr_soh.attr,
 	&class_attr_resistance.attr,
@@ -1875,6 +2267,20 @@ static struct attribute *battery_class_attrs[] = {
 	&class_attr_restrict_cur.attr,
 	&class_attr_usb_real_type.attr,
 	&class_attr_usb_typec_compliant.attr,
+	&class_attr_capacity_compat_enable.attr,
+	&class_attr_capacity_compat_full_uah.attr,
+	&class_attr_capacity_compat_design_uah.attr,
+	&class_attr_capacity_compat_empty_uv.attr,
+	&class_attr_capacity_compat_reserve_pct.attr,
+	&class_attr_capacity_compat_status.attr,
+	&class_attr_capacity_compat_raw_capacity.attr,
+	&class_attr_capacity_compat_raw_charge_counter_uah.attr,
+	&class_attr_capacity_compat_raw_charge_full_uah.attr,
+	&class_attr_capacity_compat_raw_charge_full_design_uah.attr,
+	&class_attr_capacity_compat_adjusted_capacity.attr,
+	&class_attr_capacity_compat_adjusted_charge_counter_uah.attr,
+	&class_attr_capacity_compat_adjusted_charge_full_uah.attr,
+	&class_attr_capacity_compat_adjusted_charge_full_design_uah.attr,
 	NULL,
 };
 
@@ -2229,6 +2635,9 @@ static int battery_chg_probe(struct platform_device *pdev)
 	bcdev->restrict_fcc_ua = DEFAULT_RESTRICT_FCC_UA;
 	platform_set_drvdata(pdev, bcdev);
 	bcdev->fake_soc = -EINVAL;
+	bcdev->capacity_compat_empty_uv = CAPACITY_COMPAT_DEFAULT_EMPTY_UV;
+	bcdev->capacity_compat_reserve_pct =
+		CAPACITY_COMPAT_DEFAULT_RESERVE_PCT;
 	rc = battery_chg_init_psy(bcdev);
 	if (rc < 0)
 		goto error;

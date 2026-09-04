@@ -513,8 +513,27 @@ struct battery_chg_dev {
 	bool				shutdown_delay_en;
 	bool				support_wireless_charge;
 	bool				support_2s_charging;
+	bool				capacity_compat_enabled;
+	int				capacity_compat_design_uah;
+	int				capacity_compat_full_uah;
+	int				capacity_compat_empty_uv;
+	int				capacity_compat_reserve_pct;
 	struct delayed_work		xm_prop_change_work;
 	struct delayed_work		charger_debug_info_print_work;
 	/* To track the driver initialization status */
 	bool				initialized;
 };
+
+bool battery_chg_compat_ready(struct battery_chg_dev *bcdev);
+int battery_chg_compat_raw_capacity(struct psy_state *pst);
+int battery_chg_compat_raw_charge_counter(struct psy_state *pst);
+int battery_chg_compat_raw_charge_full(struct psy_state *pst);
+int battery_chg_compat_raw_charge_full_design(struct psy_state *pst);
+int battery_chg_compat_adjust_capacity(struct battery_chg_dev *bcdev,
+				       struct psy_state *pst);
+int battery_chg_compat_adjust_charge_counter(struct battery_chg_dev *bcdev,
+					     struct psy_state *pst);
+int battery_chg_compat_adjust_charge_full(struct battery_chg_dev *bcdev,
+					  struct psy_state *pst);
+int battery_chg_compat_adjust_charge_full_design(struct battery_chg_dev *bcdev,
+						 struct psy_state *pst);
